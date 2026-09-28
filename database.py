@@ -133,13 +133,27 @@ def get_all_users() -> List[Dict[str, Any]]:
 
 _cached_sessions = {}
 
+_cached_get_sessions = {}
+
 def get_sessions(user_id: Optional[int] = None, include_bytes: bool = False) -> List[Dict[str, Any]]:
+    global _cached_get_sessions
+    cache_key = f"{user_id}_{include_bytes}"
+    now = time.time()
+    
+    if cache_key in _cached_get_sessions:
+        expiry, data = _cached_get_sessions[cache_key]
+        if now < expiry:
+            return [dict(d) for d in data]
+
     projection = None if include_bytes else {"session_bytes": 0}
     if user_id is not None:
         query = {"user_id": {"$in": [int(user_id), str(user_id)]}}
     else:
         query = {}
-    return list(_db.sessions.find(query, projection))
+        
+    results = list(_db.sessions.find(query, projection))
+    _cached_get_sessions[cache_key] = (now + 5.0, [dict(r) for r in results])
+    return results
 
 def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[str, Any]]:
     if not session_id:
@@ -169,6 +183,8 @@ def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[s
     return sess
 
 def save_session(session_data: Dict[str, Any]):
+    global _cached_get_sessions
+    _cached_get_sessions.clear()
     session_data["user_id"] = int(session_data["user_id"])
     
     # Update cache
@@ -187,6 +203,8 @@ def save_session(session_data: Dict[str, Any]):
         ))
 
 def delete_session(session_id: str):
+    global _cached_get_sessions
+    _cached_get_sessions.clear()
     if not session_id:
         return
     session_id_str = str(session_id).strip()
