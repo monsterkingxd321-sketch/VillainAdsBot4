@@ -3002,7 +3002,7 @@ class UserBot:
                                 logger.info(f"Group {g.id} slow mode wait: {smwe.seconds}s. Skipping...")
                                 await asyncio.sleep(min(10, smwe.seconds))
                                 
-                            except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError) as chat_err:
+                            except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError, ValueError) as chat_err:
                                 logger.debug(f"Cannot write to group {g.id} ({chat_err.__class__.__name__}). Skipping.")
                                 
                             except Exception as e:

@@ -82,8 +82,15 @@ async def main():
     t2.add_done_callback(background_tasks.discard)
     
     try:
-        # Run main bot until connection is lost
-        await bot.run_until_disconnected()
+        # Keep the bot running and auto-reconnect if it disconnects
+        while True:
+            try:
+                if not bot.is_connected():
+                    await bot.connect()
+                await bot.run_until_disconnected()
+            except Exception as e:
+                logger.error(f"Bot disconnected due to error: {e}. Retrying in 5 seconds...")
+                await asyncio.sleep(5)
     finally:
         # Stop all background userbots gracefully
         await userbot_manager.stop_all_bots()
