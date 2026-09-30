@@ -2940,19 +2940,20 @@ class UserBot:
         Includes advanced anti-spam error handling and humanized delay timing.
         """
         while self.is_running:
-            if self.settings.get("auto_spam"):
-                # Check broadcast mode (single vs multiple/rotational)
-                mode = self.settings.get("broadcast_mode", "single")
-                if mode == "multiple":
-                    broadcast_messages = self.settings.get("broadcast_messages", [])
-                    if not broadcast_messages:
+            try:
+                if self.settings.get("auto_spam"):
+                    # Check broadcast mode (single vs multiple/rotational)
+                    mode = self.settings.get("broadcast_mode", "single")
+                    if mode == "multiple":
+                        broadcast_messages = self.settings.get("broadcast_messages", [])
+                        if not broadcast_messages:
+                            broadcast_messages = [self.settings.get("broadcast_msg")]
+                    else:
                         broadcast_messages = [self.settings.get("broadcast_msg")]
-                else:
-                    broadcast_messages = [self.settings.get("broadcast_msg")]
+                        
+                    broadcast_messages = [m for m in broadcast_messages if m]
                     
-                broadcast_messages = [m for m in broadcast_messages if m]
-                
-                if broadcast_messages:
+                    if broadcast_messages:
                     try:
                         # Dynamically refresh groups so newly joined groups are automatically detected without restarting
                         force_refresh = (time.time() - self.groups_cache_time > 60) or not self.groups_cache
@@ -3031,9 +3032,17 @@ class UserBot:
                         logger.error(f"Error inside userbot broadcast loop execution: {e}")
             
             # Fetch broadcast interval from in-memory settings (default 300s)
-            interval = self.settings.get("broadcast_interval", 300)
+            try:
+                interval = int(self.settings.get("broadcast_interval", 300))
+            except:
+                interval = 300
+                
             # Sleep in chunks to allow graceful termination
-            for _ in range(max(1, int(interval))):
+            for _ in range(max(1, interval)):
                 if not self.is_running:
                     break
                 await asyncio.sleep(1.0)
+                
+            except Exception as loop_e:
+                logger.error(f"Critical error in broadcast loop for {self.session_id}: {loop_e}", exc_info=True)
+                await asyncio.sleep(5)

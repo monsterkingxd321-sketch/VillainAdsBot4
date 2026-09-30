@@ -84,16 +84,20 @@ def start_tunnel():
 def wait_for_tunnel_url(tunnel_proc):
     start_time = time.time()
     while time.time() - start_time < 30:
-        line = tunnel_proc.stdout.readline()
-        if not line:
+        try:
+            line = tunnel_proc.stdout.readline()
+            if not line:
+                break
+            stripped_line = line.strip()
+            if stripped_line:
+                print(f"[TUNNEL] {stripped_line}", flush=True)
+                
+            match = re.search(r"https://[a-zA-Z0-9.-]+\.loca\.lt", line)
+            if match:
+                return match.group(0)
+        except Exception as e:
+            print(f"Error reading tunnel output: {e}", flush=True)
             break
-        stripped_line = line.strip()
-        if stripped_line:
-            print(f"[TUNNEL] {stripped_line}", flush=True)
-            
-        match = re.search(r"https://[a-zA-Z0-9.-]+\.loca\.lt", line)
-        if match:
-            return match.group(0)
     return None
 
 def run_tunnel_and_bot():
