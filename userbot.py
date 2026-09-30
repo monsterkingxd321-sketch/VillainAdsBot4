@@ -2954,109 +2954,110 @@ class UserBot:
                     broadcast_messages = [m for m in broadcast_messages if m]
                     
                     if broadcast_messages:
-                    try:
-                        # Dynamically refresh groups so newly joined groups are automatically detected without restarting
-                        force_refresh = (time.time() - self.groups_cache_time > 60) or not self.groups_cache
-                        groups = await self.get_groups(force_refresh=force_refresh)
-                        
-                        sent_to_some = False
-                        msg_count_in_round = 0
-                        
-                        for g in groups:
-                            if not self.is_running:
-                                break
-                                
-                            # Check cached state in real-time
-                            if not self.settings.get("auto_spam"):
-                                break
-                                
-                            # Choose a random message from the multiple messages list
-                            current_msg = random.choice(broadcast_messages)
+                        try:
+                                # Dynamically refresh groups so newly joined groups are automatically detected without restarting
+                            force_refresh = (time.time() - self.groups_cache_time > 60) or not self.groups_cache
+                            groups = await self.get_groups(force_refresh=force_refresh)
                             
-                            # Parse Spintax, Normalize compatibility characters, and strip zero-width characters
-                            processed_msg = utils.parse_spintax(current_msg)
-                            processed_msg = utils.normalize_text(processed_msg)
-                            processed_msg = utils.make_message_unique(processed_msg)
+                            sent_to_some = False
+                            msg_count_in_round = 0
                             
-                            try:
-                                # Anti-Spam / Humanization: Simulate reading chat history before sending
-                                try:
-                                    async for _ in self.client.iter_messages(g.id, limit=2):
-                                        pass
-                                except Exception:
-                                    pass
-
-                                # Anti-Spam / Humanization: Simulate typing action for realism
-                                try:
-                                    async with self.client.action(g.id, 'typing'):
-                                        typing_delay = random.uniform(2.0, 5.0)
-                                        await asyncio.sleep(typing_delay)
-                                except Exception:
-                                    pass
+                            for g in groups:
+                                if not self.is_running:
+                                    break
                                     
-                                await self.client.send_message(g.id, processed_msg, parse_mode='html')
-                                sent_to_some = True
-                                msg_count_in_round += 1
+                                # Check cached state in real-time
+                                if not self.settings.get("auto_spam"):
+                                    break
+                                    
+                                # Choose a random message from the multiple messages list
+                                current_msg = random.choice(broadcast_messages)
                                 
-                                # Fast dynamic inter-group delay (user configurable, default 10s, min floor 1s)
-                                inter_delay = float(self.settings.get("inter_group_delay", 10.0))
-                                inter_delay = max(1.0, inter_delay)
+                                # Parse Spintax, Normalize compatibility characters, and strip zero-width characters
+                                processed_msg = utils.parse_spintax(current_msg)
+                                processed_msg = utils.normalize_text(processed_msg)
+                                processed_msg = utils.make_message_unique(processed_msg)
                                 
-                                # Add minor jitter variance (+/- 10%)
-                                sleep_jitter = random.uniform(-0.10, 0.10) * inter_delay
-                                delay_to_sleep = max(1.0, inter_delay + sleep_jitter)
-                                await asyncio.sleep(delay_to_sleep)
-
-                            except PeerFloodError:
-                                logger.warning(f"⚠️ PeerFloodError on userbot {self.session_id}! Telegram rate-limit detected. Auto Broadcast PAUSED to protect account.")
-                                self.settings["auto_spam"] = False
+                                try:
+                                    # Anti-Spam / Humanization: Simulate reading chat history before sending
+                                    try:
+                                        async for _ in self.client.iter_messages(g.id, limit=2):
+                                            pass
+                                    except Exception:
+                                        pass
+    
+                                    # Anti-Spam / Humanization: Simulate typing action for realism
+                                    try:
+                                        async with self.client.action(g.id, 'typing'):
+                                            typing_delay = random.uniform(2.0, 5.0)
+                                            await asyncio.sleep(typing_delay)
+                                    except Exception:
+                                        pass
+                                        
+                                    await self.client.send_message(g.id, processed_msg, parse_mode='html')
+                                    sent_to_some = True
+                                    msg_count_in_round += 1
+                                    
+                                    # Fast dynamic inter-group delay (user configurable, default 10s, min floor 1s)
+                                    inter_delay = float(self.settings.get("inter_group_delay", 10.0))
+                                    inter_delay = max(1.0, inter_delay)
+                                    
+                                    # Add minor jitter variance (+/- 10%)
+                                    sleep_jitter = random.uniform(-0.10, 0.10) * inter_delay
+                                    delay_to_sleep = max(1.0, inter_delay + sleep_jitter)
+                                    await asyncio.sleep(delay_to_sleep)
+    
+                                except PeerFloodError:
+                                    logger.warning(f"⚠️ PeerFloodError on userbot {self.session_id}! Telegram rate-limit detected. Auto Broadcast PAUSED to protect account.")
+                                    self.settings["auto_spam"] = False
+                                    sess_data = database.get_session(self.session_id)
+                                    if sess_data:
+                                        sess_data.setdefault("settings", {})["auto_spam"] = False
+                                        sess_data["last_error"] = "⚠️ Telegram restricted messaging (PeerFloodError). Auto Broadcast paused to protect your account."
+                                        database.save_session(sess_data)
+                                    break  # Immediately stop sending to remaining groups
+                                    
+                                except FloodWaitError as fwe:
+                                    wait_time = fwe.seconds + 5
+                                    logger.warning(f"FloodWaitError on userbot {self.session_id}: Sleeping for {wait_time}s")
+                                    await asyncio.sleep(wait_time)
+                                    
+                                except SlowModeWaitError as smwe:
+                                    logger.info(f"Group {g.id} slow mode wait: {smwe.seconds}s. Skipping...")
+                                    await asyncio.sleep(min(10, smwe.seconds))
+                                    
+                                except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError, ValueError) as chat_err:
+                                    logger.debug(f"Cannot write to group {g.id} ({chat_err.__class__.__name__}). Skipping.")
+                                    
+                                except Exception as e:
+                                    err_class = e.__class__.__name__
+                                    if err_class in ("UserDeactivatedError", "AuthKeyUnregisteredError", "SessionRevokedError", "SessionExpiredError"):
+                                        logger.error(f"Userbot {self.session_id} broadcast failed with auth error: {e}. Cleaning up.")
+                                        await self._mark_unauthorized_and_cleanup()
+                                        break
+                                    else:
+                                        logger.warning(f"Failed to send broadcast message to group {g.id}: {e}")
+                                    
+                            if sent_to_some:
                                 sess_data = database.get_session(self.session_id)
                                 if sess_data:
-                                    sess_data.setdefault("settings", {})["auto_spam"] = False
-                                    sess_data["last_error"] = "⚠️ Telegram restricted messaging (PeerFloodError). Auto Broadcast paused to protect your account."
+                                    sess_data["stats"]["broadcast_count"] = sess_data["stats"].get("broadcast_count", 0) + 1
                                     database.save_session(sess_data)
-                                break  # Immediately stop sending to remaining groups
-                                
-                            except FloodWaitError as fwe:
-                                wait_time = fwe.seconds + 5
-                                logger.warning(f"FloodWaitError on userbot {self.session_id}: Sleeping for {wait_time}s")
-                                await asyncio.sleep(wait_time)
-                                
-                            except SlowModeWaitError as smwe:
-                                logger.info(f"Group {g.id} slow mode wait: {smwe.seconds}s. Skipping...")
-                                await asyncio.sleep(min(10, smwe.seconds))
-                                
-                            except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError, ValueError) as chat_err:
-                                logger.debug(f"Cannot write to group {g.id} ({chat_err.__class__.__name__}). Skipping.")
-                                
-                            except Exception as e:
-                                err_class = e.__class__.__name__
-                                if err_class in ("UserDeactivatedError", "AuthKeyUnregisteredError", "SessionRevokedError", "SessionExpiredError"):
-                                    logger.error(f"Userbot {self.session_id} broadcast failed with auth error: {e}. Cleaning up.")
-                                    await self._mark_unauthorized_and_cleanup()
-                                    break
-                                else:
-                                    logger.warning(f"Failed to send broadcast message to group {g.id}: {e}")
-                                
-                        if sent_to_some:
-                            sess_data = database.get_session(self.session_id)
-                            if sess_data:
-                                sess_data["stats"]["broadcast_count"] = sess_data["stats"].get("broadcast_count", 0) + 1
-                                database.save_session(sess_data)
-                    except Exception as e:
-                        logger.error(f"Error inside userbot broadcast loop execution: {e}")
+                        except Exception as e:
+                            logger.error(f"Error inside userbot broadcast loop execution: {e}")
             
-            # Fetch broadcast interval from in-memory settings (default 300s)
-            try:
-                interval = int(self.settings.get("broadcast_interval", 300))
-            except:
-                interval = 300
-                
-            # Sleep in chunks to allow graceful termination
-            for _ in range(max(1, interval)):
-                if not self.is_running:
-                    break
-                await asyncio.sleep(1.0)
+                # Fetch broadcast interval from in-memory settings (default 300s)
+                try:
+                    interval = int(self.settings.get("broadcast_interval", 300))
+                except:
+                    interval = 300
+                    
+                # Sleep in chunks to allow graceful termination
+                for _ in range(max(1, interval)):
+                    if not self.is_running:
+                        break
+                    await asyncio.sleep(1.0)
+
                 
             except Exception as loop_e:
                 logger.error(f"Critical error in broadcast loop for {self.session_id}: {loop_e}", exc_info=True)
