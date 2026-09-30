@@ -327,7 +327,7 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             f"<blockquote><b>» 🤖 Userbot Control Panel</b>\n\n"
             f"👤 <b>Account :</b> <b>{name}</b>\n"
             f"⚡ <b>Status :</b> {status_emoji} <b>{status_text}</b>\n"
-            f"🔄 <b>Auto-Spam :</b> <b>{auto_spam}</b>\n"
+            f"🔄 <b>Auto Broadcast :</b> <b>{auto_spam}</b>\n"
             f"👋 <b>Auto-Welcome :</b> <b>{auto_welcome}</b>\n"
             f"💬 <b>Tag Auto-Reply :</b> <b>{auto_reply}</b>\n"
             f"👥 <b>Auto-Contact :</b> <b>{auto_add_contact}</b></blockquote>"
@@ -527,7 +527,7 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
         f"<b>📊 System Overview :</b>\n"
         f"• Total Linked Bots : <b>{total_slots}</b>\n"
         f"• Active : <b>🟢 {running_bots}</b> | Stopped : <b>🔴 {stopped_bots}</b>\n"
-        f"• Auto-Spam (All) : <b>{spam_state_display}</b>\n"
+        f"• Auto Broadcast (All) : <b>{spam_state_display}</b>\n"
         f"• Auto-Welcome (All) : <b>{welcome_state_display}</b>\n"
         f"• Tag Auto-Reply (All) : <b>{reply_state_display}</b>\n"
         f"• Auto-Contact (All) : <b>{add_contact_state_display}</b>\n\n"
@@ -566,7 +566,7 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
         ],
         # Row 2: Auto Feature Toggles (All)
         [
-            utils.styled_button(f"🔄 Auto-Spam (All): {spam_state_display}", "all_slots_toggle_spam", style="primary"),
+            utils.styled_button(f"🔄 Auto Broadcast (All): {spam_state_display}", "all_slots_toggle_spam", style="primary"),
             utils.styled_button(f"👋 Auto-Welcome (All): {welcome_state_display}", "all_slots_toggle_welcome", style="primary")
         ],
         [
@@ -1880,7 +1880,7 @@ def register_handlers(client):
             userbot_manager.reload_bot_settings(s["phone"])
             
         state_word = "🟢 On" if new_state else "🔴 Off"
-        feature_name = "Auto-Spam" if feature == "spam" else ("Auto-Welcome" if feature == "welcome" else "Auto-Contact")
+        feature_name = "Auto Broadcast" if feature == "spam" else ("Auto-Welcome" if feature == "welcome" else "Auto-Contact")
         await show_all_slots_dashboard(event, user_id, flash_message=f"<blockquote><b>» ⚙️ Settings Updated</b>\n\n{feature_name} Turned <b>{state_word}</b> For All Bots!</blockquote>", fetch_all=is_system_all_mode(event.sender_id))
 
     @client.on(events.CallbackQuery(pattern=r"^set_run_timer_(.+)$"))
@@ -2387,7 +2387,7 @@ def register_handlers(client):
             f"• <b>📞 Account :</b> <code>{phone}</code>\n"
             f"• <b>🏷️ Name :</b> <b>{sess.get('name', 'Userbot')}</b>\n"
             f"• <b>🔗 Username :</b> @{sess.get('username', 'None')}\n\n"
-            f"<b>📢 Auto-Spam Settings :</b>\n"
+            f"<b>📢 Auto Broadcast Settings :</b>\n"
             f"• <b>Status :</b> {spam_status}\n"
             f"• <b>Interval :</b> <b>{interval}s</b> | <b>Delay :</b> <b>{delay}s</b>\n"
             f"• <b>Broadcast Msg :</b>\n"
@@ -2446,7 +2446,7 @@ def register_handlers(client):
             userbot_manager.reload_bot_settings(phone)
             
             state_word = "🟢 On" if settings[db_key] else "🔴 Off"
-            feature_name = "Auto-Spam" if feature == "spam" else ("Auto-Welcome" if feature == "welcome" else ("Auto-Contact" if feature == "add_contact" else "Tag Auto-Reply"))
+            feature_name = "Auto Broadcast" if feature == "spam" else ("Auto-Welcome" if feature == "welcome" else ("Auto-Contact" if feature == "add_contact" else "Tag Auto-Reply"))
             flash = f"<blockquote><b>» ⚙️ Settings Updated</b>\n\n{feature_name} Is Now <b>{state_word}</b></blockquote>"
             
         await show_bot_dashboard(event, phone, user_id, flash_message=flash)

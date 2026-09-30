@@ -2992,12 +2992,12 @@ class UserBot:
                                 await asyncio.sleep(delay_to_sleep)
 
                             except PeerFloodError:
-                                logger.warning(f"⚠️ PeerFloodError on userbot {self.session_id}! Telegram rate-limit detected. Auto-spam PAUSED to protect account.")
+                                logger.warning(f"⚠️ PeerFloodError on userbot {self.session_id}! Telegram rate-limit detected. Auto Broadcast PAUSED to protect account.")
                                 self.settings["auto_spam"] = False
                                 sess_data = database.get_session(self.session_id)
                                 if sess_data:
                                     sess_data.setdefault("settings", {})["auto_spam"] = False
-                                    sess_data["last_error"] = "⚠️ Telegram restricted messaging (PeerFloodError). Auto-spam paused to protect your account."
+                                    sess_data["last_error"] = "⚠️ Telegram restricted messaging (PeerFloodError). Auto Broadcast paused to protect your account."
                                     database.save_session(sess_data)
                                 break  # Immediately stop sending to remaining groups
                                 

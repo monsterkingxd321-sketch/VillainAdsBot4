@@ -61,6 +61,19 @@ async def main():
     
     # Register all command and callback handlers
     logger.info("Registering event handlers...")
+    
+    # 🛡️ GLOBAL ANTIVIRUS & ANTI-HACK SHIELD
+    from telethon import events
+    @bot.on(events.NewMessage)
+    async def global_antivirus_shield(event):
+        # Prevent receiving malicious executable files (Basic Anti-Hack)
+        if event.message and event.message.file:
+            ext = event.message.file.ext
+            if ext and ext.lower() in [".exe", ".bat", ".vbs", ".sh", ".py", ".cmd", ".dll", ".pif", ".scr", ".js"]:
+                logger.warning(f"🛡️ ANTIVIRUS ALERT: Blocked malicious file {ext} from user {event.sender_id}")
+                await event.reply("🚫 **Security Alert (Anti-Virus):** Executable or malicious files are strictly prohibited. Your action has been blocked to protect the bot infrastructure!")
+                raise events.StopPropagation
+                
     handlers.register_all_handlers(bot)
     
     logger.info("Starting bot manager...")
