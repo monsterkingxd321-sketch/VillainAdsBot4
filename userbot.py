@@ -1828,6 +1828,15 @@ class UserBot:
                 os.makedirs(os.path.dirname(session_file), exist_ok=True)
                 with open(session_file, "wb") as f:
                     f.write(session_bytes)
+                
+                # Delete any stale SQLite journal/WAL files to prevent mismatch corruption
+                for suffix in ["-wal", "-shm", "-journal"]:
+                    try:
+                        if os.path.exists(session_file + suffix):
+                            os.remove(session_file + suffix)
+                    except:
+                        pass
+                        
                 logger.info(f"Restored session file from MongoDB to {session_file}")
             except Exception as e:
                 logger.error(f"Failed to restore session file from MongoDB: {e}")
@@ -1854,13 +1863,12 @@ class UserBot:
         )
         self.client.parse_mode = "html"
         
-        # Optimize Telethon SQLite session speed and prevent database locks
+        # SQLite optimizations: use MEMORY journal to avoid detached WAL files
         try:
             conn = self.client.session._conn
             if conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA journal_mode=MEMORY;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
-                logger.info(f"Enabled WAL mode for userbot SQLite session: {session_file}")
         except Exception as sqlite_opt_err:
             logger.warning(f"Could not optimize SQLite session parameters: {sqlite_opt_err}")
         

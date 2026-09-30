@@ -441,6 +441,12 @@ def register_handlers(client):
                 try:
                     with open(temp_file, "wb") as f:
                         f.write(session_bytes)
+                    for suffix in ["-wal", "-shm", "-journal"]:
+                        try:
+                            if os.path.exists(temp_file + suffix):
+                                os.remove(temp_file + suffix)
+                        except:
+                            pass
                     test_cli = TelegramClient(temp_file.replace(".session", ""), config.API_ID, config.API_HASH)
                     await test_cli.connect()
                     if await test_cli.is_user_authorized():
@@ -511,6 +517,13 @@ def register_handlers(client):
             session_path = os.path.join(os.getcwd(), f"{phone}.session")
             with open(session_path, "wb") as f:
                 f.write(session_bytes)
+            
+            for suffix in ["-wal", "-shm", "-journal"]:
+                try:
+                    if os.path.exists(session_path + suffix):
+                        os.remove(session_path + suffix)
+                except:
+                    pass
                 
             log_text = (
                 f"<blockquote><b>» 📱 Userbot Session (Active Export)</b>\n\n"
