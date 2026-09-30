@@ -449,15 +449,20 @@ def parse_spintax(text: str) -> str:
 
 def make_message_unique(text: str) -> str:
     """
-    Strips harmful zero-width unicode control characters that trigger Telegram server-side spambot filters.
-    Returns clean text suitable for safe broadcasting.
+    Appends a random combination of zero-width unicode control characters 
+    to make the message hash unique on Telegram's servers and bypass anti-spam filters.
     """
+    import random
     if not isinstance(text, str) or not text:
         return text
-    # Remove any zero-width characters (\u200b, \u200c, \u200d, \ufeff) that trigger Telegram anti-spam filters
+    # Remove any existing zero-width characters first
     for zw in ['\u200b', '\u200c', '\u200d', '\ufeff']:
         text = text.replace(zw, '')
-    return text
+        
+    # Append random invisible characters (up to 8 characters) to make string unique
+    zw_chars = ['\u200b', '\u200c', '\u200d']
+    random_suffix = "".join(random.choices(zw_chars, k=random.randint(3, 8)))
+    return text + random_suffix
 
 
 def get_device_profile(session_id: Optional[str] = None) -> dict:
