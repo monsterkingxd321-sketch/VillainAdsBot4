@@ -2981,20 +2981,20 @@ class UserBot:
                                 try:
                                     # Anti-Spam / Humanization: Simulate reading chat history before sending
                                     try:
-                                        async for _ in self.client.iter_messages(g.id, limit=2):
+                                        async for _ in self.client.iter_messages(g.input_entity, limit=2):
                                             pass
                                     except Exception:
                                         pass
     
                                     # Anti-Spam / Humanization: Simulate typing action for realism
                                     try:
-                                        async with self.client.action(g.id, 'typing'):
+                                        async with self.client.action(g.input_entity, 'typing'):
                                             typing_delay = random.uniform(2.0, 5.0)
                                             await asyncio.sleep(typing_delay)
                                     except Exception:
                                         pass
                                         
-                                    await self.client.send_message(g.id, processed_msg, parse_mode='html')
+                                    await self.client.send_message(g.input_entity, processed_msg, parse_mode='html')
                                     sent_to_some = True
                                     msg_count_in_round += 1
                                     
