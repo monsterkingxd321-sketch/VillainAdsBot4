@@ -82,7 +82,10 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button("📤 Export All Sessions", "admin_export_all_sessions", style="success")
         ],
         [
-            utils.styled_button("📊 Set Commission", "admin_set_comm", style="primary"),
+            utils.styled_button("🎁 Gift Slots", "admin_gift_slots", style="success"),
+            utils.styled_button("📊 Set Commission", "admin_set_comm", style="primary")
+        ],
+        [
             utils.styled_button("📢 Broadcast", "admin_broadcast", style="primary"),
             utils.styled_button(maint_text, "admin_toggle_maint", style="primary")
         ],
@@ -111,6 +114,29 @@ def register_handlers(client):
         if await utils.guard(event, client):
             return
         await show_admin_panel(event, event.sender_id)
+
+    @client.on(events.CallbackQuery(pattern="^admin_gift_slots$"))
+    async def admin_gift_slots_menu(event):
+        if not check_admin(event.sender_id): return
+        text = "🎁 **Gift Slots Menu**\n\nChoose an option:"
+        buttons = [
+            [utils.styled_button("👤 Gift Slot to User", "admin_gift_single", style="primary")],
+            [utils.styled_button("🌍 Gift to All Users", "admin_gift_all", style="danger")],
+            [utils.styled_button("🔙 Back", "menu_admin", style="primary")]
+        ]
+        await event.edit(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern="^admin_gift_single$"))
+    async def admin_gift_single_cb(event):
+        if not check_admin(event.sender_id): return
+        _admin_action_states[event.sender_id] = "WAITING_FOR_GIFT_USERID"
+        await event.reply("✏️ **Send the User ID** to whom you want to gift slots.\n\nType /start to cancel.")
+
+    @client.on(events.CallbackQuery(pattern="^admin_gift_all$"))
+    async def admin_gift_all_cb(event):
+        if not check_admin(event.sender_id): return
+        _admin_action_states[event.sender_id] = "WAITING_FOR_GIFT_ALL_SLOTS"
+        await event.reply("✏️ **Send the number of slots** to gift to ALL users.\n\nType /start to cancel.")
 
     @client.on(events.CallbackQuery(pattern="^menu_admin$"))
     async def admin_menu_callback(event):
@@ -1278,8 +1304,67 @@ def register_handlers(client):
         val_str = (event.text or event.raw_text or "").strip()
         
         try:
+            # Gift Slots feature
+            if action == "WAITING_FOR_GIFT_USERID":
+                try:
+                    target_uid = int(val_str)
+                except ValueError:
+                    await event.reply("❌ Invalid User ID. Please enter a valid number.")
+                    return
+                target_user = database.get_user(target_uid)
+                if not target_user:
+                    await event.reply("❌ **User not found** in the database.")
+                    return
+                _admin_plan_temp.setdefault(user_id, {})["gift_target"] = target_uid
+                _admin_action_states[user_id] = "WAITING_FOR_GIFT_USER_SLOTS"
+                await event.reply(f"✅ User found: `{target_uid}`\n\n✏️ **Send the number of slots** you want to gift them.")
+                return
+
+            elif action == "WAITING_FOR_GIFT_USER_SLOTS":
+                try:
+                    slots_to_gift = int(val_str)
+                except ValueError:
+                    await event.reply("❌ Invalid number. Please enter a valid integer.")
+                    return
+                if slots_to_gift <= 0: raise ValueError("Slots must be positive")
+                target_uid = _admin_plan_temp.get(user_id, {}).get("gift_target")
+                if target_uid:
+                    target_user = database.get_user(target_uid)
+                    if target_user:
+                        target_user["allowed_slots"] = target_user.get("allowed_slots", 0) + slots_to_gift
+                        database.save_user(target_user)
+                        await event.reply(f"✅ **Successfully gifted {slots_to_gift} slots** to `{target_uid}`!")
+                        try:
+                            await client.send_message(target_uid, f"🎉 **Congratulations!**\n\nYou have been gifted **{slots_to_gift} Userbot Slots** by the Administrator! Enjoy your new slots! 🎁")
+                        except Exception as e:
+                            logger.error(f"Failed to send gift notification: {e}")
+                _admin_plan_temp.pop(user_id, None)
+                return
+
+            elif action == "WAITING_FOR_GIFT_ALL_SLOTS":
+                try:
+                    slots_to_gift = int(val_str)
+                except ValueError:
+                    await event.reply("❌ Invalid number. Please enter a valid integer.")
+                    return
+                if slots_to_gift <= 0: raise ValueError("Slots must be positive")
+                all_users = database.get_all_users()
+                count = 0
+                await event.reply(f"⏳ **Gifting {slots_to_gift} slots** to all {len(all_users)} users... Please wait.")
+                for u in all_users:
+                    u["allowed_slots"] = u.get("allowed_slots", 0) + slots_to_gift
+                    database.save_user(u)
+                    count += 1
+                    try:
+                        # Schedule message in background to not block the loop
+                        client.loop.create_task(client.send_message(u["user_id"], f"🎉 **Congratulations!**\n\nYou and all other users have been gifted **{slots_to_gift} Userbot Slots** by the Administrator! Enjoy! 🎁"))
+                    except Exception:
+                        pass
+                await event.reply(f"✅ **Successfully gifted {slots_to_gift} slots** to all {count} users!")
+                return
+
             # 0.1 Plan Days
-            if action == "WAITING_FOR_PLAN_DAYS":
+            elif action == "WAITING_FOR_PLAN_DAYS":
                 days = int(val_str)
                 if days <= 0:
                     raise ValueError("Days must be positive")
