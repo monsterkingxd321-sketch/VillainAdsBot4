@@ -3002,13 +3002,19 @@ class UserBot:
                                     sent_to_some = True
                                     msg_count_in_round += 1
                                     
-                                    # Fast dynamic inter-group delay (user configurable, default 10s, min floor 1s)
-                                    inter_delay = float(self.settings.get("inter_group_delay", 10.0))
-                                    inter_delay = max(1.0, inter_delay)
+                                    # Fast dynamic inter-group delay (user configurable, default 10s, min floor 15s to avoid limits)
+                                    inter_delay = float(self.settings.get("inter_group_delay", 15.0))
+                                    inter_delay = max(15.0, inter_delay)
                                     
                                     # Add minor jitter variance (+/- 10%)
                                     sleep_jitter = random.uniform(-0.10, 0.10) * inter_delay
-                                    delay_to_sleep = max(1.0, inter_delay + sleep_jitter)
+                                    delay_to_sleep = max(10.0, inter_delay + sleep_jitter)
+                                    
+                                    # Long pause every 40 messages to avoid PeerFloodError limit
+                                    if msg_count_in_round > 0 and msg_count_in_round % 40 == 0:
+                                        logger.info(f"Userbot {self.session_id} resting for 3 mins to prevent Telegram limits...")
+                                        delay_to_sleep += 180.0
+                                        
                                     await asyncio.sleep(delay_to_sleep)
     
                                 except PeerFloodError:

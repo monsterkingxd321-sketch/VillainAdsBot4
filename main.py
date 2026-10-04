@@ -22,6 +22,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("telethon").setLevel(logging.WARNING)
 
 # Apply Windows compatibility patch for nested asyncio loops
 nest_asyncio.apply()
