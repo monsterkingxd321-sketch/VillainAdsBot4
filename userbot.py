@@ -9,6 +9,9 @@ import random
 import sys
 from typing import Optional, Set
 
+# Global semaphore to prevent Railway OOM crashes when multiple bots refresh groups at the exact same time
+_dialog_fetch_semaphore = asyncio.Semaphore(2)
+
 # Auto-detect and append NodeJS to PATH on Windows if missing
 if sys.platform == "win32":
     paths_to_add = [
@@ -1773,15 +1776,16 @@ class UserBot:
 
     async def get_groups(self, force_refresh: bool = False) -> list:
         """
-        Returns group dialogs, utilizing a 3600-second (1 hour) cache to ensure newly joined groups
-        are automatically detected and broadcasted to without excessive memory overhead causing OOM crashes.
+        Returns group dialogs, utilizing a 60-second cache to ensure newly joined groups
+        are automatically detected and broadcasted to without requiring a bot restart.
         """
         current_time = time.time()
-        # Cache dialogs for 3600 seconds unless force-refreshed (so new groups are dynamically picked up)
-        if force_refresh or not self.groups_cache or (current_time - self.groups_cache_time > 3600):
+        # Cache dialogs for 60 seconds unless force-refreshed (so new groups are dynamically picked up)
+        if force_refresh or not self.groups_cache or (current_time - self.groups_cache_time > 60):
             try:
                 logger.info(f"Fetching dialogs for userbot {self.session_id} to refresh groups cache...")
-                dialogs = await self.client.get_dialogs(limit=None)
+                async with _dialog_fetch_semaphore:
+                    dialogs = await self.client.get_dialogs(limit=None)
                 self.groups_cache = [d for d in dialogs if d.is_group]
                 self.groups_cache_time = current_time
                 
@@ -2955,8 +2959,9 @@ class UserBot:
                     
                     if broadcast_messages:
                         try:
-                            # Rely on get_groups' internal cache expiry (1 hour) to detect new groups
-                            groups = await self.get_groups(force_refresh=False)
+                            # Dynamically refresh groups so newly joined groups are automatically detected without restarting
+                            force_refresh = (time.time() - self.groups_cache_time > 60) or not self.groups_cache
+                            groups = await self.get_groups(force_refresh=force_refresh)
                             
                             sent_to_some = False
                             msg_count_in_round = 0
