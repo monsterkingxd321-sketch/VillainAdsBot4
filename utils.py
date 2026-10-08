@@ -263,7 +263,7 @@ def get_allowed_slots(user_id: int) -> int:
     now = time.time()
     subs = user.get("subscriptions", [])
     active_subs = []
-    active_slots = 0
+    active_slots = user.get("allowed_slots", 0)
     
     for sub in subs:
         if sub.get("expires_at", 0) > now:
