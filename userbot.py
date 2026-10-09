@@ -108,7 +108,7 @@ except ImportError:
 from youtubesearchpython import VideosSearch, Playlist
 import aiohttp
 from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioPiped
+from pytgcalls.types import MediaStream, VideoQuality
 import config
 
 API_URL = getattr(config, "MEOW_API_URL", os.environ.get("MEOW_API_URL", "https://music.yukiapi.site"))
@@ -1387,19 +1387,19 @@ class UserBot:
             try:
                 await pytg.join_group_call(
                     full_chat_id,
-                    AudioPiped(silence_file)
+                    MediaStream(silence_file)
                 )
             except Exception as join_err:
                 err_str = str(join_err).lower()
                 if "already_joined" in err_str or "already in" in err_str or "node" in err_str:
                     try:
-                        await pytg.change_stream(full_chat_id, AudioPiped(silence_file))
+                        await pytg.change_stream(full_chat_id, MediaStream(silence_file))
                     except Exception:
                         pass
                 else:
                     logger.warning(f"join_group_call attempt error: {join_err}")
                     try:
-                        await pytg.change_stream(full_chat_id, AudioPiped(silence_file))
+                        await pytg.change_stream(full_chat_id, MediaStream(silence_file))
                     except Exception as ch_err:
                         return False, f"Failed to join VC: {join_err}", None
             
@@ -1596,7 +1596,7 @@ class UserBot:
                     logger.warning(f"leave_group_call error: {leave_err} — falling back to silence+mute")
                     try:
                         silence_file = await generate_silence()
-                        await pytg.change_stream(target_chat, AudioPiped(silence_file))
+                        await pytg.change_stream(target_chat, MediaStream(silence_file))
                         await pytg.mute_stream(target_chat)
                         self.is_muted = True
                     except Exception:
@@ -1676,7 +1676,7 @@ class UserBot:
             pytg = await self.get_pytgcalls()
             
             if play_type == "video":
-                from pytgcalls.types import AudioVideoPiped, VideoParameters
+                from pytgcalls.types import MediaStream, VideoQuality
                 w, h = 640, 360 # Default fallback
                 has_video_track = False
                 try:
@@ -1697,14 +1697,13 @@ class UserBot:
                     logger.warning(f"Could not extract resolution: {e}")
                     
                 if has_video_track:
-                    video_params = VideoParameters(width=w, height=h)
-                    stream_obj = AudioVideoPiped(file_path, video_parameters=video_params)
-                    logger.info(f"Streaming video (AudioVideoPiped): {file_path} at {w}x{h}")
+                    stream_obj = MediaStream(file_path)
+                    logger.info(f"Streaming video (MediaStream): {file_path} at {w}x{h}")
                 else:
                     logger.info(f"No video track in {file_path}, falling back to AudioPiped seamlessly")
-                    stream_obj = AudioPiped(file_path)
+                    stream_obj = MediaStream(file_path)
             else:
-                stream_obj = AudioPiped(file_path)
+                stream_obj = MediaStream(file_path)
                 
             # Always try change_stream first — pytgcalls handles it whether
             # we're already in VC or not (after .end, pytgcalls may still be
@@ -1719,7 +1718,7 @@ class UserBot:
                 logger.warning(f"change_stream failed ({cs_err}), trying join_group_call...")
                 # If video failed with video source error, fallback to AudioPiped
                 if play_type == "video" and ("video source" in cs_err_str or "no video" in cs_err_str):
-                    stream_obj = AudioPiped(file_path)
+                    stream_obj = MediaStream(file_path)
                 try:
                     await pytg.join_group_call(actual_chat, stream_obj)
                     self.joined_vcs.add(actual_chat)
