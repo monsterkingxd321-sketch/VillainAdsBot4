@@ -90,3 +90,16 @@ python3 main.py
 - **Clear RAM Cache:** `sudo sysctl -w vm.drop_caches=3`
 - **Kill all tmux sessions:** `tmux kill-server`
 - **List tmux sessions:** `tmux ls`
+
+---
+
+## ⚠️ Troubleshooting (For Minimal VPS / Docker Containers)
+
+If you are running this on a completely fresh, minimal container (like a Docker sandbox) where commands like `sudo`, `python3`, or `nano` are missing, it means you are logged in as the `root` user and the OS is extremely stripped down.
+
+Run these exact commands instead of the ones in Step 1 & 2 (do not use `sudo`):
+```bash
+apt-get update -y && apt-get upgrade -y
+apt-get install -y python3 python3-venv python3-pip ffmpeg git nano tmux
+```
+After that, continue from **Step 3**.
