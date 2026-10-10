@@ -51,6 +51,33 @@ def check_single_instance():
         print("\n[X] ERROR: Failed to acquire lock. Another instance might be running.\n")
         sys.exit(1)
 
+async def cleanup_loop():
+    """Background task to optimize RAM usage and clean up old downloaded media to save VPS space."""
+    import time
+    import gc
+    while True:
+        try:
+            # 1. Force Python Garbage Collection to reduce RAM usage on VPS
+            gc.collect()
+            
+            # 2. Disk Space Cleanup: Delete files older than 2 hours in 'downloads' folder
+            downloads_dir = "downloads"
+            if os.path.exists(downloads_dir):
+                now = time.time()
+                for fname in os.listdir(downloads_dir):
+                    fpath = os.path.join(downloads_dir, fname)
+                    if os.path.isfile(fpath):
+                        if os.stat(fpath).st_mtime < now - 7200:
+                            try:
+                                os.remove(fpath)
+                                logger.info(f"Optimized VPS Space: Deleted old cached media {fname}")
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.error(f"Cleanup loop error: {e}")
+            
+        await asyncio.sleep(600)  # Run every 10 minutes
+
 async def main():
     check_single_instance()
     logger.info("Initializing database connection...")
@@ -94,6 +121,11 @@ async def main():
     t2 = asyncio.create_task(start_gmail_polling(bot))
     background_tasks.add(t2)
     t2.add_done_callback(background_tasks.discard)
+    
+    # Start VPS Optimization (RAM/Space Cleanup) loop
+    t3 = asyncio.create_task(cleanup_loop())
+    background_tasks.add(t3)
+    t3.add_done_callback(background_tasks.discard)
     
     try:
         # Keep the bot running and auto-reconnect if it disconnects

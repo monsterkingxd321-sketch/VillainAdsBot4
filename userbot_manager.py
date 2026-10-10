@@ -598,3 +598,25 @@ def get_running_bot(session_id: str) -> Optional[UserBot]:
     Returns the running UserBot instance for a session_id if it exists.
     """
     return find_running_bot(session_id)
+
+async def broadcast_branding_update():
+    """
+    Applies or removes branding for all running userbots based on the latest global settings.
+    """
+    global_settings = database.get_global_settings()
+    branding_username = global_settings.get("branding_username")
+    
+    from userbot import apply_branding
+    
+    all_sessions = database.get_sessions()
+    for s in all_sessions:
+        phone = s.get("phone")
+        if not phone: continue
+        
+        bot = find_running_bot(phone)
+        if bot and bot.client and bot.client.is_connected():
+            try:
+                # apply_branding handles both enabling and disabling because it reads from global_settings
+                await apply_branding(bot.client, branding_username, s)
+            except Exception as e:
+                logger.error(f"Failed to broadcast branding to {phone}: {e}")

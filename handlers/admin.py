@@ -1893,6 +1893,11 @@ def register_handlers(client):
             
         if success:
             database.save_global_settings(global_settings)
+            
+            if action in ("WAITING_FOR_SET_BU", "WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT"):
+                import userbot_manager
+                client.loop.create_task(userbot_manager.broadcast_branding_update())
+                
             await event.reply(utils.get_text("admin_updated", lang))
             if action in ("WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT"):
                 await show_branding_settings(event, user_id)
@@ -2063,6 +2068,9 @@ def register_handlers(client):
         key = f"branding_{element}_enabled"
         global_settings[key] = not global_settings.get(key, True)
         database.save_global_settings(global_settings)
+        
+        import userbot_manager
+        client.loop.create_task(userbot_manager.broadcast_branding_update())
         
         await show_branding_settings(event, user_id)
 
