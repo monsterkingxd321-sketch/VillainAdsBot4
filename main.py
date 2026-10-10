@@ -14,7 +14,7 @@ os.makedirs(config.USER_DATA_DIR, exist_ok=True)
 
 # Configure logging to console and a log file
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING, # Changed to WARNING to reduce VPS load and terminal clutter
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -22,7 +22,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("telethon").setLevel(logging.WARNING)
+# Keep telethon at WARNING/ERROR to prevent spam
+logging.getLogger("telethon").setLevel(logging.ERROR)
+logging.getLogger("pytgcalls").setLevel(logging.ERROR)
+logging.getLogger("ntgcalls").setLevel(logging.ERROR)
 
 # Apply Windows compatibility patch for nested asyncio loops
 nest_asyncio.apply()
