@@ -264,6 +264,15 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
     text += (
         "\n💡 <i>Select A Bot Below To Open Its Control Panel Or Tap <b>All Slots</b>.</i></blockquote>"
     )
+    
+    allowed = utils.get_allowed_slots(user_id)
+    if len(sessions) < allowed:
+        nth = len(sessions) + 1
+        suffix = "nd" if nth == 2 else "rd" if nth == 3 else "th"
+        if nth == 1: suffix = "st"
+        buttons.append([
+            utils.styled_button(f"➕ Connect {nth}{suffix} Userbot", "menu_add_bot", style="success")
+        ])
         
     is_managing_other = (str(user_id) != str(sender_id)) or (sender_id in _admin_impersonation)
     if is_managing_other:
@@ -2235,6 +2244,7 @@ def register_handlers(client):
     # ------------------ Navigation ------------------
     @client.on(events.CallbackQuery(pattern="^menu_my_bots$"))
     async def bots_list_callback(event):
+        await event.answer()
         # Always clear impersonation so caller always sees their OWN bots
         _admin_impersonation.pop(event.sender_id, None)
         _admin_impersonation.pop(str(event.sender_id), None)
@@ -2242,6 +2252,7 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern=r"^select_bot_(.+)$"))
     async def select_bot_callback(event):
+        await event.answer()
         phone = event.pattern_match.group(1)
         await show_bot_dashboard(event, phone, event.sender_id)
 

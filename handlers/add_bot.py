@@ -97,6 +97,7 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern="^menu_add_bot$"))
     async def add_bot_start(event):
+        await event.answer()
         user_id = event.sender_id
         user = database.get_user(user_id)
         if not user:
@@ -135,6 +136,7 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern="^menu_add_bot_phone$"))
     async def add_bot_phone_start(event):
+        await event.answer()
         user_id = event.sender_id
         user = database.get_user(user_id)
         lang = user.get("language", "en") if user else "en"
@@ -156,6 +158,7 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern="^menu_add_bot_session$"))
     async def add_bot_session_start(event):
+        await event.answer()
         user_id = event.sender_id
         user = database.get_user(user_id)
         lang = user.get("language", "en") if user else "en"
