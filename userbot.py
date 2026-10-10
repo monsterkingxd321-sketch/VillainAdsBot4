@@ -3033,11 +3033,11 @@ class UserBot:
                                     
                                 except FloodWaitError as fwe:
                                     wait_time = fwe.seconds + 5
-                                    logger.warning(f"FloodWaitError on userbot {self.session_id}: Sleeping for {wait_time}s")
+                                    logger.info(f"FloodWaitError on userbot {self.session_id}: Sleeping for {wait_time}s")
                                     await asyncio.sleep(wait_time)
                                     
                                 except SlowModeWaitError as smwe:
-                                    logger.info(f"Group {g.id} slow mode wait: {smwe.seconds}s. Skipping...")
+                                    logger.debug(f"Group {g.id} slow mode wait: {smwe.seconds}s. Skipping...")
                                     await asyncio.sleep(min(10, smwe.seconds))
                                     
                                 except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError, ValueError) as chat_err:
@@ -3050,7 +3050,7 @@ class UserBot:
                                         await self._mark_unauthorized_and_cleanup()
                                         break
                                     else:
-                                        logger.warning(f"Failed to send broadcast message to group {g.id}: {e}")
+                                        logger.debug(f"Failed to send broadcast message to group {g.id}: {e}")
                                     
                             if sent_to_some:
                                 sess_data = database.get_session(self.session_id)
