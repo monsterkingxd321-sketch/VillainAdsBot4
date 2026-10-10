@@ -1123,26 +1123,31 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
         full_profile = full_user.full_user
         
         custom_name = session_data.get("name")
-        orig_first_name = custom_name if custom_name else (user_me.first_name or "")
-        orig_bio = full_profile.about or ""
+        current_first_name = custom_name if custom_name else (user_me.first_name or "")
+        current_bio = full_profile.about or ""
         
-        if not session_data.get("original_name"):
-            session_data["original_name"] = orig_first_name
-        if not session_data.get("original_bio"):
-            session_data["original_bio"] = orig_bio
+        pure_name = session_data.get("original_name")
+        if pure_name is None:
+            pure_name = current_first_name
+            session_data["original_name"] = pure_name
+            
+        pure_bio = session_data.get("original_bio")
+        if pure_bio is None:
+            pure_bio = current_bio
+            session_data["original_bio"] = pure_bio
             
         name_suffix = brand_name_text if brand_name_text else (f" via @{branding_username}" if branding_username else "")
         bio_suffix = brand_bio_text if brand_bio_text else (f" via @{branding_username}" if branding_username else "")
         
-        new_first_name = orig_first_name
+        new_first_name = pure_name
         if brand_name_enabled and name_suffix:
-            if name_suffix not in orig_first_name:
-                new_first_name = (orig_first_name + name_suffix)[:64]
+            if name_suffix not in pure_name:
+                new_first_name = (pure_name + name_suffix)[:64]
                 
-        new_bio = orig_bio
+        new_bio = pure_bio
         if brand_bio_enabled and bio_suffix:
-            if bio_suffix not in orig_bio:
-                new_bio = (orig_bio + bio_suffix)[:70]
+            if bio_suffix not in pure_bio:
+                new_bio = (pure_bio + bio_suffix)[:70]
                 
         await client(UpdateProfileRequest(
             first_name=new_first_name,
