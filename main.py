@@ -44,26 +44,49 @@ def check_single_instance():
     global _lock_fp
     import sys
     if os.path.exists(LOCK_FILE):
-        # Try to detect if the previous PID is still alive
+        # Try to detect if the previous PID is still alive and running main.py
         try:
             with open(LOCK_FILE, 'r') as f:
-                old_pid = int(f.read().strip())
-            # Check if that PID is still running
-            import psutil
-            if psutil.pid_exists(old_pid):
-                logger.error("Another instance of the bot is already running! (bot.lock is locked)")
-                print("\n[X] ERROR: Another instance of the bot is already running!")
-                print(f"Running PID: {old_pid}. Kill it and try again.\n")
-                sys.exit(1)
+                content = f.read().strip()
+                old_pid = int(content) if content else 0
+            
+            if old_pid > 0 and old_pid != os.getpid():
+                import psutil
+                if psutil.pid_exists(old_pid):
+                    is_our_bot = False
+                    try:
+                        p = psutil.Process(old_pid)
+                        cmdline = " ".join(p.cmdline()).lower()
+                        if "main.py" in cmdline:
+                            is_our_bot = True
+                    except Exception:
+                        is_our_bot = False
+
+                    if is_our_bot:
+                        logger.error(f"Another instance of the bot is already running! (PID: {old_pid})")
+                        print("\n[X] ERROR: Another instance of the bot is already running!")
+                        print(f"Running PID: {old_pid}. To kill it run: kill -9 {old_pid}\n")
+                        sys.exit(1)
+                    else:
+                        logger.warning(f"Removed stale bot.lock (PID {old_pid} is not main.py).")
+                        try:
+                            os.remove(LOCK_FILE)
+                        except OSError:
+                            pass
+                else:
+                    logger.warning(f"Removed stale bot.lock from inactive PID {old_pid}.")
+                    try:
+                        os.remove(LOCK_FILE)
+                    except OSError:
+                        pass
             else:
-                # Stale lock from a previous crash — remove it
-                logger.warning(f"Removed stale bot.lock from crashed PID {old_pid}.")
-                os.remove(LOCK_FILE)
+                try:
+                    os.remove(LOCK_FILE)
+                except OSError:
+                    pass
         except (ValueError, ImportError, OSError):
-            # Can't read PID or psutil not available — just remove the stale lock
             try:
                 os.remove(LOCK_FILE)
-                logger.warning("Removed stale bot.lock file (could not verify PID).")
             except OSError:
                 pass
             
