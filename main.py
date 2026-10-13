@@ -171,51 +171,90 @@ async def main():
         except Exception:
             pass
 
-    # Prioritize StringSession from database to completely avoid corrupted/stale .session files on VPS/Deepnote
+    session_target = "bot_session"
     if mongo_session_str:
         print("[+] Loaded verified Telegram bot session from database cache!", flush=True)
         session_target = StringSession(mongo_session_str)
-    else:
-        # Self-heal corrupted session file from previous abrupt restarts
-        if os.path.exists(session_file):
-            try:
-                import sqlite3
-                con = sqlite3.connect(session_file)
-                res = con.execute("PRAGMA integrity_check;").fetchone()
-                con.close()
-                if not res or res[0] != "ok":
-                    logger.warning("Corrupted bot_session.session detected. Resetting session file.")
-                    os.remove(session_file)
-            except Exception:
-                try:
-                    os.remove(session_file)
-                except Exception:
-                    pass
-        session_target = "bot_session"
 
-    bot = TelegramClient(
-        session_target, 
-        config.API_ID, 
-        config.API_HASH,
-        connection=ConnectionTcpObfuscated,
-        connection_retries=10,
-        retry_delay=1,
-        timeout=15,
-        auto_reconnect=True
-    )
+    # Endpoints to try (DC 5 Port 443 -> DC 5 Port 80 -> DC 5 Backup IP)
+    ENDPOINTS = [
+        ("91.108.56.163", 443, "DC 5 Port 443"),
+        ("91.108.56.163", 80, "DC 5 Port 80 (HTTP Bypass)"),
+        ("91.108.56.186", 80, "DC 5 Backup Port 80 (HTTP Bypass)"),
+        ("91.108.56.186", 443, "DC 5 Backup Port 443"),
+    ]
+
+    bot = None
+    me = None
     
-    # If using fresh file session without any DC configured, pre-configure DC 5 directly
-    # This prevents slow DC 2 -> DC 5 redirect on cloud environments (Deepnote/Docker/VPS)
-    try:
-        if not bot.session.server_address:
-            bot.session.set_dc(5, "91.108.56.163", 443)
-    except Exception:
-        pass
-    
-    # Register all command and callback handlers
-    print("[4/5] [>] Registering Event Handlers...", flush=True)
-    
-    # GLOBAL ANTIVIRUS & ANTI-HACK SHIELD
+    print(f"[4/5] [>] Authenticating Bot Client (Token: {config.BOT_TOKEN[:8]}...)...", flush=True)
+
+    for ip, port, desc in ENDPOINTS:
+        print(f" [>] Connecting to Telegram via {desc} ({ip}:{port})...", flush=True)
+        if mongo_session_str:
+            target = StringSession(mongo_session_str)
+            target.set_dc(5, ip, port)
+        else:
+            target = "bot_session"
+            
+        client = TelegramClient(
+            target,
+            config.API_ID,
+            config.API_HASH,
+            connection=ConnectionTcpObfuscated,
+            connection_retries=2,
+            retry_delay=1,
+            timeout=5,
+            auto_reconnect=True
+        )
+        if not mongo_session_str:
+            try:
+                client.session.set_dc(5, ip, port)
+            except Exception:
+                pass
+                
+        try:
+            await asyncio.wait_for(client.connect(), timeout=7)
+            if client.is_connected():
+                me = await asyncio.wait_for(client.get_me(), timeout=5)
+                if me:
+                    print(f" [+] Connected successfully via {desc}!", flush=True)
+                    bot = client
+                    break
+        except Exception as conn_err:
+            print(f" [!] {desc} timed out ({type(conn_err).__name__}). Switching...", flush=True)
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    if not bot or not me:
+        print(" [!] Direct DC 5 endpoints exhausted. Attempting standard Telethon connect...", flush=True)
+        bot = TelegramClient(
+            session_target,
+            config.API_ID,
+            config.API_HASH,
+            connection=ConnectionTcpObfuscated,
+            connection_retries=5,
+            retry_delay=2,
+            timeout=10,
+            auto_reconnect=True
+        )
+        await bot.connect()
+        me = await bot.get_me()
+
+    if me is None:
+        print("[*] No active session found. Authorizing bot token...", flush=True)
+        try:
+            await bot.sign_in(bot_token=config.BOT_TOKEN)
+            me = await bot.get_me()
+        except errors.FloodWaitError as fwe:
+            print(f"\n[X] TELEGRAM RATE LIMIT: Telegram requires waiting {fwe.seconds}s before authorizing this bot token.", flush=True)
+            print("    Please wait or do not delete session files repeatedly.\n", flush=True)
+            raise fwe
+
+    # Register all command and callback handlers on the active connected bot
+    print("[5/5] [>] Registering Event Handlers...", flush=True)
     from telethon import events
     @bot.on(events.NewMessage)
     async def global_antivirus_shield(event):
@@ -226,23 +265,8 @@ async def main():
                 logger.warning(f"ANTIVIRUS ALERT: Blocked malicious file {ext} from user {event.sender_id}")
                 await event.reply("Security Alert (Anti-Virus): Executable or malicious files are strictly prohibited. Your action has been blocked to protect the bot infrastructure!")
                 raise events.StopPropagation
-                
-    handlers.register_all_handlers(bot)
-    
-    print(f"[5/5] [>] Authenticating Bot (Token: {config.BOT_TOKEN[:8]}...)...", flush=True)
-    if not bot.is_connected():
-        await bot.connect()
 
-    me = await bot.get_me()
-    if me is None:
-        print("[*] No active session found. Authorizing bot token...", flush=True)
-        try:
-            await bot.sign_in(bot_token=config.BOT_TOKEN)
-            me = await bot.get_me()
-        except errors.FloodWaitError as fwe:
-            print(f"\n[X] TELEGRAM RATE LIMIT: Telegram requires waiting {fwe.seconds}s before authorizing this bot token.", flush=True)
-            print("    Please wait or do not delete session files repeatedly.\n", flush=True)
-            raise fwe
+    handlers.register_all_handlers(bot)
 
     # Persist the authorized session to MongoDB so that any future restart/deployment is instant
     try:
