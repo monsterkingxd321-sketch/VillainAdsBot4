@@ -55,10 +55,10 @@ USER_DATA_DIR = "user_data"
 # Limit the maximum number of running userbots to prevent Out of Memory (OOM) on platforms like Railway
 MAX_RUNNING_USERBOTS = int(os.getenv("MAX_RUNNING_USERBOTS", "99999"))
 
-# Gmail credentials for auto-approval
-GMAIL_USER = os.getenv("GMAIL_USER", "ashishchoudharyrj21@gmail.com")
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "nsbh dkqi jqil wwuw")
-FAMAPP_EMAILS = [x.strip() for x in os.getenv("FAMAPP_EMAILS", "no-reply@famapp.in").split(",") if x.strip()]
+# Gmail auto-approval credentials removed per request
+GMAIL_USER = None
+GMAIL_APP_PASS = None
+FAMAPP_EMAILS = []
 
 # Default values for global settings
 DEFAULT_GLOBAL_SETTINGS = {

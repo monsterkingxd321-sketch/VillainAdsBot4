@@ -107,8 +107,16 @@ except ImportError:
     Message = None
 from youtubesearchpython import VideosSearch, Playlist
 import aiohttp
-from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream, VideoQuality
+try:
+    from pytgcalls import PyTgCalls
+    from pytgcalls.types import MediaStream, VideoQuality
+    PYTGCALLS_AVAILABLE = True
+except Exception as e:
+    PyTgCalls = None
+    MediaStream = None
+    VideoQuality = None
+    PYTGCALLS_AVAILABLE = False
+    logger.warning(f"PyTgCalls is not available: {e}")
 import config
 
 API_URL = getattr(config, "MEOW_API_URL", os.environ.get("MEOW_API_URL", "https://music.yukiapi.site"))
@@ -1158,13 +1166,13 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
             
         # Compute desired name
         if brand_name_enabled and name_suffix:
-            new_first_name = (pure_name + name_suffix)[:64] if name_suffix not in pure_name else (pure_name + name_suffix)[:64]
+            new_first_name = (pure_name + name_suffix)[:64]
         else:
             new_first_name = pure_name  # Restore original when disabled
             
         # Compute desired bio
         if brand_bio_enabled and bio_suffix:
-            new_bio = (pure_bio + bio_suffix)[:70] if bio_suffix not in pure_bio else (pure_bio + bio_suffix)[:70]
+            new_bio = (pure_bio + bio_suffix)[:70]
         else:
             new_bio = pure_bio  # Restore original when disabled
 
@@ -1218,7 +1226,7 @@ class UserBot:
         self.vc_keepalive_task: Optional[asyncio.Task] = None
         self.current_vc_chat_id: Optional[int] = None
         self.current_vc_link: Optional[str] = None
-        self.pytgcalls_client: Optional[PyTgCalls] = None
+        self.pytgcalls_client: Optional[object] = None
         self.is_muted = True
         self.bg_tasks: Set[asyncio.Task] = set()
         
@@ -1559,7 +1567,9 @@ class UserBot:
         msg = f"Successfully left {max(left_count, 1)} voice chat(s)." if left_count > 0 else "Left all voice chats."
         return max(left_count, 1 if chats_to_leave else 0), msg
 
-    async def get_pytgcalls(self) -> PyTgCalls:
+    async def get_pytgcalls(self):
+        if not PYTGCALLS_AVAILABLE or PyTgCalls is None:
+            raise RuntimeError("PyTgCalls is not available or supported in this environment.")
         if not self.pytgcalls_client:
             self.pytgcalls_client = PyTgCalls(self.client)
             

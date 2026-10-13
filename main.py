@@ -7,6 +7,10 @@ import config
 import database
 import handlers
 import userbot_manager
+import error_reporter
+
+# Initialize error reporter to capture all errors to error.txt and forward to log group
+error_reporter.setup_error_reporter()
 
 # Create directories if they do not exist
 os.makedirs("logs", exist_ok=True)
@@ -100,6 +104,10 @@ async def cleanup_loop():
         await asyncio.sleep(600)  # Run every 10 minutes
 
 async def main():
+    try:
+        error_reporter.setup_asyncio_exception_handler(asyncio.get_running_loop())
+    except Exception:
+        pass
     check_single_instance()
     logger.info("Initializing database connection...")
     database.db_init()
@@ -107,6 +115,7 @@ async def main():
     # Initialize Bot Client
     logger.info("Initializing Bot client...")
     bot = TelegramClient("bot_session", config.API_ID, config.API_HASH)
+    error_reporter.set_bot_client(bot)
     
     # Register all command and callback handlers
     logger.info("Registering event handlers...")
@@ -144,17 +153,10 @@ async def main():
                 logger.error(f"Background task '{name}' crashed: {e}. Restarting in {restart_delay}s...")
                 await asyncio.sleep(restart_delay)
 
-    from handlers.payments_extended import start_gmail_polling
-
     # Resume userbots that were running prior to shutdown in background (one-shot startup task)
     t1 = asyncio.create_task(userbot_manager.start_all_running_bots())
     background_tasks.add(t1)
     t1.add_done_callback(background_tasks.discard)
-    
-    # Start Gmail autopay approval check loop in background (self-healing)
-    t2 = asyncio.create_task(resilient_task(start_gmail_polling, "gmail_polling", bot))
-    background_tasks.add(t2)
-    t2.add_done_callback(background_tasks.discard)
     
     # Start VPS Optimization (RAM/Space Cleanup) loop (self-healing)
     t3 = asyncio.create_task(resilient_task(cleanup_loop, "cleanup_loop"))
@@ -197,5 +199,5 @@ if __name__ == "__main__":
             logger.info("Bot Manager stopped gracefully.")
             break
         except Exception as e:
-            logger.error(f"Unhandled exception in main(): {e}. Restarting in {RESTART_DELAY}s...")
+            logger.error(f"Unhandled exception in main(): {e}. Restarting in {RESTART_DELAY}s...", exc_info=True)
             time.sleep(RESTART_DELAY)
