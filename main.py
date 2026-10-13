@@ -34,16 +34,34 @@ LOCK_FILE = "bot.lock"
 _lock_fp = None
 
 def check_single_instance():
+    """Acquire a lock file to prevent duplicate instances.
+    Stale lock files (from a crashed run) are silently removed and replaced.
+    """
     global _lock_fp
     import sys
     if os.path.exists(LOCK_FILE):
+        # Try to detect if the previous PID is still alive
         try:
-            os.remove(LOCK_FILE)
-        except OSError:
-            logger.error("Another instance of the bot is already running! (bot.lock is locked)")
-            print("\n[X] ERROR: Another instance of the bot is already running!")
-            print("Please kill the running Python processes and try again.\n")
-            sys.exit(1)
+            with open(LOCK_FILE, 'r') as f:
+                old_pid = int(f.read().strip())
+            # Check if that PID is still running
+            import psutil
+            if psutil.pid_exists(old_pid):
+                logger.error("Another instance of the bot is already running! (bot.lock is locked)")
+                print("\n[X] ERROR: Another instance of the bot is already running!")
+                print(f"Running PID: {old_pid}. Kill it and try again.\n")
+                sys.exit(1)
+            else:
+                # Stale lock from a previous crash — remove it
+                logger.warning(f"Removed stale bot.lock from crashed PID {old_pid}.")
+                os.remove(LOCK_FILE)
+        except (ValueError, ImportError, OSError):
+            # Can't read PID or psutil not available — just remove the stale lock
+            try:
+                os.remove(LOCK_FILE)
+                logger.warning("Removed stale bot.lock file (could not verify PID).")
+            except OSError:
+                pass
             
     try:
         _lock_fp = open(LOCK_FILE, "w")
@@ -114,19 +132,32 @@ async def main():
     # Track tasks to prevent garbage collection
     background_tasks = set()
 
-    # Resume userbots that were running prior to shutdown in background
+    async def resilient_task(coro_func, name, *args, restart_delay=10):
+        """Wraps a background coroutine so it auto-restarts if it crashes."""
+        while True:
+            try:
+                await coro_func(*args)
+            except asyncio.CancelledError:
+                logger.info(f"Background task '{name}' was cancelled.")
+                break
+            except Exception as e:
+                logger.error(f"Background task '{name}' crashed: {e}. Restarting in {restart_delay}s...")
+                await asyncio.sleep(restart_delay)
+
+    from handlers.payments_extended import start_gmail_polling
+
+    # Resume userbots that were running prior to shutdown in background (one-shot startup task)
     t1 = asyncio.create_task(userbot_manager.start_all_running_bots())
     background_tasks.add(t1)
     t1.add_done_callback(background_tasks.discard)
     
-    # Start Gmail autopay approval check loop in background
-    from handlers.payments_extended import start_gmail_polling
-    t2 = asyncio.create_task(start_gmail_polling(bot))
+    # Start Gmail autopay approval check loop in background (self-healing)
+    t2 = asyncio.create_task(resilient_task(start_gmail_polling, "gmail_polling", bot))
     background_tasks.add(t2)
     t2.add_done_callback(background_tasks.discard)
     
-    # Start VPS Optimization (RAM/Space Cleanup) loop
-    t3 = asyncio.create_task(cleanup_loop())
+    # Start VPS Optimization (RAM/Space Cleanup) loop (self-healing)
+    t3 = asyncio.create_task(resilient_task(cleanup_loop, "cleanup_loop"))
     background_tasks.add(t3)
     t3.add_done_callback(background_tasks.discard)
     
@@ -154,7 +185,17 @@ async def main():
                 pass
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot Manager stopped gracefully.")
+    import time
+    RESTART_DELAY = 10  # seconds before auto-restarting after crash
+    while True:
+        try:
+            asyncio.run(main())
+            # If main() returns normally (e.g. disconnected without exception), restart
+            logger.warning("main() exited unexpectedly. Restarting in %ds...", RESTART_DELAY)
+            time.sleep(RESTART_DELAY)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Bot Manager stopped gracefully.")
+            break
+        except Exception as e:
+            logger.error(f"Unhandled exception in main(): {e}. Restarting in {RESTART_DELAY}s...")
+            time.sleep(RESTART_DELAY)
