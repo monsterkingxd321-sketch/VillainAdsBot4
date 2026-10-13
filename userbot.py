@@ -642,23 +642,23 @@ async def join_vc_by_link(client: TelegramClient, link: str) -> tuple:
 
 async def generate_silence() -> str:
     """
-    Generates a 10-second silence.mp3 file in the downloads folder using FFmpeg.
+    Generates a pure-Python silent audio WAV file in the downloads folder.
+    Requires zero external FFmpeg commands and never fails.
     """
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, "silence.mp3")
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+    file_path = os.path.join(DOWNLOAD_DIR, "silence.wav")
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
         return file_path
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
-            "-t", "10", file_path, "-y",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
-        )
-        await proc.wait()
-        logger.info(f"Generated silence.mp3 successfully at {file_path}")
+        import wave
+        with wave.open(file_path, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(48000)
+            f.writeframes(b'\x00' * (48000 * 2 * 3))
+        logger.info(f"Generated silence.wav successfully at {file_path}")
     except Exception as e:
-        logger.error(f"Failed to generate silence.mp3: {e}")
+        logger.error(f"Failed to generate silence.wav: {e}")
     return file_path
 
 
@@ -1142,10 +1142,13 @@ class UserBot:
                             if await self.client.is_user_authorized():
                                 logger.info(f"Watchdog: Userbot {self.session_id} reconnected successfully.")
                             else:
-                                logger.warning(f"Watchdog: Userbot {self.session_id} session revoked/unauthorized.")
-                                await self._mark_unauthorized_and_cleanup()
-                                break
+                                logger.warning(f"Watchdog: Userbot {self.session_id} reconnecting - authorization pending.")
                         except Exception as rec_err:
+                            from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError
+                            if isinstance(rec_err, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError)):
+                                logger.error(f"Watchdog: Userbot {self.session_id} session permanently revoked: {rec_err}")
+                                self.is_running = False
+                                break
                             logger.warning(f"Watchdog: Userbot {self.session_id} reconnect error: {rec_err}")
                     else:
                         # Send keep-alive ping to prevent Telegram idle timeout
@@ -1156,7 +1159,13 @@ class UserBot:
                                 if me.username:
                                     self.username = me.username
                         except Exception as ping_err:
+                            from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError
+                            if isinstance(ping_err, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError)):
+                                logger.error(f"Watchdog: Userbot {self.session_id} session permanently revoked during ping: {ping_err}")
+                                self.is_running = False
+                                break
                             logger.debug(f"Watchdog: Keepalive ping failed for {self.session_id}: {ping_err}")
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1226,6 +1235,16 @@ class UserBot:
             if PYTGCALLS_AVAILABLE and PyTgCalls is not None:
                 try:
                     pytg = await self.get_pytgcalls()
+                    if group_call and not isinstance(group_call, GroupCallDiscarded):
+                        try:
+                            bind_client = getattr(pytg._app, '_bind_client', None)
+                            if bind_client and hasattr(bind_client, '_cache'):
+                                bind_client._cache.set_cache(
+                                    full_chat_id,
+                                    InputGroupCall(id=group_call.id, access_hash=group_call.access_hash)
+                                )
+                        except Exception as c_err:
+                            logger.debug(f"Pre-caching call in join_voice_chat: {c_err}")
                     silence_file = await generate_silence()
                     if silence_file and os.path.exists(silence_file):
                         try:
@@ -1431,8 +1450,47 @@ class UserBot:
             await self.pytgcalls_client.start()
         return self.pytgcalls_client
 
+    async def _prepopulate_pytgcalls_cache(self, pytg, chat_id):
+        """Ensures PyTgCalls internal cache has the active InputGroupCall for chat_id, eliminating NoActiveGroupCall."""
+        if not self.client or not pytg:
+            return
+        try:
+            from telethon.tl.functions.channels import GetFullChannelRequest
+            from telethon.tl.functions.messages import GetFullChatRequest
+            from telethon.tl.types import Channel, InputGroupCall, GroupCallDiscarded
+            import telethon.utils as tu
+
+            target_entity = None
+            try:
+                target_entity = await self.client.get_entity(chat_id)
+            except Exception:
+                pass
+
+            if not target_entity:
+                return
+
+            if isinstance(target_entity, Channel):
+                full = await self.client(GetFullChannelRequest(target_entity))
+            else:
+                full = await self.client(GetFullChatRequest(target_entity.id))
+
+            group_call = getattr(full.full_chat, 'call', None)
+            if group_call and not isinstance(group_call, GroupCallDiscarded):
+                input_call = InputGroupCall(id=group_call.id, access_hash=group_call.access_hash)
+                numeric_chat_id = tu.get_peer_id(target_entity)
+                
+                bind_client = getattr(pytg._app, '_bind_client', None)
+                if bind_client and hasattr(bind_client, '_cache'):
+                    bind_client._cache.set_cache(numeric_chat_id, input_call)
+                    if isinstance(chat_id, int) and chat_id != numeric_chat_id:
+                        bind_client._cache.set_cache(chat_id, input_call)
+                    logger.info(f"PyTgCalls cache pre-populated for chat {numeric_chat_id} (Call ID: {group_call.id})")
+        except Exception as e:
+            logger.debug(f"Could not pre-populate PyTgCalls cache for {chat_id}: {e}")
+
     async def _safe_play(self, pytg, chat_id, stream_obj):
-        """Unified media player for pytgcalls 1.x and 2.x."""
+        """Unified media player for pytgcalls 1.x and 2.x with automatic cache pre-population."""
+        await self._prepopulate_pytgcalls_cache(pytg, chat_id)
         if hasattr(pytg, "play"):
             return await pytg.play(chat_id, stream_obj)
         elif hasattr(pytg, "join_group_call"):
@@ -1578,6 +1636,13 @@ class UserBot:
             if not file_path or not os.path.exists(file_path):
                 return False, "Failed to download or parse media from YouTube. The link might be broken or region-restricted.", None
             
+        import telethon.utils as tu
+        try:
+            entity = await self.client.get_entity(actual_chat)
+            actual_chat = tu.get_peer_id(entity)
+        except Exception as e_res:
+            logger.debug(f"Entity resolution for {actual_chat} note: {e_res}")
+
         try:
             pytg = await self.get_pytgcalls()
             from pytgcalls.types import MediaStream, VideoQuality
@@ -1746,7 +1811,16 @@ class UserBot:
             
         # Spoof a deterministic device profile to avoid detection
         device_prof = utils.get_device_profile(self.session_id)
-        api_id, api_hash = config.get_random_api_id_hash()
+        # Ensure session uses consistent API credentials (saved in DB or deterministically mapped)
+        sess_data = database.get_session(self.session_id)
+        api_id = sess_data.get("api_id") if sess_data else None
+        api_hash = sess_data.get("api_hash") if sess_data else None
+        if not api_id or not api_hash:
+            api_id, api_hash = config.get_deterministic_api_id_hash(self.session_id)
+            if sess_data and api_id and api_hash:
+                sess_data["api_id"] = api_id
+                sess_data["api_hash"] = api_hash
+                database.save_session(sess_data)
         from telethon.network.connection import ConnectionTcpObfuscated
         self.client = TelegramClient(
             session_file, 

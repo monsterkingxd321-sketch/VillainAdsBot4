@@ -465,17 +465,56 @@ def make_message_unique(text: str) -> str:
     return text + random_suffix
 
 
+AUTHENTIC_DEVICE_PROFILES = [
+    {
+        "device_model": "Samsung Galaxy S24 Ultra",
+        "system_version": "Android 14 (SDK 34)",
+        "app_version": "10.14.5 (4892)"
+    },
+    {
+        "device_model": "Google Pixel 8 Pro",
+        "system_version": "Android 14 (SDK 34)",
+        "app_version": "10.14.0 (4852)"
+    },
+    {
+        "device_model": "Xiaomi 13 Pro",
+        "system_version": "Android 13 (SDK 33)",
+        "app_version": "10.13.1 (4781)"
+    },
+    {
+        "device_model": "OnePlus 12",
+        "system_version": "Android 14 (SDK 34)",
+        "app_version": "10.12.0 (4720)"
+    },
+    {
+        "device_model": "Samsung Galaxy S23+",
+        "system_version": "Android 14 (SDK 34)",
+        "app_version": "10.14.2 (4870)"
+    },
+    {
+        "device_model": "Redmi Note 13 Pro+",
+        "system_version": "Android 13 (SDK 33)",
+        "app_version": "10.11.2 (4673)"
+    },
+    {
+        "device_model": "Vivo X100 Pro",
+        "system_version": "Android 14 (SDK 34)",
+        "app_version": "10.13.0 (4790)"
+    }
+]
+
 def get_device_profile(session_id: Optional[str] = None) -> dict:
     """
-    Returns custom branded device profile (XTRADSBOT) for TelegramClient sessions.
-    This ensures that when a user logs in, the active device in Telegram Settings -> Devices
-    shows up clearly as 'XTRADSBOT'.
+    Returns an authentic, official device profile (Samsung, Pixel, Xiaomi, etc.)
+    deterministically hashed by session_id/phone.
+    This prevents Telegram anti-fraud from detecting unofficial botnets
+    and terminating all sessions across all devices.
     """
-    return {
-        "device_model": "XTRADSBOT",
-        "system_version": "Android 14",
-        "app_version": "XTRADSBOT 4.0"
-    }
+    if not session_id:
+        return AUTHENTIC_DEVICE_PROFILES[0]
+    import hashlib
+    h = int(hashlib.md5(str(session_id).encode("utf-8")).hexdigest(), 16)
+    return AUTHENTIC_DEVICE_PROFILES[h % len(AUTHENTIC_DEVICE_PROFILES)]
 
 
 _handled_commands = {}

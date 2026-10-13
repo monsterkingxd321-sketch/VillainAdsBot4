@@ -37,37 +37,62 @@ def time_to_seconds(time):
     return sum(int(x) * 60 ** i for i, x in enumerate(reversed(stringt.split(":"))))
 
 
+def _download_ytdlp_sync(link: str, video_id: str, is_audio: bool = True) -> str:
+    try:
+        prefix = "audio" if is_audio else "video"
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best' if is_audio else 'bestvideo[height<=720]+bestaudio/best',
+            'outtmpl': os.path.join(DOWNLOAD_DIR, f"{video_id}_{prefix}.%(ext)s"),
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'geo_bypass': True,
+            'extractor_args': {'youtube': {'player_client': ['mweb', 'android', 'ios']}},
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            target_url = link if "http" in link else f"https://www.youtube.com/watch?v={video_id}"
+            ydl.download([target_url])
+        for fname in os.listdir(DOWNLOAD_DIR):
+            if fname.startswith(f"{video_id}_{prefix}") and not fname.endswith(".jpg"):
+                fp = os.path.join(DOWNLOAD_DIR, fname)
+                if os.path.getsize(fp) > 5000:
+                    return fp
+    except Exception:
+        pass
+    return None
+
+
 async def download_song(link: str) -> str:
     video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else (link.split("youtu.be/")[-1].split("?")[0] if "youtu.be/" in link else link)
     if not video_id or len(video_id) < 3:
         return None
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
+    # Check if cached already
+    for fname in os.listdir(DOWNLOAD_DIR):
+        if (fname.startswith(f"{video_id}_audio") or fname.startswith(f"{video_id}.")) and not fname.endswith(".jpg"):
+            fp = os.path.join(DOWNLOAD_DIR, fname)
+            if os.path.getsize(fp) > 10000:
+                return fp
 
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-        return file_path
-
+    # Try fast Yuki API first with 3s timeout
     try:
         async with aiohttp.ClientSession() as session:
             stream_url = f"{API_URL}/stream/{video_id}?key={API_KEY}&type=audio&quality=128"
-            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-            return file_path
-        return None
+            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                if resp.status == 200:
+                    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}_audio.mp3")
+                    with open(file_path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(131072):
+                            f.write(chunk)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+                        return file_path
     except Exception:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
+        pass
+
+    # Seamless fallback to yt-dlp
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _download_ytdlp_sync, link, video_id, True)
 
 
 async def download_video(link: str) -> str:
@@ -76,31 +101,31 @@ async def download_video(link: str) -> str:
         return None
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+    # Check if cached already
+    for fname in os.listdir(DOWNLOAD_DIR):
+        if (fname.startswith(f"{video_id}_video") or fname.startswith(f"{video_id}.mp4")) and not fname.endswith(".jpg"):
+            fp = os.path.join(DOWNLOAD_DIR, fname)
+            if os.path.getsize(fp) > 10000:
+                return fp
 
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-        return file_path
-
+    # Try fast Yuki API first with 4s timeout
     try:
         async with aiohttp.ClientSession() as session:
             stream_url = f"{API_URL}/stream/{video_id}?key={API_KEY}&type=video&quality=480"
-            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-            return file_path
-        return None
+            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}_video.mp4")
+                    with open(file_path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(131072):
+                            f.write(chunk)
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+                        return file_path
     except Exception:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
+        pass
+
+    # Seamless fallback to yt-dlp
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _download_ytdlp_sync, link, video_id, False)
 
 
 class YouTubeAPI:

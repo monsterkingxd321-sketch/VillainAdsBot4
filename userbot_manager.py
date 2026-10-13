@@ -162,19 +162,14 @@ async def remove_userbot(session_id: str):
     if not session_id:
         return
 
-    # 1. If currently running, call log_out() to invalidate Telegram cloud auth key
+    # 1. Disconnect running client cleanly without invalidating Telegram account
     bot = find_running_bot(session_id)
-    logged_out = False
     if bot and getattr(bot, "client", None):
         try:
-            if not bot.client.is_connected():
-                await bot.client.connect()
-            if await bot.client.is_user_authorized():
-                await bot.client.log_out()
-                logged_out = True
-                logger.info(f"Running userbot {session_id} successfully logged out from Telegram.")
+            if bot.client.is_connected():
+                await bot.client.disconnect()
         except Exception as e:
-            logger.warning(f"Error logging out running userbot {session_id}: {e}")
+            logger.debug(f"Error disconnecting running userbot {session_id}: {e}")
 
     # 2. Retrieve session record to locate session file
     sess = database.get_session(session_id)
@@ -185,32 +180,6 @@ async def remove_userbot(session_id: str):
             user_id = sess.get("user_id", "")
             phone = sess.get("phone", session_id)
             session_file = f"{config.USER_DATA_DIR}/{user_id}/sessions/{phone}.session"
-
-    # If offline and not logged out yet, connect temporary client to call log_out()
-    if not logged_out and session_file:
-        raw_base = session_file.replace(".session", "")
-        file_to_check = raw_base + ".session"
-        if os.path.exists(file_to_check):
-            try:
-                from telethon import TelegramClient
-                dev_prof = utils.get_device_profile(session_id)
-                api_id, api_hash = config.get_random_api_id_hash()
-                temp_client = TelegramClient(
-                    raw_base,
-                    api_id,
-                    api_hash,
-                    device_model=dev_prof["device_model"],
-                    system_version=dev_prof["system_version"],
-                    app_version=dev_prof["app_version"]
-                )
-                await temp_client.connect()
-                if await temp_client.is_user_authorized():
-                    await temp_client.log_out()
-                    logger.info(f"Offline userbot {session_id} successfully logged out from Telegram.")
-                else:
-                    await temp_client.disconnect()
-            except Exception as e:
-                logger.warning(f"Could not log out offline userbot {session_id}: {e}")
 
     # 3. Stop running instance and clear memory references
     await stop_userbot(session_id)

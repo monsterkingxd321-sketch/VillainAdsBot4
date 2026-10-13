@@ -308,6 +308,8 @@ def register_handlers(client):
                     sess_record["username"] = username
                     sess_record["two_step_password"] = "None"
                     sess_record["session_bytes"] = sess_bytes
+                    sess_record["api_id"] = api_id
+                    sess_record["api_hash"] = api_hash
                     database.save_session(sess_record)
                     started = await userbot_manager.start_userbot(phone_actual)
                     successes.append(f"{'@'+username if username else name} ({phone_actual}) {'✅' if started else '⚠️'}")
@@ -539,6 +541,8 @@ async def complete_login(bot_client, event, user_id: int, state: dict):
         sess_record["name"] = name
         sess_record["username"] = username
         sess_record["two_step_password"] = two_step_pwd
+        sess_record["api_id"] = getattr(temp_client, "api_id", config.API_ID)
+        sess_record["api_hash"] = getattr(temp_client, "api_hash", config.API_HASH)
         
         # Read the session file into bytes
         if os.path.exists(session_path):

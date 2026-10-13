@@ -23,11 +23,7 @@ API_HASH = _clean_env(os.getenv("API_HASH", ""))
 
 import random
 
-def get_random_api_id_hash():
-    """
-    Returns a random (API_ID, API_HASH) from the environment to avoid floodwaits.
-    It checks API_ID, API_HASH, API_ID1, API_HASH1, ... up to 100.
-    """
+def get_all_api_pairs():
     pairs = []
     if API_ID and API_HASH:
         pairs.append((API_ID, API_HASH))
@@ -37,10 +33,31 @@ def get_random_api_id_hash():
         ahash = _clean_env(os.getenv(f"API_HASH{i}", ""))
         if aid and ahash and aid.isdigit():
             pairs.append((int(aid), ahash))
-            
+    return pairs
+
+def get_random_api_id_hash():
+    """
+    Returns a random (API_ID, API_HASH) from the environment to avoid floodwaits.
+    It checks API_ID, API_HASH, API_ID1, API_HASH1, ... up to 100.
+    """
+    pairs = get_all_api_pairs()
     if pairs:
         return random.choice(pairs)
     return (0, "")
+
+def get_deterministic_api_id_hash(seed_key: str = None):
+    """
+    Returns a deterministic (API_ID, API_HASH) based on the seed_key (session_id/phone),
+    ensuring that a session always uses the exact same API credentials across reconnects and restarts.
+    """
+    pairs = get_all_api_pairs()
+    if not pairs:
+        return (0, "")
+    if seed_key:
+        import hashlib
+        h = int(hashlib.md5(str(seed_key).encode()).hexdigest(), 16)
+        return pairs[h % len(pairs)]
+    return pairs[0]
 
 # Bot token for the main manager bot
 BOT_TOKEN = _clean_env(os.getenv("BOT_TOKEN", ""))
