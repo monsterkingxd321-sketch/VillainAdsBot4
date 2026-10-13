@@ -149,10 +149,45 @@ async def main():
     
     # Initialize Bot Client with Obfuscated TCP to bypass cloud/container firewalls (Deepnote/Docker/VPS)
     print("[3/5] [>] Configuring Telegram Bot Client...", flush=True)
-    from telethon.network.connection import ConnectionTcpObfuscated, ConnectionTcpIntermediate
+    from telethon.network.connection import ConnectionTcpObfuscated
+    from telethon.sessions import StringSession, SQLiteSession
+    from telethon import errors
     
-    # Self-heal corrupted session file from previous abrupt restarts
     session_file = "bot_session.session"
+    
+    # 1. Check if we have an authorized session in MongoDB to restore if missing or invalid
+    mongo_session_str = None
+    try:
+        doc = database._db.settings.find_one({"id": "global"})
+        if doc:
+            mongo_session_str = doc.get("bot_session_str")
+    except Exception as e:
+        logger.warning(f"Failed to query bot session from MongoDB: {e}")
+
+    # If session file doesn't exist or is empty, restore it from MongoDB cache
+    need_restore = False
+    if not os.path.exists(session_file):
+        need_restore = True
+    else:
+        try:
+            if os.path.getsize(session_file) == 0:
+                need_restore = True
+        except Exception:
+            need_restore = True
+
+    if need_restore and mongo_session_str:
+        try:
+            ss = StringSession(mongo_session_str)
+            fs = SQLiteSession("bot_session")
+            fs.set_dc(ss.dc_id, ss.server_address, ss.port)
+            fs.auth_key = ss.auth_key
+            fs.save()
+            fs.close()
+            print("[+] Successfully restored authorized bot session from cloud database!", flush=True)
+        except Exception as restore_err:
+            logger.warning(f"Failed to unpack session from MongoDB: {restore_err}")
+
+    # Self-heal corrupted session file from previous abrupt restarts
     if os.path.exists(session_file):
         try:
             import sqlite3
@@ -173,11 +208,19 @@ async def main():
         config.API_ID, 
         config.API_HASH,
         connection=ConnectionTcpObfuscated,
-        connection_retries=10,
+        connection_retries=15,
         retry_delay=1,
-        timeout=15,
+        timeout=20,
         auto_reconnect=True
     )
+    
+    # If this is a fresh session without any DC configured, pre-configure DC 5 directly
+    # This prevents slow DC 2 -> DC 5 redirect on cloud environments (Deepnote/Docker/VPS)
+    try:
+        if not bot.session.server_address:
+            bot.session.set_dc(5, "91.108.56.163", 443)
+    except Exception:
+        pass
     
     # Register all command and callback handlers
     print("[4/5] [>] Registering Event Handlers...", flush=True)
@@ -197,29 +240,33 @@ async def main():
     handlers.register_all_handlers(bot)
     
     print(f"[5/5] [>] Authenticating Bot (Token: {config.BOT_TOKEN[:8]}...)...", flush=True)
-    try:
-        # Avoid hanging on console input by explicitly providing phone=None
-        await asyncio.wait_for(bot.start(bot_token=config.BOT_TOKEN, phone=None), timeout=25)
-    except (asyncio.TimeoutError, Exception) as conn_err:
-        print(f"[!] Primary connection encountered: {conn_err}. Trying Intermediate TCP fallback...", flush=True)
-        try:
-            await bot.disconnect()
-        except Exception:
-            pass
-        bot = TelegramClient(
-            "bot_session",
-            config.API_ID,
-            config.API_HASH,
-            connection=ConnectionTcpIntermediate,
-            connection_retries=6,
-            retry_delay=1,
-            timeout=15,
-            auto_reconnect=True
-        )
-        handlers.register_all_handlers(bot)
-        await bot.start(bot_token=config.BOT_TOKEN, phone=None)
+    if not bot.is_connected():
+        await bot.connect()
 
     me = await bot.get_me()
+    if me is None:
+        print("[*] No active session found. Authorizing bot token...", flush=True)
+        try:
+            await bot.sign_in(bot_token=config.BOT_TOKEN)
+            me = await bot.get_me()
+        except errors.FloodWaitError as fwe:
+            print(f"\n[X] TELEGRAM RATE LIMIT: Telegram requires waiting {fwe.seconds}s before authorizing this bot token.", flush=True)
+            print("    Please wait or do not delete session files repeatedly.\n", flush=True)
+            raise fwe
+
+    # Persist the authorized session to MongoDB so that any future restart/deployment is instant
+    try:
+        current_str = StringSession.save(bot.session)
+        if current_str:
+            database._db.settings.update_one(
+                {"id": "global"},
+                {"$set": {"bot_session_str": current_str}},
+                upsert=True
+            )
+            logger.info("Persisted authorized Telegram bot session to MongoDB.")
+    except Exception as save_err:
+        logger.debug(f"Could not persist session string to DB: {save_err}")
+
     bot_username = getattr(me, 'username', None) or str(me.id)
     print("=" * 60, flush=True)
     print(f" [+] VILLAIN ADS BOT IS LIVE: @{bot_username} ({me.id})", flush=True)
