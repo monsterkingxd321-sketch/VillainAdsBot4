@@ -1408,15 +1408,34 @@ class UserBot:
         if not self.pytgcalls_client:
             self.pytgcalls_client = PyTgCalls(self.client)
             
-            @self.pytgcalls_client.on_stream_end()
-            async def on_stream_end(client, update):
+            if hasattr(self.pytgcalls_client, "on_update"):
                 try:
-                    chat_id = getattr(update, "chat_id", None)
-                    if chat_id:
-                        from handlers.player import play_next_in_queue
-                        await play_next_in_queue(chat_id)
-                except Exception as e:
-                    logger.error(f"Error in on_stream_end: {e}")
+                    from pytgcalls.types import StreamEnded
+                    @self.pytgcalls_client.on_update()
+                    async def handle_stream_update(client, update):
+                        if isinstance(update, StreamEnded):
+                            try:
+                                chat_id = getattr(update, "chat_id", None)
+                                if chat_id:
+                                    from handlers.player import play_next_in_queue
+                                    await play_next_in_queue(chat_id)
+                            except Exception as e:
+                                logger.error(f"Error in handle_stream_update: {e}")
+                except Exception as reg_err:
+                    logger.warning(f"Could not register StreamEnded update listener: {reg_err}")
+            elif hasattr(self.pytgcalls_client, "on_stream_end"):
+                try:
+                    @self.pytgcalls_client.on_stream_end()
+                    async def on_stream_end(client, update):
+                        try:
+                            chat_id = getattr(update, "chat_id", None)
+                            if chat_id:
+                                from handlers.player import play_next_in_queue
+                                await play_next_in_queue(chat_id)
+                        except Exception as e:
+                            logger.error(f"Error in on_stream_end: {e}")
+                except Exception as reg_err:
+                    logger.warning(f"Could not register on_stream_end listener: {reg_err}")
 
             await self.pytgcalls_client.start()
         return self.pytgcalls_client

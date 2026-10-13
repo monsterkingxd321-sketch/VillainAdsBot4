@@ -1,3 +1,11 @@
+import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 print("[*] Starting Villain Ads Bot v4.0...", flush=True)
 import os
 import logging
@@ -8,22 +16,16 @@ import config
 import database
 import handlers
 import userbot_manager
-import error_reporter
-
-# Initialize error reporter to capture all errors to error.txt and forward to log group
-error_reporter.setup_error_reporter()
 
 # Create directories if they do not exist
-os.makedirs("logs", exist_ok=True)
 os.makedirs(config.USER_DATA_DIR, exist_ok=True)
 
-# Configure logging to console and a log file
+# Configure console logging (NO file logging to save VPS disk space)
 logging.basicConfig(
-    level=logging.WARNING, # Changed to WARNING to reduce VPS load and terminal clutter
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("logs/userbot_manager.log", encoding="utf-8")
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -101,7 +103,7 @@ def check_single_instance():
         sys.exit(1)
 
 async def cleanup_loop():
-    """Background task to optimize RAM usage and clean up old downloaded media to save VPS space."""
+    """Background task to optimize RAM usage and clean up downloaded media and cache to save VPS space."""
     import time
     import gc
     while True:
@@ -109,43 +111,46 @@ async def cleanup_loop():
             # 1. Force Python Garbage Collection to reduce RAM usage on VPS
             gc.collect()
             
-            # 2. Disk Space Cleanup: Delete files older than 2 hours in 'downloads' folder
-            downloads_dir = "downloads"
-            if os.path.exists(downloads_dir):
-                now = time.time()
-                for fname in os.listdir(downloads_dir):
-                    fpath = os.path.join(downloads_dir, fname)
-                    if os.path.isfile(fpath):
-                        if os.stat(fpath).st_mtime < now - 7200:
-                            try:
-                                os.remove(fpath)
-                                logger.info(f"Optimized VPS Space: Deleted old cached media {fname}")
-                            except Exception:
-                                pass
+            # 2. Disk Space Cleanup: Delete files older than 1 hour in 'downloads' and 'cache' folders
+            now = time.time()
+            for folder in ["downloads", "cache"]:
+                if os.path.exists(folder):
+                    for fname in os.listdir(folder):
+                        fpath = os.path.join(folder, fname)
+                        if os.path.isfile(fpath):
+                            if os.stat(fpath).st_mtime < now - 3600:
+                                try:
+                                    os.remove(fpath)
+                                    logger.info(f"Auto-cleaned old media: {fpath}")
+                                except Exception:
+                                    pass
         except Exception as e:
             logger.error(f"Cleanup loop error: {e}")
             
-        await asyncio.sleep(600)  # Run every 10 minutes
+        await asyncio.sleep(300)  # Run every 5 minutes
 
 async def main():
-    try:
-        error_reporter.setup_asyncio_exception_handler(asyncio.get_running_loop())
-    except Exception:
-        pass
     check_single_instance()
-    print("[1/5] 🔌 Connecting to Database (MongoDB)...", flush=True)
+    print("[1/5] [>] Connecting to Database (MongoDB)...", flush=True)
     database.db_init()
-    print("[2/5] ✅ Database Connected Successfully!", flush=True)
+    print("[2/5] [+] Database Connected Successfully!", flush=True)
     
-    # Initialize Bot Client
-    print("[3/5] 🤖 Connecting Telegram Bot Manager...", flush=True)
-    bot = TelegramClient("bot_session", config.API_ID, config.API_HASH)
-    error_reporter.set_bot_client(bot)
+    # Initialize Bot Client with resilient connection retries for VPS/Cloud environments
+    print("[3/5] [>] Connecting Telegram Bot Manager...", flush=True)
+    bot = TelegramClient(
+        "bot_session", 
+        config.API_ID, 
+        config.API_HASH,
+        connection_retries=15,
+        retry_delay=2,
+        timeout=25,
+        auto_reconnect=True
+    )
     
     # Register all command and callback handlers
-    print("[4/5] ⚙️ Registering Event Handlers...", flush=True)
+    print("[4/5] [>] Registering Event Handlers...", flush=True)
     
-    # 🛡️ GLOBAL ANTIVIRUS & ANTI-HACK SHIELD
+    # GLOBAL ANTIVIRUS & ANTI-HACK SHIELD
     from telethon import events
     @bot.on(events.NewMessage)
     async def global_antivirus_shield(event):
@@ -153,19 +158,19 @@ async def main():
         if event.message and event.message.file:
             ext = event.message.file.ext
             if ext and ext.lower() in [".exe", ".bat", ".vbs", ".sh", ".py", ".cmd", ".dll", ".pif", ".scr", ".js"]:
-                logger.warning(f"🛡️ ANTIVIRUS ALERT: Blocked malicious file {ext} from user {event.sender_id}")
-                await event.reply("🚫 **Security Alert (Anti-Virus):** Executable or malicious files are strictly prohibited. Your action has been blocked to protect the bot infrastructure!")
+                logger.warning(f"ANTIVIRUS ALERT: Blocked malicious file {ext} from user {event.sender_id}")
+                await event.reply("Security Alert (Anti-Virus): Executable or malicious files are strictly prohibited. Your action has been blocked to protect the bot infrastructure!")
                 raise events.StopPropagation
                 
     handlers.register_all_handlers(bot)
     
-    print("[5/5] 🚀 Starting Telegram Bot...", flush=True)
+    print("[5/5] [>] Starting Telegram Bot...", flush=True)
     await bot.start(bot_token=config.BOT_TOKEN)
     me = await bot.get_me()
     bot_username = getattr(me, 'username', None) or str(me.id)
     print("=" * 60, flush=True)
-    print(f" ✨ VILLAIN ADS BOT IS LIVE: @{bot_username} ({me.id})", flush=True)
-    print(" 📡 Ready & Listening for commands in background!", flush=True)
+    print(f" [+] VILLAIN ADS BOT IS LIVE: @{bot_username} ({me.id})", flush=True)
+    print(" [+] Ready & Listening for commands in background!", flush=True)
     print("=" * 60, flush=True)
     
     # Track tasks to prevent garbage collection
