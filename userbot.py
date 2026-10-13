@@ -925,33 +925,42 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
             pure_bio = stripped_bio
             session_data["original_bio"] = pure_bio
             
-        # Compute desired name
+        # Compute desired name (ensuring first_name is never empty or invalid)
+        base_first = (pure_name or current_first_name or user_me.first_name or "User").strip()
+        if not base_first:
+            base_first = "User"
+
         if brand_name_enabled and name_suffix:
-            new_first_name = (pure_name + name_suffix)[:64]
+            new_first_name = (base_first + name_suffix)[:64]
         else:
-            new_first_name = pure_name  # Restore original when disabled
-            
+            new_first_name = base_first[:64]
+
         # Compute desired bio
+        base_bio = (pure_bio or "").strip()
         if brand_bio_enabled and bio_suffix:
-            new_bio = (pure_bio + bio_suffix)[:70]
+            new_bio = (base_bio + bio_suffix)[:70]
         else:
-            new_bio = pure_bio  # Restore original when disabled
+            new_bio = base_bio[:70]
 
         # Only call Telegram API if something actually changed
         current_tg_name = user_me.first_name or ""
-        current_tg_bio = current_bio
+        current_tg_bio = current_bio or ""
         if new_first_name != current_tg_name or new_bio != current_tg_bio:
-            await client(UpdateProfileRequest(
-                first_name=new_first_name,
-                about=new_bio
-            ))
-            logger.info(f"Branding applied for {user_me.id}: name_brand={brand_name_enabled}, bio_brand={brand_bio_enabled}")
+            try:
+                await client(UpdateProfileRequest(
+                    first_name=new_first_name,
+                    about=new_bio
+                ))
+                logger.info(f"Branding applied for {user_me.id}: name_brand={brand_name_enabled}, bio_brand={brand_bio_enabled}")
+            except Exception as up_err:
+                # Do not trigger crash or flood if account is restricted/frozen by Telegram
+                logger.warning(f"Could not update branding on Telegram for {user_me.id}: {up_err}")
         else:
             logger.info(f"Branding already applied for {user_me.id}, skipping UpdateProfileRequest.")
         
         database.save_session(session_data)
     except Exception as e:
-        logger.error(f"Failed to apply branding: {e}")
+        logger.warning(f"Failed to apply branding: {e}")
 
 
 async def restore_branding(client: TelegramClient, session_data: dict):

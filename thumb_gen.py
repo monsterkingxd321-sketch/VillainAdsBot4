@@ -25,10 +25,17 @@ async def gen_thumb(videoid: str):
         await _ensure_fonts()
         url = f"https://www.youtube.com/watch?v={videoid}"
         results = VideosSearch(url, limit=1)
-        result = (await results.next())["result"][0]
-        duration = result.get("duration", "3:20")
-        title = result.get("title", BOT_NAME)
-        thumburl = result["thumbnails"][0]["url"].split("?")[0]
+        res_data = results.result()
+        result_items = res_data.get("result", []) if isinstance(res_data, dict) else []
+        if result_items:
+            result = result_items[0]
+            duration = result.get("duration", "3:20")
+            title = result.get("title", BOT_NAME)
+            thumburl = result.get("thumbnails", [{}])[0].get("url", f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg").split("?")[0]
+        else:
+            duration = "3:20"
+            title = BOT_NAME
+            thumburl = f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg"
 
         thumb_path = CACHE_DIR / f"{videoid}.jpg"
         async with aiohttp.ClientSession() as session:

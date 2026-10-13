@@ -124,8 +124,16 @@ async def _send_error_report_async():
         )
 
         try:
+            target_peer = log_group_id
+            if isinstance(target_peer, str):
+                target_peer = int(target_peer) if target_peer.lstrip('-').isdigit() else target_peer
+            try:
+                target_peer = await _bot_client.get_input_entity(target_peer)
+            except Exception:
+                pass
+
             await _bot_client.send_file(
-                log_group_id,
+                target_peer,
                 ERROR_FILE_PATH,
                 caption=caption,
                 parse_mode="html"
@@ -134,7 +142,8 @@ async def _send_error_report_async():
             _has_unsent_error = False
         except Exception as send_err:
             sys.stderr.write(f"[ERROR_REPORTER_SEND_FAILED] {send_err}\n")
-            _has_unsent_error = True
+            _last_sent_time = time.time() + 60.0  # Back off 60s on failure to prevent tight loops
+            _has_unsent_error = False
     finally:
         _is_sending = False
         _pending_task = None
