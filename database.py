@@ -152,7 +152,7 @@ def get_sessions(user_id: Optional[int] = None, include_bytes: bool = False) -> 
         query = {}
         
     results = list(_db.sessions.find(query, projection))
-    _cached_get_sessions[cache_key] = (now + 5.0, [dict(r) for r in results])
+    _cached_get_sessions[cache_key] = (now + 15.0, [dict(r) for r in results])  # 15s cache
     return results
 
 def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[str, Any]]:
@@ -164,7 +164,7 @@ def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[s
     # Check cache if bytes not requested
     if not include_bytes:
         cached = _cached_sessions.get(session_id_str)
-        if cached and (time.time() - cached['time'] < 30):
+        if cached and (time.time() - cached['time'] < 60):  # 60s cache
             return cached['data']
             
     projection = None if include_bytes else {"session_bytes": 0}

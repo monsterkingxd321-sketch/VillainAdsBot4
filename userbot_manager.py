@@ -601,22 +601,40 @@ def get_running_bot(session_id: str) -> Optional[UserBot]:
 
 async def broadcast_branding_update():
     """
-    Applies or removes branding for all running userbots based on the latest global settings.
+    Applies branding to ALL running userbots in parallel (fast, rate-limit safe).
+    For offline bots, clears the original_name/bio cache so branding is
+    force-re-applied the next time that session starts.
     """
     global_settings = database.get_global_settings()
-    branding_username = global_settings.get("branding_username")
+    branding_username = global_settings.get("branding_username") or ""
     
     from userbot import apply_branding
     
     all_sessions = database.get_sessions()
-    for s in all_sessions:
-        phone = s.get("phone")
-        if not phone: continue
-        
+    
+    # Semaphore to avoid hammering Telegram with too many simultaneous profile updates
+    sem = asyncio.Semaphore(5)
+    
+    async def _apply_one(s):
+        phone = s.get("phone") or s.get("session_id")
+        if not phone:
+            return
         bot = find_running_bot(phone)
         if bot and bot.client and bot.client.is_connected():
+            async with sem:
+                try:
+                    await apply_branding(bot.client, branding_username, s)
+                except Exception as e:
+                    logger.error(f"broadcast_branding: failed for {phone}: {e}")
+        else:
+            # Bot offline — clear backup so branding is freshly applied on next start
             try:
-                # apply_branding handles both enabling and disabling because it reads from global_settings
-                await apply_branding(bot.client, branding_username, s)
-            except Exception as e:
-                logger.error(f"Failed to broadcast branding to {phone}: {e}")
+                s.pop("original_name", None)
+                s.pop("original_bio", None)
+                database.save_session(s)
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_apply_one(s) for s in all_sessions], return_exceptions=True)
+    logger.info(f"broadcast_branding_update: applied to {len(all_sessions)} sessions.")
+

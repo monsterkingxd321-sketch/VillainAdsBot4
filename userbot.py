@@ -1105,8 +1105,10 @@ async def force_join_channels(client: TelegramClient, channels: list, session_id
 
 async def apply_branding(client: TelegramClient, branding_username: str, session_data: dict):
     """
-    Appends the branding bot username suffix to the userbot profile's name and bio based on global settings.
-    Stores original details in session data for restoration.
+    Appends the branding suffix to the userbot profile's name and/or bio based on global settings.
+    - Works even if branding_username is not set (uses brand_name_text / brand_bio_text directly).
+    - When branding is disabled for name or bio, restores the original value.
+    - Only calls UpdateProfileRequest if something actually changed (avoids rate limits).
     """
     from telethon.tl.functions.users import GetFullUserRequest
     from telethon.tl.functions.account import UpdateProfileRequest
@@ -1116,8 +1118,17 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
         brand_name_enabled = global_settings.get("branding_name_enabled", True)
         brand_bio_enabled = global_settings.get("branding_bio_enabled", True)
         
-        brand_name_text = global_settings.get("branding_name_text")
-        brand_bio_text = global_settings.get("branding_bio_text")
+        brand_name_text = global_settings.get("branding_name_text") or ""
+        brand_bio_text = global_settings.get("branding_bio_text") or ""
+        
+        # Fallback suffix using username if no explicit text set
+        fallback_suffix = f" via @{branding_username}" if branding_username else ""
+        name_suffix = brand_name_text if brand_name_text else fallback_suffix
+        bio_suffix = brand_bio_text if brand_bio_text else fallback_suffix
+
+        # If both disabled and no suffix, nothing to do
+        if not brand_name_enabled and not brand_bio_enabled and not name_suffix and not bio_suffix:
+            return
         
         full_user = await client(GetFullUserRequest('me'))
         user_me = full_user.users[0]
@@ -1127,38 +1138,52 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
         current_first_name = custom_name if custom_name else (user_me.first_name or "")
         current_bio = full_profile.about or ""
         
+        # Backup original name/bio once (never overwrite backup with already-branded value)
         pure_name = session_data.get("original_name")
         if pure_name is None:
-            pure_name = current_first_name
+            # Strip any existing suffix from current name before saving as original
+            stripped = current_first_name
+            if name_suffix and name_suffix in stripped:
+                stripped = stripped.replace(name_suffix, "").strip()
+            pure_name = stripped
             session_data["original_name"] = pure_name
             
         pure_bio = session_data.get("original_bio")
         if pure_bio is None:
-            pure_bio = current_bio
+            stripped_bio = current_bio
+            if bio_suffix and bio_suffix in stripped_bio:
+                stripped_bio = stripped_bio.replace(bio_suffix, "").strip()
+            pure_bio = stripped_bio
             session_data["original_bio"] = pure_bio
             
-        name_suffix = brand_name_text if brand_name_text else (f" via @{branding_username}" if branding_username else "")
-        bio_suffix = brand_bio_text if brand_bio_text else (f" via @{branding_username}" if branding_username else "")
-        
-        new_first_name = pure_name
+        # Compute desired name
         if brand_name_enabled and name_suffix:
-            if name_suffix not in pure_name:
-                new_first_name = (pure_name + name_suffix)[:64]
-                
-        new_bio = pure_bio
+            new_first_name = (pure_name + name_suffix)[:64] if name_suffix not in pure_name else (pure_name + name_suffix)[:64]
+        else:
+            new_first_name = pure_name  # Restore original when disabled
+            
+        # Compute desired bio
         if brand_bio_enabled and bio_suffix:
-            if bio_suffix not in pure_bio:
-                new_bio = (pure_bio + bio_suffix)[:70]
-                
-        await client(UpdateProfileRequest(
-            first_name=new_first_name,
-            about=new_bio
-        ))
+            new_bio = (pure_bio + bio_suffix)[:70] if bio_suffix not in pure_bio else (pure_bio + bio_suffix)[:70]
+        else:
+            new_bio = pure_bio  # Restore original when disabled
+
+        # Only call Telegram API if something actually changed
+        current_tg_name = user_me.first_name or ""
+        current_tg_bio = current_bio
+        if new_first_name != current_tg_name or new_bio != current_tg_bio:
+            await client(UpdateProfileRequest(
+                first_name=new_first_name,
+                about=new_bio
+            ))
+            logger.info(f"Branding applied for {user_me.id}: name_brand={brand_name_enabled}, bio_brand={brand_bio_enabled}")
+        else:
+            logger.info(f"Branding already applied for {user_me.id}, skipping UpdateProfileRequest.")
         
         database.save_session(session_data)
-        logger.info(f"Branding applied successfully for userbot: {user_me.id} (Name: {brand_name_enabled}, Bio: {brand_bio_enabled})")
     except Exception as e:
         logger.error(f"Failed to apply branding: {e}")
+
 
 async def restore_branding(client: TelegramClient, session_data: dict):
     """
@@ -1957,11 +1982,10 @@ class UserBot:
                 self.bg_tasks.add(t_join2)
                 t_join2.add_done_callback(self.bg_tasks.discard)
                 
-            brand_username = global_settings.get("branding_username")
-            if brand_username:
-                t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
-                self.bg_tasks.add(t_brand)
-                t_brand.add_done_callback(self.bg_tasks.discard)
+            brand_username = global_settings.get("branding_username") or ""
+            t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
+            self.bg_tasks.add(t_brand)
+            t_brand.add_done_callback(self.bg_tasks.discard)
                 
             # Register event handlers
             self._register_handlers()

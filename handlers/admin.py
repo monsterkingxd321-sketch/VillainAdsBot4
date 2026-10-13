@@ -2062,7 +2062,11 @@ def register_handlers(client):
         element = event.pattern_match.group(1)
         user_id = event.sender_id
         if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
             return
+        
+        # Answer immediately so button doesn't feel frozen
+        await event.answer()
             
         global_settings = database.get_global_settings()
         key = f"branding_{element}_enabled"
