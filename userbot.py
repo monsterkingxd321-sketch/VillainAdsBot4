@@ -883,6 +883,12 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
     from telethon.tl.functions.account import UpdateProfileRequest
     
     try:
+        # PROTECT CLONED PROFILES:
+        # If this userbot is currently cloned, NEVER touch or overwrite its profile with branding!
+        if session_data.get("is_cloned") or "original_first_name" in session_data:
+            logger.info(f"apply_branding: session {session_data.get('phone')} has active cloned profile, skipping branding to preserve clone.")
+            return
+
         global_settings = database.get_global_settings()
         brand_name_enabled = global_settings.get("branding_name_enabled", True)
         brand_bio_enabled = global_settings.get("branding_bio_enabled", True)
@@ -904,17 +910,17 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
         full_profile = full_user.full_user
         
         custom_name = session_data.get("name")
-        current_first_name = custom_name if custom_name else (user_me.first_name or "")
-        current_bio = full_profile.about or ""
+        current_first_name = (custom_name if custom_name else (user_me.first_name or "")).strip()
+        current_bio = (full_profile.about or "").strip()
         
         # Backup original name/bio once (never overwrite backup with already-branded value)
-        pure_name = session_data.get("original_name")
-        if pure_name is None:
+        pure_name = (session_data.get("original_name") or "").strip()
+        if not pure_name:
             # Strip any existing suffix from current name before saving as original
             stripped = current_first_name
             if name_suffix and name_suffix in stripped:
                 stripped = stripped.replace(name_suffix, "").strip()
-            pure_name = stripped
+            pure_name = stripped or (user_me.first_name or "User").strip()
             session_data["original_name"] = pure_name
             
         pure_bio = session_data.get("original_bio")
@@ -926,7 +932,7 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
             session_data["original_bio"] = pure_bio
             
         # Compute desired name (ensuring first_name is never empty or invalid)
-        base_first = (pure_name or current_first_name or user_me.first_name or "User").strip()
+        base_first = (pure_name or current_first_name or getattr(user_me, 'first_name', '') or "User").strip()
         if not base_first:
             base_first = "User"
 
@@ -967,6 +973,11 @@ async def restore_branding(client: TelegramClient, session_data: dict):
     """
     Restores the userbot profile's original name and bio.
     """
+    # PROTECT CLONED PROFILES:
+    if session_data.get("is_cloned") or "original_first_name" in session_data:
+        logger.info(f"restore_branding: session {session_data.get('phone')} has active cloned profile, skipping restore to preserve clone.")
+        return
+
     from telethon.tl.functions.account import UpdateProfileRequest
     try:
         orig_name = session_data.get("original_name", "")

@@ -128,9 +128,12 @@ async def _send_error_report_async():
             if isinstance(target_peer, str):
                 target_peer = int(target_peer) if target_peer.lstrip('-').isdigit() else target_peer
             try:
-                target_peer = await _bot_client.get_input_entity(target_peer)
-            except Exception:
-                pass
+                target_peer = await _bot_client.get_entity(target_peer)
+            except Exception as ent_err:
+                sys.stderr.write(f"[ERROR_REPORTER_RESOLVE_FAILED] Cannot resolve log_group_id {log_group_id}: {ent_err}\n")
+                _last_sent_time = time.time() + 300.0  # Back off 5 min if channel unresolvable
+                _has_unsent_error = False
+                return
 
             await _bot_client.send_file(
                 target_peer,
@@ -142,7 +145,7 @@ async def _send_error_report_async():
             _has_unsent_error = False
         except Exception as send_err:
             sys.stderr.write(f"[ERROR_REPORTER_SEND_FAILED] {send_err}\n")
-            _last_sent_time = time.time() + 60.0  # Back off 60s on failure to prevent tight loops
+            _last_sent_time = time.time() + 300.0  # Back off 5 min on failure
             _has_unsent_error = False
     finally:
         _is_sending = False

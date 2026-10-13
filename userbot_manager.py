@@ -643,13 +643,20 @@ async def clone_profile(session_id: str, target: Any, clone_type: str = "complet
         if update_args:
             await client(UpdateProfileRequest(**update_args))
                     
-        # Update session info in database if name was changed
-        if clone_type in ("name", "complete"):
-            sess_data = database.get_session(session_id)
-            if sess_data:
-                sess_data["name"] = f"{first_name} {last_name}".strip()
-                database.save_session(sess_data)
-                bot.name = sess_data["name"]
+        # Update session info in database and mark is_cloned = True
+        sess_data = database.get_session(session_id)
+        if sess_data:
+            sess_data["is_cloned"] = True
+            if clone_type in ("name", "complete"):
+                full_name = f"{first_name} {last_name}".strip() or first_name
+                sess_data["name"] = full_name
+                sess_data["cloned_name"] = full_name
+                sess_data["original_name"] = full_name
+                bot.name = full_name
+            if clone_type in ("bio", "complete"):
+                sess_data["cloned_bio"] = bio
+                sess_data["original_bio"] = bio
+            database.save_session(sess_data)
             
         return True, f"Successfully cloned profile ({clone_type}) of {first_name} (@{user.username or 'None'})!"
     except Exception as e:
@@ -788,14 +795,21 @@ async def restore_original_profile(session_id: str) -> tuple:
                 logger.warning(f"Failed to remove cloned profile photo: {e}")
                 
         # Update session details
-        sess_data["name"] = f"{orig_first} {orig_last}".strip()
+        sess_data["name"] = f"{orig_first} {orig_last}".strip() or "User"
+        sess_data["original_name"] = sess_data["name"]
+        sess_data["original_bio"] = orig_bio
+        sess_data["is_cloned"] = False
         
         # Clean backup fields from DB
         sess_data.pop("original_first_name", None)
         sess_data.pop("original_last_name", None)
         sess_data.pop("original_about", None)
         sess_data.pop("has_original_photo", None)
+        sess_data.pop("cloned_name", None)
+        sess_data.pop("cloned_bio", None)
         database.save_session(sess_data)
+        
+        bot.name = sess_data["name"]
         
         # Clean up local backup file
         if os.path.exists(orig_photo_path):
@@ -804,6 +818,15 @@ async def restore_original_profile(session_id: str) -> tuple:
             except Exception:
                 pass
                 
+        # Re-apply branding if enabled, since original profile has been restored
+        try:
+            global_settings = database.get_global_settings()
+            branding_username = global_settings.get("branding_username") or ""
+            from userbot import apply_branding
+            await apply_branding(client, branding_username, sess_data)
+        except Exception as brand_err:
+            logger.warning(f"Could not re-apply branding after profile restore: {brand_err}")
+
         return True, "Successfully restored original profile details!"
     except Exception as e:
         logger.error(f"Error restoring original profile: {e}")
@@ -846,6 +869,12 @@ async def broadcast_branding_update():
         phone = s.get("phone") or s.get("session_id")
         if not phone:
             return
+            
+        # PROTECT CLONED PROFILES: Skip sessions with active cloned profiles
+        if s.get("is_cloned") or "original_first_name" in s:
+            logger.info(f"broadcast_branding: skipping cloned session {phone}")
+            return
+            
         bot = find_running_bot(phone)
         if bot and bot.client and bot.client.is_connected():
             async with sem:
