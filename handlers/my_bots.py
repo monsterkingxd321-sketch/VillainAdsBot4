@@ -1392,7 +1392,7 @@ def register_handlers(client):
         
         prompt_text = utils.format_html_message(
             f"<blockquote><b>» 👥 Bulk Clone Profile ({type_display})</b>\n\n"
-            f"• Enter The Username (E.G. <code>@username</code>) Or User Id Of The Target Profile To Clone For All Userbots:</blockquote>"
+            f"• Enter The Username (e.g. <code>@username</code>), User ID (e.g. <code>8668706422</code> or <code>tg://openmessage?user_id=8668706422</code>), or <b>forward any message from the target user</b>:</blockquote>"
         )
         buttons = [[utils.styled_button("🔙 Cancel", "all_slots_clone_profile", style="danger")]]
         try:
@@ -2211,7 +2211,7 @@ def register_handlers(client):
         
         prompt_text = utils.format_html_message(
             f"<blockquote><b>» 👤 Clone Profile ({type_display})</b>\n\n"
-            f"• Enter The Username (E.G. <code>@username</code>) Or User Id Of The Target Profile To Clone:</blockquote>"
+            f"• Enter The Username (e.g. <code>@username</code>), User ID (e.g. <code>8668706422</code> or <code>tg://openmessage?user_id=8668706422</code>), or <b>forward any message from the target user</b>:</blockquote>"
         )
         
         buttons = [[utils.styled_button("🔙 Cancel", f"clone_profile_{phone}", style="danger")]]
@@ -3139,9 +3139,27 @@ def register_handlers(client):
             return
  
         elif action == "WAITING_FOR_ALL_CLONE_TARGET":
-            target = event.text.strip()
-            if not target:
-                await event.reply("<blockquote><b>» ❌ Target Cannot Be Empty. Please Enter A Valid Username/Id.</b></blockquote>", parse_mode="html")
+            target_entity = None
+            raw_text = (getattr(event, "raw_text", None) or event.text or "").strip()
+            
+            # Check if user forwarded a message from the target user
+            if getattr(event.message, "forward", None):
+                try:
+                    fwd_sender = await event.message.forward.get_sender()
+                    if fwd_sender:
+                        target_entity = fwd_sender
+                        if getattr(fwd_sender, "username", None):
+                            target = f"@{fwd_sender.username}"
+                        else:
+                            target = str(fwd_sender.id)
+                except Exception as fwd_err:
+                    logger.warning(f"Could not get sender from forward: {fwd_err}")
+                    
+            if not target_entity:
+                target = raw_text
+                
+            if not target and not target_entity:
+                await event.reply("<blockquote><b>» ❌ Target Cannot Be Empty. Please Enter A Valid Username, User ID, Link, Or Forward A Message.</b></blockquote>", parse_mode="html")
                 return
                 
             clone_type = state.get("clone_type", "complete")
@@ -3151,10 +3169,16 @@ def register_handlers(client):
                 await event.reply("<blockquote><b>» ❌ No Userbots Are Currently Running. Please Start Your Userbots First.</b></blockquote>", parse_mode="html")
                 return
                 
-            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Cloning Profile Details On {len(running_phones)} Running Userbots...</b></blockquote>", parse_mode="html")
+            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Cloning Profile Details (Photos/Videos/Bio) On {len(running_phones)} Running Userbots...</b></blockquote>", parse_mode="html")
             
             async def _clone_concurrent(phone_num):
-                return await userbot_manager.clone_profile(phone_num, target, clone_type=clone_type, fallback_client=client)
+                return await userbot_manager.clone_profile(
+                    phone_num, 
+                    target, 
+                    clone_type=clone_type, 
+                    fallback_client=client, 
+                    target_entity=target_entity
+                )
                 
             results = await asyncio.gather(*[_clone_concurrent(p) for p in running_phones], return_exceptions=True)
             try:
@@ -3742,14 +3766,38 @@ def register_handlers(client):
                 
         # 3. Clone Profile
         elif action == "WAITING_FOR_CLONE_TARGET":
-            target = event.text.strip()
-            if not target:
-                await event.reply("<blockquote><b>» ❌ Target Cannot Be Empty. Please Enter A Valid Username/Id.</b></blockquote>", parse_mode="html")
+            target_entity = None
+            raw_text = (getattr(event, "raw_text", None) or event.text or "").strip()
+            
+            # Check if user forwarded a message from the target user
+            if getattr(event.message, "forward", None):
+                try:
+                    fwd_sender = await event.message.forward.get_sender()
+                    if fwd_sender:
+                        target_entity = fwd_sender
+                        if getattr(fwd_sender, "username", None):
+                            target = f"@{fwd_sender.username}"
+                        else:
+                            target = str(fwd_sender.id)
+                except Exception as fwd_err:
+                    logger.warning(f"Could not get sender from forward: {fwd_err}")
+                    
+            if not target_entity:
+                target = raw_text
+                
+            if not target and not target_entity:
+                await event.reply("<blockquote><b>» ❌ Target Cannot Be Empty. Please Enter A Valid Username, User ID, Link, Or Forward A Message.</b></blockquote>", parse_mode="html")
                 return
                 
             clone_type = state.get("clone_type", "complete")
-            progress_msg = await event.reply("<blockquote><b>» ⏳ Cloning Profile Details, Please Wait...</b></blockquote>", parse_mode="html")
-            success, msg = await userbot_manager.clone_profile(phone, target, clone_type=clone_type, fallback_client=client)
+            progress_msg = await event.reply("<blockquote><b>» ⏳ Cloning Profile Details (Photos/Videos/Bio), Please Wait...</b></blockquote>", parse_mode="html")
+            success, msg = await userbot_manager.clone_profile(
+                phone, 
+                target, 
+                clone_type=clone_type, 
+                fallback_client=client, 
+                target_entity=target_entity
+            )
             try:
                 await progress_msg.delete()
             except Exception:

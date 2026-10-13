@@ -2,7 +2,7 @@ import os
 import glob
 import logging
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, List, Union
 import database
 import config
 from userbot import UserBot
@@ -244,11 +244,12 @@ async def stop_all_bots():
         await stop_userbot(s_id)
     logger.info("All userbots stopped.")
 
-async def clone_profile(session_id: str, target: str, clone_type: str = "complete", fallback_client=None) -> tuple:
+async def clone_profile(session_id: str, target: Any, clone_type: str = "complete", fallback_client=None, target_entity=None) -> tuple:
     """
     Clones target profile (first_name, last_name, about/bio, and profile photos/videos) 
     to the userbot instance associated with session_id based on clone_type.
-    Supports usernames, invite links, and numeric Telegram user IDs.
+    Supports usernames, tg://openmessage?user_id= links, tg://user?id= links, numeric user IDs, and direct User entities.
+    Supports both static photos and animated video profile avatars.
     """
     bot = find_running_bot(session_id)
     if not bot or not bot.is_running:
@@ -264,14 +265,43 @@ async def clone_profile(session_id: str, target: str, clone_type: str = "complet
         from telethon.tl.types import PeerUser
         import re
         
-        # Clean target input
-        target_str = (str(target) or "").strip()
-        target_str = re.sub(r'<[^>]+>', '', target_str).strip().strip('\'"`()[]{}<> \t\n\r')
-        target_str = re.sub(r'^(?:https?://)?(?:t\.me|telegram\.(?:me|dog|org))/', '', target_str)
-        target_str = re.sub(r'^tg://user\?id=', '', target_str)
+        # 1. Parse target input
+        target_uid = None
+        target_username = None
+        target_str = ""
+        entity = None
+        source_client = client
         
-        if not target_str:
-            return False, "Target cannot be empty."
+        if target_entity:
+            entity = target_entity
+            source_client = fallback_client or client
+        elif hasattr(target, 'id') and not isinstance(target, (str, int)):
+            entity = target
+            source_client = fallback_client or client
+        else:
+            target_str = (str(target) or "").strip()
+            target_str = re.sub(r'<[^>]+>', '', target_str).strip().strip('\'"`()[]{}<> \t\n\r')
+            
+            # Extract user_id from query strings like tg://openmessage?user_id=123, tg://user?id=123, t.me/openmessage?user_id=123
+            uid_match = re.search(r'(?:user_id|user\?id|id)\s*[:=]\s*(\d+)', target_str, re.IGNORECASE)
+            if uid_match:
+                target_uid = int(uid_match.group(1))
+            else:
+                clean_num = target_str.lstrip('+')
+                if clean_num.isdigit() or (clean_num.startswith('-') and clean_num[1:].isdigit()):
+                    target_uid = int(clean_num)
+                else:
+                    # Clean username patterns: t.me/..., tg://..., @...
+                    clean_un = re.sub(r'^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog|org))/', '', target_str)
+                    clean_un = re.sub(r'^tg://(?:resolve\?domain=)?', '', clean_un)
+                    clean_un = clean_un.lstrip('@').strip().split('/')[0].split('?')[0].split('&')[0]
+                    if clean_un.isdigit():
+                        target_uid = int(clean_un)
+                    elif clean_un:
+                        target_username = clean_un
+                        
+            if not target_uid and not target_username:
+                return False, "Target cannot be empty. Please enter a valid username, user ID, or link."
             
         # Backup original profile details if not already backed up
         sess_data = database.get_session(session_id)
@@ -282,81 +312,164 @@ async def clone_profile(session_id: str, target: str, clone_type: str = "complet
                 me_bio = me_full.full_user.about or ""
                 
                 os.makedirs("user_data", exist_ok=True)
-                orig_photo_path = f"user_data/original_photo_{session_id}.jpg"
-                downloaded_orig = await client.download_profile_photo(me, file=orig_photo_path)
+                orig_path_base = f"user_data/original_avatar_{session_id}"
+                downloaded_orig = None
+                if getattr(me, 'photo', None):
+                    try:
+                        downloaded_orig = await client.download_media(me.photo, file=orig_path_base)
+                    except Exception:
+                        pass
+                if not downloaded_orig or not os.path.exists(downloaded_orig):
+                    downloaded_orig = await client.download_profile_photo(me, file=f"{orig_path_base}.jpg")
                 
                 sess_data["original_first_name"] = me.first_name or ""
                 sess_data["original_last_name"] = me.last_name or ""
                 sess_data["original_about"] = me_bio
-                sess_data["has_original_photo"] = bool(downloaded_orig)
+                sess_data["has_original_photo"] = bool(downloaded_orig and os.path.exists(downloaded_orig))
                 database.save_session(sess_data)
             except Exception as backup_err:
                 logger.warning(f"Failed to backup original profile for {session_id}: {backup_err}")
                 
-        # Resolve target entity across multiple clients and strategies
-        entity = None
-        source_client = client
-        
-        if target_str.isdigit() or (target_str.startswith("-") and target_str[1:].isdigit()):
-            uid = int(target_str)
-            # Try userbot client first
-            try:
-                entity = await client.get_entity(uid)
-            except Exception:
+        # 2. Resolve target entity across multiple clients and strategies
+        if not entity:
+            if target_uid:
+                # Strategy A: Try userbot client directly
                 try:
-                    entity = await client.get_entity(PeerUser(uid))
+                    entity = await client.get_entity(target_uid)
                 except Exception:
-                    pass
-            
-            # Check database for known username
-            if not entity:
-                db_u = database.get_user(uid)
-                if db_u and db_u.get("username"):
                     try:
-                        entity = await client.get_entity(db_u["username"])
+                        entity = await client.get_entity(PeerUser(target_uid))
                     except Exception:
                         pass
+                
+                # Strategy B: Try fallback_client (main bot)
+                if not entity and fallback_client:
+                    try:
+                        fb_ent = await fallback_client.get_entity(target_uid)
+                        if fb_ent:
+                            # If target has username, resolve on userbot client
+                            if getattr(fb_ent, 'username', None):
+                                try:
+                                    entity = await client.get_entity(fb_ent.username)
+                                except Exception:
+                                    pass
+                            if not entity:
+                                entity = fb_ent
+                                source_client = fallback_client
+                    except Exception as fb_err:
+                        logger.debug(f"Fallback client failed for user ID {target_uid}: {fb_err}")
                         
-            # Search userbot dialogs
-            if not entity:
-                try:
-                    async for dialog in client.iter_dialogs(limit=200):
-                        if dialog.id == uid:
-                            entity = dialog.entity
-                            break
-                except Exception:
-                    pass
-                    
-            # Fallback to main bot client if userbot doesn't have the entity in cache
-            if not entity and fallback_client:
-                try:
-                    entity = await fallback_client.get_entity(uid)
-                    source_client = fallback_client
-                except Exception as fb_err:
-                    logger.debug(f"Fallback client failed to get entity {uid}: {fb_err}")
-        else:
-            username = target_str.replace('@', '').strip()
-            try:
-                entity = await client.get_entity(username)
-            except Exception:
-                try:
-                    entity = await client.get_entity(f"@{username}")
-                except Exception:
-                    if fallback_client:
+                # Strategy C: Check other running userbots
+                if not entity:
+                    for other_phone, other_bot in _running_bots.items():
+                        if other_bot and other_bot.client and other_bot.client.is_connected() and other_bot.client != client:
+                            try:
+                                other_ent = await other_bot.client.get_entity(target_uid)
+                                if other_ent:
+                                    if getattr(other_ent, 'username', None):
+                                        try:
+                                            entity = await client.get_entity(other_ent.username)
+                                        except Exception:
+                                            pass
+                                    if not entity:
+                                        entity = other_ent
+                                        source_client = other_bot.client
+                                    break
+                            except Exception:
+                                pass
+                                
+                # Strategy D: Check database for known user record
+                if not entity:
+                    db_u = database.get_user(target_uid)
+                    if db_u and db_u.get("username"):
                         try:
-                            entity = await fallback_client.get_entity(username)
-                            source_client = fallback_client
+                            entity = await client.get_entity(db_u["username"])
                         except Exception:
                             pass
                             
+                # Strategy E: Search userbot dialogs (direct chats)
+                if not entity:
+                    try:
+                        async for dialog in client.iter_dialogs(limit=300):
+                            if dialog.id == target_uid:
+                                entity = dialog.entity
+                                source_client = client
+                                break
+                    except Exception:
+                        pass
+                        
+                # Strategy F: Check userbot contacts
+                if not entity:
+                    try:
+                        from telethon.tl.functions.contacts import GetContactsRequest
+                        contacts = await client(GetContactsRequest(hash=0))
+                        for u in getattr(contacts, 'users', []):
+                            if u.id == target_uid:
+                                entity = u
+                                source_client = client
+                                break
+                    except Exception:
+                        pass
+                        
+                # Strategy G: Search group participants in userbot's joined chats
+                if not entity:
+                    try:
+                        async for dialog in client.iter_dialogs(limit=35):
+                            if dialog.is_group or dialog.is_channel:
+                                try:
+                                    participants = await client.get_participants(dialog, search=str(target_uid))
+                                    for u in (participants or []):
+                                        if u.id == target_uid:
+                                            entity = u
+                                            source_client = client
+                                            break
+                                except Exception:
+                                    pass
+                            if entity:
+                                break
+                    except Exception:
+                        pass
+            elif target_username:
+                try:
+                    entity = await client.get_entity(target_username)
+                except Exception:
+                    try:
+                        entity = await client.get_entity(f"@{target_username}")
+                    except Exception:
+                        if fallback_client:
+                            try:
+                                entity = await fallback_client.get_entity(target_username)
+                                source_client = fallback_client
+                            except Exception:
+                                pass
+                        if not entity:
+                            for other_phone, other_bot in _running_bots.items():
+                                if other_bot and other_bot.client and other_bot.client.is_connected() and other_bot.client != client:
+                                    try:
+                                        entity = await other_bot.client.get_entity(target_username)
+                                        source_client = other_bot.client
+                                        break
+                                    except Exception:
+                                        pass
+                                        
+        # If entity has username and source_client != client, attempt resolving on client
+        if entity and getattr(entity, 'username', None) and source_client != client:
+            try:
+                ub_ent = await client.get_entity(entity.username)
+                if ub_ent:
+                    entity = ub_ent
+                    source_client = client
+            except Exception:
+                pass
+                
         if not entity:
-            return False, f"Could not find target '{target_str}'. Please verify username or user ID."
+            target_display = target_username or (f"User ID {target_uid}" if target_uid else target_str)
+            return False, f"Could not find target '{target_display}'. If target has no public @username, please forward any message from them into this chat to clone!"
             
-        # Get full user details (including bio)
+        # 3. Get full user details (including bio)
         try:
             full_user = await source_client(GetFullUserRequest(entity))
         except Exception as e_full:
-            # If failed on source_client, try fallback
             if fallback_client and source_client != fallback_client:
                 try:
                     full_user = await fallback_client(GetFullUserRequest(entity))
@@ -371,53 +484,155 @@ async def clone_profile(session_id: str, target: str, clone_type: str = "complet
         first_name = (user.first_name or "")[:64]
         last_name = (user.last_name or "")[:64]
             
-        # Download and clone target's profile photo(s) & video(s)
+        # 4. Download and clone target's profile photo(s) & video(s)
         if clone_type in ("photo", "complete"):
+            os.makedirs("user_data", exist_ok=True)
+            media_cloned = 0
+            
+            # Select client capable of downloading profile media (user accounts required, bots get BOT_METHOD_INVALID)
+            photo_client = source_client
+            if getattr(photo_client, 'is_bot', False) or (fallback_client and photo_client == fallback_client):
+                photo_client = client
+                
+            photos = []
             try:
-                photos = await source_client.get_profile_photos(entity, limit=10)
-                if photos:
-                    # Upload in reverse order so the main (newest) avatar is uploaded last and stays on top
-                    for idx, p in enumerate(reversed(photos)):
-                        has_video = bool(getattr(p, 'video_sizes', None))
-                        ext = ".mp4" if has_video else ".jpg"
-                        temp_path = f"user_data/clone_{session_id}_{idx}{ext}"
-                        try:
-                            dl_path = await source_client.download_media(p, file=temp_path)
-                            if dl_path and os.path.exists(dl_path):
-                                uploaded = await client.upload_file(dl_path)
-                                if has_video:
-                                    await client(UploadProfilePhotoRequest(video=uploaded, video_start_ts=0.0))
-                                else:
-                                    await client(UploadProfilePhotoRequest(file=uploaded))
-                        except Exception as up_err:
-                            logger.warning(f"Failed to clone avatar photo/video {idx}: {up_err}")
-                        finally:
-                            if os.path.exists(temp_path):
+                photos = await photo_client.get_profile_photos(entity, limit=10)
+            except Exception as e_p:
+                logger.debug(f"Failed to fetch profile photos with photo_client: {e_p}")
+                if photo_client != client:
+                    try:
+                        photos = await client.get_profile_photos(entity, limit=10)
+                        photo_client = client
+                    except Exception:
+                        pass
+                        
+            if photos:
+                # Upload in reverse order so the main (newest) avatar is uploaded last and stays on top
+                for idx, p in enumerate(reversed(photos)):
+                    temp_base = f"user_data/clone_{session_id}_{idx}"
+                    # Clean previous temp files matching this index
+                    try:
+                        for existing_file in os.listdir("user_data"):
+                            if existing_file.startswith(f"clone_{session_id}_{idx}"):
                                 try:
-                                    os.remove(temp_path)
+                                    os.remove(os.path.join("user_data", existing_file))
                                 except Exception:
                                     pass
-                        await asyncio.sleep(0.8)
-                else:
-                    # Single photo fallback
-                    temp_path = f"user_data/temp_clone_{session_id}.jpg"
+                    except Exception:
+                        pass
+                        
+                    dl_path = None
+                    has_video = bool(getattr(p, 'video_sizes', None)) or bool(getattr(p, 'has_video', False))
+                    
                     try:
-                        dl_path = await source_client.download_profile_photo(entity, file=temp_path)
+                        # download_media without extension allows Telethon to auto-detect .mp4 or .jpg
+                        dl_path = await photo_client.download_media(p, file=temp_base)
+                        if not dl_path or not os.path.exists(dl_path):
+                            ext = ".mp4" if has_video else ".jpg"
+                            dl_path = await photo_client.download_media(p, file=f"{temp_base}{ext}")
+                            
                         if dl_path and os.path.exists(dl_path):
+                            # Verify if downloaded file is an MP4 video avatar
+                            is_video = dl_path.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))
+                            if not is_video:
+                                try:
+                                    with open(dl_path, 'rb') as f_check:
+                                        if b'ftyp' in f_check.read(16):
+                                            is_video = True
+                                except Exception:
+                                    pass
+                                    
                             uploaded = await client.upload_file(dl_path)
-                            await client(UploadProfilePhotoRequest(file=uploaded))
-                    except Exception as single_err:
-                        logger.warning(f"Failed single avatar download: {single_err}")
+                            if is_video:
+                                try:
+                                    await client(UploadProfilePhotoRequest(video=uploaded, video_start_ts=0.0))
+                                    media_cloned += 1
+                                    logger.info(f"Successfully cloned profile video {dl_path} for {session_id}")
+                                except Exception as vid_err:
+                                    logger.warning(f"Video profile upload failed: {vid_err}, falling back to static thumbnail")
+                                    # Fallback to downloading static thumbnail of this avatar
+                                    thumb_file = f"{temp_base}_thumb.jpg"
+                                    try:
+                                        dl_thumb = await photo_client.download_media(p, file=thumb_file, thumb=-1)
+                                        if dl_thumb and os.path.exists(dl_thumb):
+                                            up_thumb = await client.upload_file(dl_thumb)
+                                            await client(UploadProfilePhotoRequest(file=up_thumb))
+                                            media_cloned += 1
+                                    except Exception as th_err:
+                                        logger.warning(f"Thumbnail fallback failed: {th_err}")
+                                    finally:
+                                        if os.path.exists(thumb_file):
+                                            try:
+                                                os.remove(thumb_file)
+                                            except Exception:
+                                                pass
+                            else:
+                                await client(UploadProfilePhotoRequest(file=uploaded))
+                                media_cloned += 1
+                                logger.info(f"Successfully cloned profile photo {dl_path} for {session_id}")
+                    except Exception as up_err:
+                        logger.warning(f"Failed to clone avatar photo/video {idx}: {up_err}")
                     finally:
-                        if os.path.exists(temp_path):
+                        if dl_path and os.path.exists(dl_path):
                             try:
-                                os.remove(temp_path)
+                                os.remove(dl_path)
                             except Exception:
                                 pass
-            except Exception as e_media:
-                logger.warning(f"Error during profile photo/video cloning: {e_media}")
+                    await asyncio.sleep(0.8)
+                    
+            # Fallback single avatar download if get_profile_photos had 0 or failed
+            if media_cloned == 0:
+                single_base = f"user_data/temp_clone_{session_id}"
+                dl_single = None
+                
+                # 1. Try download_media on entity.photo
+                if getattr(entity, 'photo', None):
+                    try:
+                        dl_single = await photo_client.download_media(entity.photo, file=single_base)
+                    except Exception:
+                        pass
+                        
+                # 2. Try download_profile_photo
+                if not dl_single or not os.path.exists(dl_single):
+                    try:
+                        dl_single = await photo_client.download_profile_photo(entity, file=f"{single_base}.jpg")
+                    except Exception:
+                        if photo_client != source_client:
+                            try:
+                                dl_single = await source_client.download_profile_photo(entity, file=f"{single_base}.jpg")
+                            except Exception:
+                                pass
+                                
+                if dl_single and os.path.exists(dl_single):
+                    try:
+                        is_vid = dl_single.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))
+                        if not is_vid:
+                            try:
+                                with open(dl_single, 'rb') as sf:
+                                    if b'ftyp' in sf.read(16):
+                                        is_vid = True
+                            except Exception:
+                                pass
+                                
+                        uploaded = await client.upload_file(dl_single)
+                        if is_vid:
+                            try:
+                                await client(UploadProfilePhotoRequest(video=uploaded, video_start_ts=0.0))
+                            except Exception as s_vid_err:
+                                logger.warning(f"Single video upload failed: {s_vid_err}")
+                        else:
+                            await client(UploadProfilePhotoRequest(file=uploaded))
+                        media_cloned += 1
+                    except Exception as s_err:
+                        logger.warning(f"Failed single avatar upload: {s_err}")
+                    finally:
+                        if os.path.exists(dl_single):
+                            try:
+                                os.remove(dl_single)
+                            except Exception:
+                                pass
             
-        # Update name and bio based on clone_type
+        # 5. Update name and bio based on clone_type
         update_args = {}
         if clone_type in ("name", "complete"):
             update_args["first_name"] = first_name
@@ -542,14 +757,26 @@ async def restore_original_profile(session_id: str) -> tuple:
             about=orig_bio
         ))
         
-        # Restore photo if it exists
+        # Restore photo or video if it exists
         orig_photo_path = f"user_data/original_photo_{session_id}.jpg"
-        if sess_data.get("has_original_photo") and os.path.exists(orig_photo_path):
+        orig_avatar_mp4 = f"user_data/original_avatar_{session_id}.mp4"
+        orig_avatar_jpg = f"user_data/original_avatar_{session_id}.jpg"
+        
+        restore_file = None
+        for cand in (orig_avatar_mp4, orig_avatar_jpg, orig_photo_path):
+            if os.path.exists(cand):
+                restore_file = cand
+                break
+                
+        if sess_data.get("has_original_photo") and restore_file:
             try:
-                uploaded = await client.upload_file(orig_photo_path)
-                await client(UploadProfilePhotoRequest(file=uploaded))
+                uploaded = await client.upload_file(restore_file)
+                if restore_file.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')):
+                    await client(UploadProfilePhotoRequest(video=uploaded, video_start_ts=0.0))
+                else:
+                    await client(UploadProfilePhotoRequest(file=uploaded))
             except Exception as e:
-                logger.warning(f"Failed to restore original profile photo: {e}")
+                logger.warning(f"Failed to restore original profile photo/video: {e}")
         else:
             # If they didn't have a photo originally, remove current profile photo
             try:
