@@ -131,19 +131,51 @@ async def cleanup_loop():
 
 async def main():
     check_single_instance()
+    
+    # 0. Validate Essential Credentials
+    if not config.BOT_TOKEN:
+        print("\n[X] FATAL: BOT_TOKEN is missing or empty in .env!", flush=True)
+        print("    Please set BOT_TOKEN in your .env file or environment variables.\n", flush=True)
+        sys.exit(1)
+        
+    if not config.API_ID or not config.API_HASH:
+        print("\n[X] FATAL: API_ID or API_HASH is missing or empty in .env!", flush=True)
+        print(f"    API_ID: {config.API_ID}, API_HASH: {'SET' if config.API_HASH else 'EMPTY'}\n", flush=True)
+        sys.exit(1)
+
     print("[1/5] [>] Connecting to Database (MongoDB)...", flush=True)
     database.db_init()
     print("[2/5] [+] Database Connected Successfully!", flush=True)
     
-    # Initialize Bot Client with resilient connection retries for VPS/Cloud environments
-    print("[3/5] [>] Connecting Telegram Bot Manager...", flush=True)
+    # Initialize Bot Client with Obfuscated TCP to bypass cloud/container firewalls (Deepnote/Docker/VPS)
+    print("[3/5] [>] Configuring Telegram Bot Client...", flush=True)
+    from telethon.network.connection import ConnectionTcpObfuscated, ConnectionTcpIntermediate
+    
+    # Self-heal corrupted session file from previous abrupt restarts
+    session_file = "bot_session.session"
+    if os.path.exists(session_file):
+        try:
+            import sqlite3
+            con = sqlite3.connect(session_file)
+            res = con.execute("PRAGMA integrity_check;").fetchone()
+            con.close()
+            if not res or res[0] != "ok":
+                logger.warning("Corrupted bot_session.session detected. Resetting session file.")
+                os.remove(session_file)
+        except Exception:
+            try:
+                os.remove(session_file)
+            except Exception:
+                pass
+
     bot = TelegramClient(
         "bot_session", 
         config.API_ID, 
         config.API_HASH,
-        connection_retries=15,
-        retry_delay=2,
-        timeout=25,
+        connection=ConnectionTcpObfuscated,
+        connection_retries=10,
+        retry_delay=1,
+        timeout=15,
         auto_reconnect=True
     )
     
@@ -164,8 +196,29 @@ async def main():
                 
     handlers.register_all_handlers(bot)
     
-    print("[5/5] [>] Starting Telegram Bot...", flush=True)
-    await bot.start(bot_token=config.BOT_TOKEN)
+    print(f"[5/5] [>] Authenticating Bot (Token: {config.BOT_TOKEN[:8]}...)...", flush=True)
+    try:
+        # Avoid hanging on console input by explicitly providing phone=None
+        await asyncio.wait_for(bot.start(bot_token=config.BOT_TOKEN, phone=None), timeout=25)
+    except (asyncio.TimeoutError, Exception) as conn_err:
+        print(f"[!] Primary connection encountered: {conn_err}. Trying Intermediate TCP fallback...", flush=True)
+        try:
+            await bot.disconnect()
+        except Exception:
+            pass
+        bot = TelegramClient(
+            "bot_session",
+            config.API_ID,
+            config.API_HASH,
+            connection=ConnectionTcpIntermediate,
+            connection_retries=6,
+            retry_delay=1,
+            timeout=15,
+            auto_reconnect=True
+        )
+        handlers.register_all_handlers(bot)
+        await bot.start(bot_token=config.BOT_TOKEN, phone=None)
+
     me = await bot.get_me()
     bot_username = getattr(me, 'username', None) or str(me.id)
     print("=" * 60, flush=True)

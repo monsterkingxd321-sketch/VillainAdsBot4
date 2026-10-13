@@ -7,10 +7,19 @@ load_dotenv()
 BOT_NAME = os.getenv("BOT_NAME", "𝗫𝗧𝗥 𝗔𝗗 𝗕𝗢𝗧")
 DEFAULT_DB_NAME = "xtr_ad_bot"
 
+def _clean_env(val: str, default: str = "") -> str:
+    """Strips whitespace and surrounding quotes from environment variable values."""
+    if val is None:
+        return default
+    s = str(val).strip()
+    while len(s) >= 2 and ((s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'"))):
+        s = s[1:-1].strip()
+    return s
+
 # Telegram API credentials for userbots
-api_id_val = os.getenv("API_ID", "")
-API_ID = int(api_id_val) if api_id_val.strip().isdigit() else 0
-API_HASH = os.getenv("API_HASH", "")
+api_id_val = _clean_env(os.getenv("API_ID", ""))
+API_ID = int(api_id_val) if api_id_val.isdigit() else 0
+API_HASH = _clean_env(os.getenv("API_HASH", ""))
 
 import random
 
@@ -24,20 +33,20 @@ def get_random_api_id_hash():
         pairs.append((API_ID, API_HASH))
         
     for i in range(1, 100):
-        aid = os.getenv(f"API_ID{i}")
-        ahash = os.getenv(f"API_HASH{i}")
-        if aid and ahash and aid.strip().isdigit():
-            pairs.append((int(aid), ahash.strip()))
+        aid = _clean_env(os.getenv(f"API_ID{i}", ""))
+        ahash = _clean_env(os.getenv(f"API_HASH{i}", ""))
+        if aid and ahash and aid.isdigit():
+            pairs.append((int(aid), ahash))
             
     if pairs:
         return random.choice(pairs)
     return (0, "")
 
 # Bot token for the main manager bot
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = _clean_env(os.getenv("BOT_TOKEN", ""))
 
 # MongoDB connection URI
-MONGODB_URI = os.getenv("MONGODB_URI") or os.getenv("MONGO_DB_URI") or ""
+MONGODB_URI = _clean_env(os.getenv("MONGODB_URI") or os.getenv("MONGO_DB_URI") or "")
 
 
 # Parse original admin IDs (which can be whitelisted using ORIGINAL_ADMIN_IDS or OWNER_ID)

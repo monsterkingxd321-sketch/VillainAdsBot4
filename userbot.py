@@ -1229,19 +1229,10 @@ class UserBot:
                     silence_file = await generate_silence()
                     if silence_file and os.path.exists(silence_file):
                         try:
-                            await pytg.join_group_call(
-                                full_chat_id,
-                                MediaStream(silence_file)
-                            )
+                            await self._safe_play(pytg, full_chat_id, MediaStream(silence_file))
                             joined = True
                         except Exception as join_err:
-                            err_str = str(join_err).lower()
-                            if "already_joined" in err_str or "already in" in err_str or "node" in err_str:
-                                try:
-                                    await pytg.change_stream(full_chat_id, MediaStream(silence_file))
-                                    joined = True
-                                except Exception:
-                                    pass
+                            logger.debug(f"Initial silence stream play note: {join_err}")
                         if joined:
                             try:
                                 await pytg.mute_stream(full_chat_id)
@@ -1336,7 +1327,7 @@ class UserBot:
         try:
             if self.pytgcalls_client and target_chat:
                 try:
-                    await self.pytgcalls_client.leave_group_call(target_chat)
+                    await self._safe_leave(self.pytgcalls_client, target_chat)
                 except Exception as e:
                     logger.warning(f"Error leaving via pytgcalls: {e}")
                 try:
@@ -1382,7 +1373,7 @@ class UserBot:
         for cid in list(chats_to_leave):
             try:
                 if self.pytgcalls_client:
-                    await self.pytgcalls_client.leave_group_call(cid)
+                    await self._safe_leave(self.pytgcalls_client, cid)
                 left_count += 1
             except Exception as e:
                 logger.warning(f"Error leaving group call {cid} for userbot {self.session_id}: {e}")
@@ -1440,6 +1431,27 @@ class UserBot:
             await self.pytgcalls_client.start()
         return self.pytgcalls_client
 
+    async def _safe_play(self, pytg, chat_id, stream_obj):
+        """Unified media player for pytgcalls 1.x and 2.x."""
+        if hasattr(pytg, "play"):
+            return await pytg.play(chat_id, stream_obj)
+        elif hasattr(pytg, "join_group_call"):
+            try:
+                return await pytg.join_group_call(chat_id, stream_obj)
+            except Exception:
+                if hasattr(pytg, "change_stream"):
+                    return await pytg.change_stream(chat_id, stream_obj)
+                raise
+        elif hasattr(pytg, "change_stream"):
+            return await pytg.change_stream(chat_id, stream_obj)
+
+    async def _safe_leave(self, pytg, chat_id):
+        """Unified call leaver for pytgcalls 1.x and 2.x."""
+        if hasattr(pytg, "leave_call"):
+            return await pytg.leave_call(chat_id)
+        elif hasattr(pytg, "leave_group_call"):
+            return await pytg.leave_group_call(chat_id)
+
     async def mute_mic(self, chat_id: Optional[int] = None) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
         if not self.is_running or not target_chat:
@@ -1480,18 +1492,17 @@ class UserBot:
 
             pytg = await self.get_pytgcalls()
             try:
-                await pytg.leave_group_call(target_chat)
+                await self._safe_leave(pytg, target_chat)
                 logger.info(f"Userbot {self.session_id} left VC {target_chat} after stop.")
             except Exception as leave_err:
                 err_str = str(leave_err).lower()
                 if "not in a group call" in err_str or "not_in" in err_str or "no active" in err_str:
-                    # Already not in VC — treat as success
                     logger.info(f"Userbot {self.session_id} was already not in VC {target_chat}.")
                 else:
-                    logger.warning(f"leave_group_call error: {leave_err} — falling back to silence+mute")
+                    logger.warning(f"leave call error: {leave_err} — falling back to silence+mute")
                     try:
                         silence_file = await generate_silence()
-                        await pytg.change_stream(target_chat, MediaStream(silence_file))
+                        await self._safe_play(pytg, target_chat, MediaStream(silence_file))
                         await pytg.mute_stream(target_chat)
                         self.is_muted = True
                     except Exception:
@@ -1600,37 +1611,22 @@ class UserBot:
             else:
                 stream_obj = MediaStream(file_path)
                 
-            # Always try change_stream first — pytgcalls handles it whether
-            # we're already in VC or not (after .end, pytgcalls may still be
-            # connected internally even if our tracking says otherwise).
             try:
-                await pytg.change_stream(actual_chat, stream_obj)
+                await self._safe_play(pytg, actual_chat, stream_obj)
                 self.joined_vcs.add(actual_chat)
                 self.current_vc_chat_id = actual_chat
-                logger.info(f"change_stream succeeded for {actual_chat}")
-            except Exception as cs_err:
-                cs_err_str = str(cs_err).lower()
-                logger.warning(f"change_stream failed ({cs_err}), trying join_group_call...")
-                # If video failed with video source error, fallback to AudioPiped
-                if play_type == "video" and ("video source" in cs_err_str or "no video" in cs_err_str):
+                logger.info(f"Playback succeeded for {actual_chat}")
+            except Exception as play_err:
+                play_err_str = str(play_err).lower()
+                logger.warning(f"Initial playback failed ({play_err}), attempting fallback...")
+                if play_type == "video" and ("video source" in play_err_str or "no video" in play_err_str):
                     stream_obj = MediaStream(file_path)
                 try:
-                    await pytg.join_group_call(actual_chat, stream_obj)
+                    await self._safe_play(pytg, actual_chat, stream_obj)
                     self.joined_vcs.add(actual_chat)
                     self.current_vc_chat_id = actual_chat
-                    logger.info(f"join_group_call succeeded for {actual_chat}")
-                except Exception as join_err:
-                    join_err_str = str(join_err).lower()
-                    if "already" in join_err_str or "node" in join_err_str:
-                        # pytgcalls says we're still in — try change_stream one more time
-                        try:
-                            await pytg.change_stream(actual_chat, stream_obj)
-                            self.joined_vcs.add(actual_chat)
-                            self.current_vc_chat_id = actual_chat
-                        except Exception as final_err:
-                            return False, f"Could not stream media: {final_err}", None
-                    else:
-                        return False, f"Could not stream media: {join_err}", None
+                except Exception as final_err:
+                    return False, f"Could not stream media: {final_err}", None
                     
             song_info = {
                 "title": title,
@@ -1751,10 +1747,16 @@ class UserBot:
         # Spoof a deterministic device profile to avoid detection
         device_prof = utils.get_device_profile(self.session_id)
         api_id, api_hash = config.get_random_api_id_hash()
+        from telethon.network.connection import ConnectionTcpObfuscated
         self.client = TelegramClient(
             session_file, 
             api_id, 
             api_hash,
+            connection=ConnectionTcpObfuscated,
+            connection_retries=6,
+            retry_delay=1,
+            timeout=15,
+            auto_reconnect=True,
             device_model=device_prof["device_model"],
             system_version=device_prof["system_version"],
             app_version=device_prof["app_version"]
@@ -1941,7 +1943,7 @@ class UserBot:
         if self.pytgcalls_client:
             try:
                 if self.current_vc_chat_id:
-                    await self.pytgcalls_client.leave_group_call(self.current_vc_chat_id)
+                    await self._safe_leave(self.pytgcalls_client, self.current_vc_chat_id)
             except Exception:
                 pass
             try:
