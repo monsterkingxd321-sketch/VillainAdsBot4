@@ -117,7 +117,7 @@ async def cleanup_loop():
                 if os.path.exists(folder):
                     for fname in os.listdir(folder):
                         fpath = os.path.join(folder, fname)
-                        if os.path.isfile(fpath):
+                        if os.path.isfile(fpath) and not fname.lower().endswith((".ttf", ".otf")):
                             if os.stat(fpath).st_mtime < now - 3600:
                                 try:
                                     os.remove(fpath)
