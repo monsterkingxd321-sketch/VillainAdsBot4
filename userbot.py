@@ -1550,9 +1550,9 @@ class UserBot:
             
         try:
             pytg = await self.get_pytgcalls()
+            from pytgcalls.types import MediaStream, VideoQuality
             
             if play_type == "video":
-                from pytgcalls.types import MediaStream, VideoQuality
                 w, h = 640, 360 # Default fallback
                 has_video_track = False
                 try:
