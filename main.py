@@ -1,3 +1,4 @@
+print("[*] Starting Villain Ads Bot v4.0...", flush=True)
 import os
 import logging
 import asyncio
@@ -132,16 +133,17 @@ async def main():
     except Exception:
         pass
     check_single_instance()
-    logger.info("Initializing database connection...")
+    print("[1/5] 🔌 Connecting to Database (MongoDB)...", flush=True)
     database.db_init()
+    print("[2/5] ✅ Database Connected Successfully!", flush=True)
     
     # Initialize Bot Client
-    logger.info("Initializing Bot client...")
+    print("[3/5] 🤖 Connecting Telegram Bot Manager...", flush=True)
     bot = TelegramClient("bot_session", config.API_ID, config.API_HASH)
     error_reporter.set_bot_client(bot)
     
     # Register all command and callback handlers
-    logger.info("Registering event handlers...")
+    print("[4/5] ⚙️ Registering Event Handlers...", flush=True)
     
     # 🛡️ GLOBAL ANTIVIRUS & ANTI-HACK SHIELD
     from telethon import events
@@ -157,9 +159,14 @@ async def main():
                 
     handlers.register_all_handlers(bot)
     
-    logger.info("Starting bot manager...")
+    print("[5/5] 🚀 Starting Telegram Bot...", flush=True)
     await bot.start(bot_token=config.BOT_TOKEN)
-    logger.info("Telegram Bot Manager is running successfully.")
+    me = await bot.get_me()
+    bot_username = getattr(me, 'username', None) or str(me.id)
+    print("=" * 60, flush=True)
+    print(f" ✨ VILLAIN ADS BOT IS LIVE: @{bot_username} ({me.id})", flush=True)
+    print(" 📡 Ready & Listening for commands in background!", flush=True)
+    print("=" * 60, flush=True)
     
     # Track tasks to prevent garbage collection
     background_tasks = set()
@@ -177,6 +184,7 @@ async def main():
                 await asyncio.sleep(restart_delay)
 
     # Resume userbots that were running prior to shutdown in background (one-shot startup task)
+    print("[*] Resuming active userbots in background...", flush=True)
     t1 = asyncio.create_task(userbot_manager.start_all_running_bots())
     background_tasks.add(t1)
     t1.add_done_callback(background_tasks.discard)
