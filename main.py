@@ -155,66 +155,56 @@ async def main():
     
     session_file = "bot_session.session"
     
-    # 1. Check if we have an authorized session in MongoDB to restore if missing or invalid
+    # 1. Fetch authorized session from MongoDB if available
     mongo_session_str = None
     try:
         doc = database._db.settings.find_one({"id": "global"})
-        if doc:
-            mongo_session_str = doc.get("bot_session_str")
+        if doc and doc.get("bot_session_str"):
+            mongo_session_str = doc.get("bot_session_str").strip()
     except Exception as e:
         logger.warning(f"Failed to query bot session from MongoDB: {e}")
 
-    # If session file doesn't exist or is empty, restore it from MongoDB cache
-    need_restore = False
-    if not os.path.exists(session_file):
-        need_restore = True
+    # Clean up stale session file if we have a valid cloud session string
+    if mongo_session_str and os.path.exists(session_file):
+        try:
+            os.remove(session_file)
+        except Exception:
+            pass
+
+    # Prioritize StringSession from database to completely avoid corrupted/stale .session files on VPS/Deepnote
+    if mongo_session_str:
+        print("[+] Loaded verified Telegram bot session from database cache!", flush=True)
+        session_target = StringSession(mongo_session_str)
     else:
-        try:
-            if os.path.getsize(session_file) == 0:
-                need_restore = True
-        except Exception:
-            need_restore = True
-
-    if need_restore and mongo_session_str:
-        try:
-            ss = StringSession(mongo_session_str)
-            fs = SQLiteSession("bot_session")
-            fs.set_dc(ss.dc_id, ss.server_address, ss.port)
-            fs.auth_key = ss.auth_key
-            fs.save()
-            fs.close()
-            print("[+] Successfully restored authorized bot session from cloud database!", flush=True)
-        except Exception as restore_err:
-            logger.warning(f"Failed to unpack session from MongoDB: {restore_err}")
-
-    # Self-heal corrupted session file from previous abrupt restarts
-    if os.path.exists(session_file):
-        try:
-            import sqlite3
-            con = sqlite3.connect(session_file)
-            res = con.execute("PRAGMA integrity_check;").fetchone()
-            con.close()
-            if not res or res[0] != "ok":
-                logger.warning("Corrupted bot_session.session detected. Resetting session file.")
-                os.remove(session_file)
-        except Exception:
+        # Self-heal corrupted session file from previous abrupt restarts
+        if os.path.exists(session_file):
             try:
-                os.remove(session_file)
+                import sqlite3
+                con = sqlite3.connect(session_file)
+                res = con.execute("PRAGMA integrity_check;").fetchone()
+                con.close()
+                if not res or res[0] != "ok":
+                    logger.warning("Corrupted bot_session.session detected. Resetting session file.")
+                    os.remove(session_file)
             except Exception:
-                pass
+                try:
+                    os.remove(session_file)
+                except Exception:
+                    pass
+        session_target = "bot_session"
 
     bot = TelegramClient(
-        "bot_session", 
+        session_target, 
         config.API_ID, 
         config.API_HASH,
         connection=ConnectionTcpObfuscated,
-        connection_retries=15,
+        connection_retries=10,
         retry_delay=1,
-        timeout=20,
+        timeout=15,
         auto_reconnect=True
     )
     
-    # If this is a fresh session without any DC configured, pre-configure DC 5 directly
+    # If using fresh file session without any DC configured, pre-configure DC 5 directly
     # This prevents slow DC 2 -> DC 5 redirect on cloud environments (Deepnote/Docker/VPS)
     try:
         if not bot.session.server_address:
