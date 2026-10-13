@@ -12,7 +12,8 @@ import config
 import database
 import utils
 import userbot_manager
-from userbot import download_media, extract_media_info, generate_silence, YouTube
+from youtube import YouTube
+from userbot import download_media, extract_media_info, generate_silence
 
 logger = logging.getLogger(__name__)
 

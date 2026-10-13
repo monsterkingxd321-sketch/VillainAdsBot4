@@ -119,298 +119,20 @@ except Exception as e:
     logger.warning(f"PyTgCalls is not available: {e}")
 import config
 
-API_URL = getattr(config, "MEOW_API_URL", os.environ.get("MEOW_API_URL", "https://music.yukiapi.site"))
-API_KEY = getattr(config, "MEOW_API_KEY", os.environ.get("MEOW_API_KEY", "yuki_238df692826dd11efbf4c4e3a4dac141"))
+from youtube import (
+    YouTube,
+    YouTubeAPI,
+    download_song,
+    download_video,
+    time_to_seconds,
+    DOWNLOAD_DIR,
+    API_URL,
+    API_KEY,
+)
 
 
-DOWNLOAD_DIR = "downloads"
+# YouTubeAPI and YouTube instance are imported from youtube.py
 
-
-def time_to_seconds(time):
-    stringt = str(time)
-    return sum(int(x) * 60 ** i for i, x in enumerate(reversed(stringt.split(":"))))
-
-
-async def download_song(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else (link.split("youtu.be/")[-1].split("?")[0] if "youtu.be/" in link else link)
-    if not video_id or len(video_id) < 3:
-        return None
-
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
-
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-        return file_path
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            stream_url = f"{API_URL}/stream/{video_id}?key={API_KEY}&type=audio&quality=128"
-            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-            return file_path
-        return None
-    except Exception:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
-
-
-async def download_video(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else (link.split("youtu.be/")[-1].split("?")[0] if "youtu.be/" in link else link)
-    if not video_id or len(video_id) < 3:
-        return None
-
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-        return file_path
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            stream_url = f"{API_URL}/stream/{video_id}?key={API_KEY}&type=video&quality=480"
-            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-            return file_path
-        return None
-    except Exception:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
-
-
-class YouTubeAPI:
-    def __init__(self):
-        self.base = "https://www.youtube.com/watch?v="
-        self.regex = r"(?:youtube\.com|youtu\.be)"
-        self.status = "https://www.youtube.com/oembed?url="
-        self.listbase = "https://youtube.com/playlist?list="
-        self.reg = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-    async def exists(self, link: str, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.base + link
-        return bool(re.search(self.regex, link))
-
-    async def url(self, message_1: Message) -> Union[str, None]:
-        messages = [message_1]
-        if hasattr(message_1, "reply_to_message") and message_1.reply_to_message:
-            messages.append(message_1.reply_to_message)
-        for message in messages:
-            if not message:
-                continue
-            if getattr(message, "entities", None):
-                for entity in message.entities:
-                    if MessageEntityType and entity.type == MessageEntityType.URL:
-                        text = message.text or message.caption or ""
-                        return text[entity.offset: entity.offset + entity.length]
-            elif getattr(message, "caption_entities", None):
-                for entity in message.caption_entities:
-                    if MessageEntityType and entity.type == MessageEntityType.TEXT_LINK:
-                        return getattr(entity, "url", None)
-        return None
-
-    @staticmethod
-    def _sync_search(link: str, limit: int = 1):
-        try:
-            s = VideosSearch(link, limit=limit)
-            return s.result()
-        except Exception as e:
-            logger.error(f"VideosSearch error: {e}")
-            return {}
-
-    @staticmethod
-    def _sync_details_fallback(query_str: str):
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,
-                'skip_download': True,
-                'geo_bypass': True,
-                'nocheckcertificate': True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                q = query_str if query_str.startswith("http") else f"ytsearch1:{query_str}"
-                info = ydl.extract_info(q, download=False)
-                if info:
-                    entry = info.get('entries', [info])[0] if 'entries' in info else info
-                    if entry:
-                        title = entry.get('title')
-                        duration = entry.get('duration')
-                        dur_sec = int(duration) if duration else 0
-                        mins, secs = divmod(dur_sec, 60)
-                        dur_min = f"{mins}:{secs:02d}"
-                        thumb = entry.get('thumbnail')
-                        vid = entry.get('id')
-                        return title, dur_min, dur_sec, thumb, vid
-        except Exception as e:
-            logger.error(f"yt-dlp details fallback failed: {e}")
-        return None, "0:00", 0, None, None
-
-    async def details(self, link: str, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.base + link
-        if "&" in link:
-            link = link.split("&")[0]
-        res_data = await asyncio.to_thread(self._sync_search, link, 1)
-        results = res_data.get("result", [])
-        if results:
-            result = results[0]
-            title = result.get("title") or "YouTube Video"
-            duration_min = result.get("duration") or "0:00"
-            thumbs = result.get("thumbnails", [])
-            thumbnail = thumbs[0]["url"].split("?")[0] if thumbs else None
-            vidid = result.get("id")
-            duration_sec = int(time_to_seconds(duration_min)) if duration_min else 0
-            return title, duration_min, duration_sec, thumbnail, vidid
-            
-        return await asyncio.to_thread(self._sync_details_fallback, link)
-
-    async def title(self, link: str, videoid: Union[bool, str] = None):
-        t, m, s, thumb, vid = await self.details(link, videoid=videoid)
-        return t
-
-    async def duration(self, link: str, videoid: Union[bool, str] = None):
-        t, m, s, thumb, vid = await self.details(link, videoid=videoid)
-        return m
-
-    async def thumbnail(self, link: str, videoid: Union[bool, str] = None):
-        t, m, s, thumb, vid = await self.details(link, videoid=videoid)
-        return thumb
-
-    async def video(self, link: str, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.base + link
-        if "&" in link:
-            link = link.split("&")[0]
-        try:
-            downloaded_file = await download_video(link)
-            if downloaded_file:
-                return 1, downloaded_file
-            return 0, "Video download failed"
-        except Exception as e:
-            return 0, f"Video download error: {e}"
-
-    async def playlist(self, link, limit, user_id, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.listbase + link
-        if "&" in link:
-            link = link.split("&")[0]
-        try:
-            plist = await Playlist.get(link)
-        except Exception:
-            return []
-        videos = plist.get("videos") or []
-        ids = []
-        for data in videos[:limit]:
-            if not data:
-                continue
-            vid = data.get("id")
-            if not vid:
-                continue
-            ids.append(vid)
-        return ids
-
-    async def track(self, link: str, videoid: Union[bool, str] = None):
-        t, m, s, thumb, vid = await self.details(link, videoid=videoid)
-        track_details = {
-            "title": t,
-            "link": f"https://www.youtube.com/watch?v={vid}" if vid else link,
-            "vidid": vid,
-            "duration_min": m,
-            "duration_sec": s,
-            "thumb": thumb,
-        }
-        return track_details, vid
-
-    async def formats(self, link: str, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.base + link
-        if "&" in link:
-            link = link.split("&")[0]
-        ytdl_opts = {"quiet": True}
-        ydl = yt_dlp.YoutubeDL(ytdl_opts)
-        with ydl:
-            formats_available = []
-            r = ydl.extract_info(link, download=False)
-            for format in r.get("formats", []):
-                try:
-                    if "dash" not in str(format.get("format", "")).lower():
-                        formats_available.append(
-                            {
-                                "format": format.get("format"),
-                                "filesize": format.get("filesize"),
-                                "format_id": format.get("format_id"),
-                                "ext": format.get("ext"),
-                                "format_note": format.get("format_note"),
-                                "yturl": link,
-                            }
-                        )
-                except Exception:
-                    continue
-        return formats_available, link
-
-    async def slider(self, link: str, query_type: int, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.base + link
-        if "&" in link:
-            link = link.split("&")[0]
-        res_data = await asyncio.to_thread(self._sync_search, link, 10)
-        result = res_data.get("result", [])
-        if not result or query_type >= len(result):
-            return "Unknown", "0:00", None, None
-        title = result[query_type]["title"]
-        duration_min = result[query_type]["duration"]
-        vidid = result[query_type]["id"]
-        thumbnail = result[query_type]["thumbnails"][0]["url"].split("?")[0]
-        return title, duration_min, thumbnail, vidid
-
-
-    async def download(
-        self,
-        link: str,
-        mystic=None,
-        video: Union[bool, str] = None,
-        videoid: Union[bool, str] = None,
-        songaudio: Union[bool, str] = None,
-        songvideo: Union[bool, str] = None,
-        format_id: Union[bool, str] = None,
-        title: Union[bool, str] = None,
-    ) -> tuple:
-        if videoid:
-            link = self.base + link
-        try:
-            if video or songvideo:
-                downloaded_file = await download_video(link)
-            else:
-                downloaded_file = await download_song(link)
-            if downloaded_file:
-                return downloaded_file, True
-            return None, False
-        except Exception:
-            return None, False
-
-
-YouTube = YouTubeAPI()
 
 
 async def download_media(query: str, download_type: str = "audio") -> tuple:
@@ -692,13 +414,14 @@ async def call_gpt_api(api_key: str, user_message: str) -> str:
 
 async def join_vc(client: TelegramClient, peer_id: int) -> bool:
     """
-    Attempts to join the active voice call of a group/channel using JoinGroupCallRequest.
+    Attempts to join the active voice call of a group/channel using native MTProto JoinGroupCallRequest.
     """
     try:
         from telethon.tl.functions.channels import GetFullChannelRequest
         from telethon.tl.functions.messages import GetFullChatRequest
         from telethon.tl.functions.phone import JoinGroupCallRequest
         from telethon.tl.types import InputGroupCall, DataJSON, Channel, GroupCallDiscarded
+        import random
         
         entity = await client.get_entity(peer_id)
         if isinstance(entity, Channel):
@@ -708,17 +431,31 @@ async def join_vc(client: TelegramClient, peer_id: int) -> bool:
             
         group_call = full.full_chat.call
         if group_call and not isinstance(group_call, GroupCallDiscarded):
-            await client(JoinGroupCallRequest(
-                call=InputGroupCall(
-                    id=group_call.id,
-                    access_hash=group_call.access_hash
-                ),
-                join_as=await client.get_input_entity('me'),
-                params=DataJSON(data='{}'),
-                muted=True
-            ))
-            logger.info(f"Successfully joined VC for peer {peer_id}")
-            return True
+            for attempt in range(5):
+                random_ssrc = random.randint(100000, 999999999)
+                try:
+                    params_json = f'{{"transport":{{"webrtc":true}},"muted":true,"video_stopped":true,"ssrc":{random_ssrc}}}'
+                    await client(JoinGroupCallRequest(
+                        call=InputGroupCall(
+                            id=group_call.id,
+                            access_hash=group_call.access_hash
+                        ),
+                        join_as=await client.get_input_entity('me'),
+                        params=DataJSON(data=params_json),
+                        muted=True
+                    ))
+                    logger.info(f"Successfully joined VC for peer {peer_id} with SSRC {random_ssrc}")
+                    return True
+                except Exception as j_err:
+                    err_s = str(j_err).lower()
+                    if "ssrc" in err_s or "duplicate" in err_s:
+                        await asyncio.sleep(0.5)
+                        continue
+                    elif "already" in err_s or "participant" in err_s:
+                        return True
+                    else:
+                        logger.warning(f"Native join VC error on attempt {attempt}: {j_err}")
+                        break
         else:
             logger.debug(f"No active VC found for peer {peer_id}")
     except Exception as e:
@@ -730,93 +467,117 @@ async def get_peer_from_link(client: TelegramClient, link: str):
     """
     Resolves a group/channel link or username to a chat entity,
     joining the channel/group if the userbot is not already a member.
+    Robustly supports private invite links (+hash, joinchat/hash), usernames, and numeric IDs.
     """
-    link = link.strip()
     if not link:
+        return None
+        
+    link_clean = str(link).strip().strip('\'"`()[]{}<> \t\n\r')
+    if not link_clean:
         return None
         
     from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
     from telethon.tl.functions.channels import JoinChannelRequest
-    from telethon.tl.types import ChatInviteAlready, ChatInvite
+    from telethon.tl.types import ChatInviteAlready, ChatInvite, Channel, Chat
+    from telethon.errors import (
+        UserAlreadyParticipantError,
+        InviteRequestSentError,
+        InviteHashExpiredError,
+        InviteHashInvalidError
+    )
     
-    # Check if link is a numeric ID
-    try:
-        val = link
-        chat_id = None
-        if val.startswith("-100") and val[4:].isdigit():
-            chat_id = int(val)
-        elif val.startswith("-") and val[1:].isdigit():
-            chat_id = int(val)
-        elif val.isdigit():
-            chat_id = int(val)
-            
-        if chat_id is not None:
-            try:
-                return await client.get_entity(chat_id)
-            except Exception:
-                # Fallback: Iterate dialogs to find the correct entity
-                async for dialog in client.iter_dialogs():
-                    if dialog.id == chat_id:
-                        return dialog.entity
-    except Exception:
-        pass
-        
-        
-    # Check if it is a private invite link
-    if "t.me/+" in link or "t.me/joinchat/" in link:
-        # Extract join hash
-        if "t.me/+" in link:
-            hash_val = link.split('+')[-1].split('/')[0].strip()
-        else:
-            hash_val = link.split('joinchat/')[-1].split('/')[0].strip()
-            
+    # 1. Check if link is a numeric ID (e.g. -100123456789 or 123456789)
+    if link_clean.lstrip("-").isdigit():
         try:
-            invite = await client(CheckChatInviteRequest(hash_val))
-            if isinstance(invite, ChatInviteAlready):
-                return invite.chat
-            else:
-                # Need to join
-                updates = await client(ImportChatInviteRequest(hash_val))
-                if updates and hasattr(updates, 'chats') and updates.chats:
-                    return updates.chats[0]
-                
-                # If joined successfully but no chats returned, check invite again to get the ChatInviteAlready object
-                invite_check = await client(CheckChatInviteRequest(hash_val))
-                if isinstance(invite_check, ChatInviteAlready):
-                    return invite_check.chat
-                elif hasattr(invite, "title"):
-                    async for dialog in client.iter_dialogs():
-                        if dialog.title == invite.title:
-                            return dialog.entity
-        except Exception as e:
-            logger.warning(f"Error checking/joining invite link {link}: {e}")
-            if "invite" in locals() and hasattr(invite, "title"):
-                async for dialog in client.iter_dialogs():
-                    if dialog.title == invite.title:
-                        return dialog.entity
-            
-            # Try to get entity directly as a fallback
+            c_id = int(link_clean)
             try:
-                return await client.get_entity(link)
+                return await client.get_entity(c_id)
             except Exception:
-                pass
+                async for dialog in client.iter_dialogs(limit=500):
+                    if dialog.id == c_id:
+                        return dialog.entity
+        except Exception:
+            pass
+
+    # 2. Extract private invite hash if link is an invite link
+    # Matches t.me/+hash, t.me/joinchat/hash, telegram.me/+hash, etc.
+    hash_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)([a-zA-Z0-9_-]+)', link_clean, re.IGNORECASE)
+    hash_val = None
+    if hash_match:
+        hash_val = hash_match.group(1).strip()
+    elif link_clean.startswith("+"):
+        hash_val = link_clean[1:].split('/')[0].split('?')[0].strip()
+    elif "joinchat/" in link_clean:
+        hash_val = link_clean.split("joinchat/")[-1].split('/')[0].split('?')[0].strip()
+    elif "+" in link_clean and "t.me" in link_clean:
+        hash_val = link_clean.split("+")[-1].split('/')[0].split('?')[0].strip()
+
+    if hash_val:
+        invite_info = None
+        # First, check the invite
+        try:
+            invite_info = await client(CheckChatInviteRequest(hash_val))
+            if isinstance(invite_info, ChatInviteAlready):
+                return invite_info.chat
+        except UserAlreadyParticipantError:
+            pass
+        except Exception as e_chk:
+            logger.warning(f"CheckChatInviteRequest error for hash {hash_val}: {e_chk}")
+
+        # If not already returned, try importing/joining the invite
+        try:
+            updates = await client(ImportChatInviteRequest(hash_val))
+            if updates and hasattr(updates, 'chats') and updates.chats:
+                return updates.chats[0]
+        except UserAlreadyParticipantError:
+            logger.info(f"User is already a participant of {hash_val}")
+        except InviteRequestSentError:
+            logger.info(f"Join request sent for {hash_val}")
+        except Exception as e_imp:
+            logger.warning(f"ImportChatInviteRequest error for hash {hash_val}: {e_imp}")
+
+        # Re-check if invite now returns ChatInviteAlready
+        try:
+            recheck = await client(CheckChatInviteRequest(hash_val))
+            if isinstance(recheck, ChatInviteAlready):
+                return recheck.chat
+        except Exception:
+            pass
+
+        # If we have title from invite_info, search dialogs
+        target_title = getattr(invite_info, "title", None) if invite_info else None
+        if target_title:
+            target_norm = target_title.strip().lower()
+            async for dialog in client.iter_dialogs(limit=500):
+                d_name = (dialog.name or getattr(dialog.entity, "title", "") or "").strip().lower()
+                if d_name and (d_name == target_norm or target_norm in d_name):
+                    return dialog.entity
+
+        # Try client.get_entity as fallback
+        try:
+            return await client.get_entity(link_clean)
+        except Exception:
+            pass
+
+        return None
+
+    # 3. Public username or link (e.g. @groupname or https://t.me/groupname)
+    username_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/([a-zA-Z0-9_]+)', link_clean, re.IGNORECASE)
+    if username_match:
+        username = username_match.group(1).strip()
     else:
-        # It's a username or public link
-        username = link.split('/')[-1].strip()
-        if username.startswith("@"):
-            username = username[1:]
-            
+        username = link_clean.replace('@', '').strip()
+
+    try:
+        # Join public channel if not member
         try:
-            # Join channel first
             await client(JoinChannelRequest(username))
-        except Exception as e:
-            logger.warning(f"Error joining public channel {username}: {e}")
-            
-        try:
-            return await client.get_entity(username)
-        except Exception as e:
-            logger.warning(f"Error getting entity for {username}: {e}")
-            
+        except Exception:
+            pass
+        return await client.get_entity(username)
+    except Exception as e:
+        logger.warning(f"Failed to get entity for public target {username}: {e}")
+
     return None
 
 async def join_vc_by_link(client: TelegramClient, link: str) -> tuple:
@@ -1384,86 +1145,140 @@ class UserBot:
 
     async def join_voice_chat(self, link_or_id: Union[str, int]) -> tuple:
         """
-        Attempts to join the active voice call of a group/channel using PyTgCalls.
-        Supports group link, username, or direct Chat ID.
+        Attempts to join the active voice call of a group/channel.
+        Supports group link (public or private invite), username, or direct Chat ID.
+        Uses PyTgCalls if available, with resilient fallback to native MTProto JoinGroupCallRequest.
         """
         if not self.is_running or not self.client:
-            return False, "Userbot is not running."
+            return False, "Userbot is not running. Please start it first."
             
         try:
             import telethon.utils as tu
+            from telethon.tl.functions.channels import GetFullChannelRequest
+            from telethon.tl.functions.messages import GetFullChatRequest
+            from telethon.tl.functions.phone import JoinGroupCallRequest
+            from telethon.tl.types import InputGroupCall, DataJSON, Channel, GroupCallDiscarded
+            import random
+
             link_str = str(link_or_id).strip()
             entity = None
             
-            # Direct integer chat ID resolution
-            try:
-                chat_int = int(link_str)
-                entity = await self.client.get_entity(chat_int)
-            except Exception:
-                pass
-                
+            # 1. Direct integer chat ID resolution
+            if link_str.lstrip("-").isdigit():
+                try:
+                    entity = await self.client.get_entity(int(link_str))
+                except Exception:
+                    pass
+                    
+            # 2. Resolve via get_peer_from_link
             if not entity:
                 entity = await get_peer_from_link(self.client, link_str)
                 
+            # 3. Direct dialog search fallback
             if not entity:
-                try:
-                    chat_int = int(link_str)
-                    full_chat_id = chat_int
-                except Exception:
-                    return False, "Could not resolve the group link, username, or Chat ID. Please ensure UserBot is in the group."
-            else:
-                full_chat_id = tu.get_peer_id(entity)
+                async for dialog in self.client.iter_dialogs(limit=200):
+                    if str(dialog.id) == link_str or (dialog.name and dialog.name.lower() in link_str.lower()):
+                        entity = dialog.entity
+                        break
 
-            pytg = await self.get_pytgcalls()
-            
-            # Generate silence file to prevent auto-kick
-            silence_file = await generate_silence()
-            if not silence_file or not os.path.exists(silence_file):
-                return False, "Failed to generate silence.mp3. Make sure FFmpeg is installed."
-                
-            logger.info(f"Joining VC of {full_chat_id} using PyTgCalls...")
-            
+            if not entity:
+                return False, "Could not resolve the group link, username, or Chat ID. Please ensure the invite link is valid and UserBot has joined the group."
+
+            full_chat_id = tu.get_peer_id(entity)
+            chat_title = getattr(entity, 'title', f"Chat {full_chat_id}")
+
+            # 4. Check whether active voice call exists in group
             try:
-                await pytg.join_group_call(
-                    full_chat_id,
-                    MediaStream(silence_file)
-                )
-            except Exception as join_err:
-                err_str = str(join_err).lower()
-                if "already_joined" in err_str or "already in" in err_str or "node" in err_str:
-                    try:
-                        await pytg.change_stream(full_chat_id, MediaStream(silence_file))
-                    except Exception:
-                        pass
+                if isinstance(entity, Channel):
+                    full = await self.client(GetFullChannelRequest(entity))
                 else:
-                    logger.warning(f"join_group_call attempt error: {join_err}")
+                    full = await self.client(GetFullChatRequest(entity.id))
+                group_call = full.full_chat.call
+            except Exception as e_full:
+                logger.warning(f"Failed to fetch full chat info for {full_chat_id}: {e_full}")
+                group_call = None
+
+            if not group_call or isinstance(group_call, GroupCallDiscarded):
+                return False, f"No active voice chat (VC) is currently running in <b>{chat_title}</b>. Please start the VC in the group first!"
+
+            # 5. Attempt join: PyTgCalls first (if available)
+            joined = False
+            if PYTGCALLS_AVAILABLE and PyTgCalls is not None:
+                try:
+                    pytg = await self.get_pytgcalls()
+                    silence_file = await generate_silence()
+                    if silence_file and os.path.exists(silence_file):
+                        try:
+                            await pytg.join_group_call(
+                                full_chat_id,
+                                MediaStream(silence_file)
+                            )
+                            joined = True
+                        except Exception as join_err:
+                            err_str = str(join_err).lower()
+                            if "already_joined" in err_str or "already in" in err_str or "node" in err_str:
+                                try:
+                                    await pytg.change_stream(full_chat_id, MediaStream(silence_file))
+                                    joined = True
+                                except Exception:
+                                    pass
+                        if joined:
+                            try:
+                                await pytg.mute_stream(full_chat_id)
+                                self.is_muted = True
+                            except Exception:
+                                pass
+                except Exception as pytg_err:
+                    logger.warning(f"PyTgCalls join attempt failed: {pytg_err}. Falling back to native MTProto...")
+
+            # 6. Fallback to native MTProto JoinGroupCallRequest
+            if not joined:
+                last_err = None
+                for attempt in range(5):
+                    random_ssrc = random.randint(100000, 999999999)
                     try:
-                        await pytg.change_stream(full_chat_id, MediaStream(silence_file))
-                    except Exception as ch_err:
-                        return False, f"Failed to join VC: {join_err}", None
-            
+                        params_json = f'{{"transport":{{"webrtc":true}},"muted":true,"video_stopped":true,"ssrc":{random_ssrc}}}'
+                        await self.client(JoinGroupCallRequest(
+                            call=InputGroupCall(
+                                id=group_call.id,
+                                access_hash=group_call.access_hash
+                            ),
+                            join_as=await self.client.get_input_entity('me'),
+                            params=DataJSON(data=params_json),
+                            muted=True
+                        ))
+                        joined = True
+                        logger.info(f"Successfully joined VC for {chat_title} using native MTProto with SSRC {random_ssrc}")
+                        break
+                    except Exception as nat_err:
+                        last_err = nat_err
+                        err_str = str(nat_err).lower()
+                        if "ssrc" in err_str or "duplicate" in err_str:
+                            await asyncio.sleep(0.5)
+                            continue
+                        elif "already" in err_str or "participant" in err_str:
+                            joined = True
+                            break
+                        else:
+                            break
+
+                if not joined:
+                    return False, f"Failed to join VC in {chat_title}: {last_err or 'Unknown error'}"
+
             self.current_vc_chat_id = full_chat_id
             self.current_vc_link = link_str
             self.joined_vcs.add(full_chat_id)
-            
-            # Immediately mute the mic (mic off) on join
-            try:
-                await pytg.mute_stream(full_chat_id)
-                self.is_muted = True
-            except Exception:
-                pass
-                
+
             # Save VC status in MongoDB
             sess_data = database.get_session(self.session_id)
             if sess_data:
                 sess_data["vc_chat_id"] = full_chat_id
                 sess_data["vc_link"] = link_str
                 database.save_session(sess_data)
-            
-            chat_title = getattr(entity, 'title', 'Group') if entity else f"Chat {full_chat_id}"
-            return True, f"Successfully joined Voice Chat of {chat_title}!"
+                
+            return True, f"Successfully joined Voice Chat of <b>{chat_title}</b>!"
         except Exception as e:
-            logger.exception("Error joining VC using PyTgCalls")
+            logger.exception("Error in join_voice_chat")
             return False, f"Failed to join VC: {e}"
 
     async def join_all_active_group_vcs(self) -> tuple:
