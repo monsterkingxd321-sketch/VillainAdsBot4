@@ -1065,121 +1065,160 @@ def register_handlers(client):
         import os
 
         total_bots = len(active_sessions)
-        total_sent_groups = 0
-        total_sent_dms = 0
-        total_failed = 0
-        bots_done = 0
-        last_edit_time = time.time()
+        stats = {
+            "groups": 0,
+            "dms": 0,
+            "failed": 0,
+            "bots_done": 0,
+            "active_running": 0
+        }
+        lock = asyncio.Lock()
+        media_path = None
 
         try:
             # Download media once to disk if the broadcast message has media
-            media_path = None
             if broadcast_msg.media:
                 try:
                     media_path = await client.download_media(broadcast_msg)
                     logger.info(f"Downloaded broadcast media to {media_path}")
                 except Exception as dl_err:
                     logger.error(f"Failed to download broadcast media: {dl_err}")
-            for sess in active_sessions:
+
+            # Independent background reporter to update progress every 3.5 seconds
+            # This completely avoids main bot client contention and eliminates message edit flood limits
+            stop_reporter = asyncio.Event()
+
+            async def _reporter_loop():
+                while not stop_reporter.is_set():
+                    try:
+                        await asyncio.sleep(3.5)
+                        if stop_reporter.is_set():
+                            break
+                        async with lock:
+                            done_cnt = stats["bots_done"]
+                            active_cnt = stats["active_running"]
+                            grp_cnt = stats["groups"]
+                            dm_cnt = stats["dms"]
+                            err_cnt = stats["failed"]
+                        try:
+                            await prog_msg.edit(
+                                f"<blockquote><b>» ⏳ GLOBAL USERBOT BROADCAST IN PROGRESS</b>\n\n"
+                                f"🎯 <b>Target:</b> <b>{target_title}</b>\n"
+                                f"⚡ <b>Mode:</b> <code>⚡ Parallel Execution</code>\n"
+                                f"🤖 <b>UserBots Active:</b> <code>[{done_cnt} / {total_bots}] ({active_cnt} broadcasting)</code>\n"
+                                f"👥 <b>Groups Sent:</b> <code>{grp_cnt}</code>\n"
+                                f"👤 <b>DMs Sent:</b> <code>{dm_cnt}</code>\n"
+                                f"⚠️ <b>Skipped / Errors:</b> <code>{err_cnt}</code>\n\n"
+                                f"⚡ <i>All UserBots broadcasting concurrently in parallel...</i></blockquote>"
+                            )
+                        except Exception:
+                            pass
+                    except asyncio.CancelledError:
+                        break
+                    except Exception:
+                        pass
+
+            reporter_task = asyncio.create_task(_reporter_loop())
+
+            # Semaphore to control parallel concurrent userbots (up to 10 userbots broadcasting at once)
+            ub_sem = asyncio.Semaphore(10)
+
+            async def _broadcast_single_bot(sess):
                 sess_id = sess.get("session_id") or sess.get("phone")
                 phone_num = sess.get("phone") or sess_id
 
-                try:
-                    # Check if bot is running
-                    bot_obj = userbot_manager._running_bots.get(sess_id) or userbot_manager._running_bots.get(phone_num)
-                    if not bot_obj or not bot_obj.is_running:
-                        started = await userbot_manager.start_userbot(sess_id)
-                        if not started and phone_num != sess_id:
-                            started = await userbot_manager.start_userbot(phone_num)
+                async with ub_sem:
+                    async with lock:
+                        stats["active_running"] += 1
+
+                    try:
+                        # Check if bot is running
                         bot_obj = userbot_manager._running_bots.get(sess_id) or userbot_manager._running_bots.get(phone_num)
+                        if not bot_obj or not bot_obj.is_running:
+                            started = await userbot_manager.start_userbot(sess_id)
+                            if not started and phone_num != sess_id:
+                                started = await userbot_manager.start_userbot(phone_num)
+                            bot_obj = userbot_manager._running_bots.get(sess_id) or userbot_manager._running_bots.get(phone_num)
 
-                    if not bot_obj or not bot_obj.client:
-                        logger.warning(f"Userbot {phone_num} could not be loaded or started for broadcast.")
-                        total_failed += 1
-                        bots_done += 1
-                        continue
+                        if not bot_obj or not bot_obj.client:
+                            logger.warning(f"Userbot {phone_num} could not be loaded or started for broadcast.")
+                            async with lock:
+                                stats["failed"] += 1
+                            return
 
-                    ub_client = bot_obj.client
-                    if not ub_client.is_connected():
-                        await ub_client.connect()
+                        ub_client = bot_obj.client
+                        if not ub_client.is_connected():
+                            try:
+                                await asyncio.wait_for(ub_client.connect(), timeout=10.0)
+                            except Exception as conn_err:
+                                logger.error(f"Userbot {phone_num} connect error: {conn_err}")
+                                async with lock:
+                                    stats["failed"] += 1
+                                return
 
-                    # Iterate dialogs
-                    async for dialog in ub_client.iter_dialogs(limit=150):
-                        is_grp = dialog.is_group or (dialog.is_channel and getattr(dialog.entity, 'megagroup', False))
-                        is_dm = dialog.is_user and not getattr(dialog.entity, 'bot', False) and not getattr(dialog.entity, 'is_self', False)
+                        # Iterate dialogs
+                        async for dialog in ub_client.iter_dialogs(limit=150):
+                            is_grp = dialog.is_group or (dialog.is_channel and getattr(dialog.entity, 'megagroup', False))
+                            is_dm = dialog.is_user and not getattr(dialog.entity, 'bot', False) and not getattr(dialog.entity, 'is_self', False)
 
-                        should_send = False
-                        if target == "groups" and is_grp:
-                            should_send = True
-                        elif target == "dms" and is_dm:
-                            should_send = True
-                        elif target == "both" and (is_grp or is_dm):
-                            should_send = True
+                            should_send = False
+                            if target == "groups" and is_grp:
+                                should_send = True
+                            elif target == "dms" and is_dm:
+                                should_send = True
+                            elif target == "both" and (is_grp or is_dm):
+                                should_send = True
 
-                        if not should_send:
-                            continue
+                            if not should_send:
+                                continue
 
-                        try:
-                            if media_path:
-                                await ub_client.send_file(dialog.id, media_path, caption=broadcast_msg.text or "")
-                            else:
-                                await ub_client.send_message(dialog.id, broadcast_msg.text or "")
+                            try:
+                                if media_path:
+                                    await ub_client.send_file(dialog.id, media_path, caption=broadcast_msg.text or "")
+                                else:
+                                    await ub_client.send_message(dialog.id, broadcast_msg.text or "")
 
-                            if is_grp:
-                                total_sent_groups += 1
-                            else:
-                                total_sent_dms += 1
+                                async with lock:
+                                    if is_grp:
+                                        stats["groups"] += 1
+                                    else:
+                                        stats["dms"] += 1
 
-                            now = time.time()
-                            if now - last_edit_time >= 4.0:
-                                last_edit_time = now
-                                try:
-                                    await prog_msg.edit(
-                                        f"<blockquote><b>» ⏳ GLOBAL USERBOT BROADCAST IN PROGRESS</b>\n\n"
-                                        f"🎯 <b>Target:</b> <b>{target_title}</b>\n"
-                                        f"🤖 <b>Processing UserBots:</b> <code>[{bots_done + 1} / {total_bots}]</code>\n"
-                                        f"👥 <b>Groups Sent:</b> <code>{total_sent_groups}</code>\n"
-                                        f"👤 <b>DMs Sent:</b> <code>{total_sent_dms}</code>\n"
-                                        f"⚠️ <b>Skipped / Errors:</b> <code>{total_failed}</code>\n\n"
-                                        f"⚡ <i>Broadcasting actively in background with floodwait protection...</i></blockquote>"
-                                    )
-                                except Exception:
-                                    pass
+                                # Paced delay between sends for this userbot to keep individual account safe
+                                await asyncio.sleep(1.2)
 
-                            await asyncio.sleep(1.0)
+                            except FloodWaitError as fwe:
+                                if fwe.seconds <= 20:
+                                    await asyncio.sleep(fwe.seconds + 1)
+                                else:
+                                    logger.warning(f"Long FloodWait ({fwe.seconds}s) on userbot {phone_num}, finishing for this bot...")
+                                    async with lock:
+                                        stats["failed"] += 1
+                                    break
+                            except (ChatWriteForbiddenError, UserBannedInChannelError, ChatAdminRequiredError, ChannelPrivateError, SlowModeWaitError):
+                                async with lock:
+                                    stats["failed"] += 1
+                            except Exception as send_err:
+                                logger.debug(f"Failed to send from {phone_num} to {dialog.id}: {send_err}")
+                                async with lock:
+                                    stats["failed"] += 1
 
-                        except FloodWaitError as fwe:
-                            if fwe.seconds <= 20:
-                                await asyncio.sleep(fwe.seconds + 1)
-                            else:
-                                logger.warning(f"Long FloodWait ({fwe.seconds}s) on userbot {phone_num}, moving to next...")
-                                total_failed += 1
-                                break
-                        except (ChatWriteForbiddenError, UserBannedInChannelError, ChatAdminRequiredError, ChannelPrivateError):
-                            total_failed += 1
-                        except SlowModeWaitError:
-                            total_failed += 1
-                        except Exception as send_err:
-                            logger.debug(f"Failed to send from {phone_num} to {dialog.id}: {send_err}")
-                            total_failed += 1
+                    except Exception as bot_err:
+                        logger.error(f"Error processing broadcast for bot {phone_num}: {bot_err}")
+                        async with lock:
+                            stats["failed"] += 1
+                    finally:
+                        async with lock:
+                            stats["bots_done"] += 1
+                            stats["active_running"] -= 1
 
-                except Exception as bot_err:
-                    logger.error(f"Error processing broadcast for bot {phone_num}: {bot_err}")
-                    total_failed += 1
+            # Launch all userbot broadcast coroutines concurrently in parallel!
+            bot_tasks = [asyncio.create_task(_broadcast_single_bot(s)) for s in active_sessions]
+            if bot_tasks:
+                await asyncio.gather(*bot_tasks, return_exceptions=True)
 
-                bots_done += 1
-                try:
-                    await prog_msg.edit(
-                        f"<blockquote><b>» ⏳ GLOBAL USERBOT BROADCAST IN PROGRESS</b>\n\n"
-                        f"🎯 <b>Target:</b> <b>{target_title}</b>\n"
-                        f"🤖 <b>Processing UserBots:</b> <code>[{bots_done} / {total_bots}]</code>\n"
-                        f"👥 <b>Groups Sent:</b> <code>{total_sent_groups}</code>\n"
-                        f"👤 <b>DMs Sent:</b> <code>{total_sent_dms}</code>\n"
-                        f"⚠️ <b>Skipped / Errors:</b> <code>{total_failed}</code>\n\n"
-                        f"⚡ <i>Broadcasting actively in background with floodwait protection...</i></blockquote>"
-                    )
-                except Exception:
-                    pass
+            stop_reporter.set()
+            reporter_task.cancel()
 
         except Exception as fatal_err:
             logger.exception(f"Fatal error in global userbot broadcast: {fatal_err}")
@@ -1201,10 +1240,11 @@ def register_handlers(client):
         report = (
             f"<blockquote><b>» 📊 GLOBAL USERBOT BROADCAST COMPLETED</b>\n\n"
             f"🎯 <b>Target Destination:</b> <b>{target_title}</b>\n"
-            f"🤖 <b>UserBots Used:</b> <b>{bots_done} / {total_bots}</b>\n"
-            f"👥 <b>Groups Delivered:</b> <b>{total_sent_groups}</b>\n"
-            f"👤 <b>DMs Delivered:</b> <b>{total_sent_dms}</b>\n"
-            f"⚠️ <b>Errors / Skipped:</b> <b>{total_failed}</b>\n"
+            f"⚡ <b>Execution Mode:</b> <b>Parallel Concurrency</b>\n"
+            f"🤖 <b>UserBots Used:</b> <b>{stats['bots_done']} / {total_bots}</b>\n"
+            f"👥 <b>Groups Delivered:</b> <b>{stats['groups']}</b>\n"
+            f"👤 <b>DMs Delivered:</b> <b>{stats['dms']}</b>\n"
+            f"⚠️ <b>Errors / Skipped:</b> <b>{stats['failed']}</b>\n"
             f"✅ <b>Status:</b> <b>Completed Successfully</b></blockquote>"
         )
         try:
@@ -1214,6 +1254,7 @@ def register_handlers(client):
                 await prog_msg.respond(report)
             except Exception:
                 pass
+
 
     @client.on(events.CallbackQuery(pattern="^admin_ub_bc_confirm$"))
     async def admin_ub_bc_confirm_callback(event):
@@ -1711,20 +1752,44 @@ def register_handlers(client):
                 
                 async def _run_bot_broadcast():
                     total_users = len(all_users)
-                    success_count = 0
-                    fail_count = 0
-                    processed_count = 0
-                    last_edit_time = time.time()
-                    sem = asyncio.Semaphore(12)
+                    if not total_users:
+                        try:
+                            await prog_msg.edit("❌ No users found in database to broadcast.")
+                        except Exception:
+                            pass
+                        return
+
+                    stats = {
+                        "success": 0,
+                        "failed": 0,
+                        "processed": 0
+                    }
                     lock = asyncio.Lock()
+                    stop_reporter = asyncio.Event()
 
-                    async def _send_to_user(u):
-                        nonlocal success_count, fail_count, processed_count, last_edit_time
-                        uid = u.get("user_id")
-                        if not uid:
-                            return
+                    # Queue-based worker pool (parallel, but strictly rate-limited so bot never freezes)
+                    queue = asyncio.Queue()
+                    for u in all_users:
+                        queue.put_nowait(u)
 
-                        async with sem:
+                    NUM_WORKERS = 4  # 4 parallel workers
+                    # 4 workers with 0.15s sleep between sends = ~20 msgs/second max (safe under Telegram 30/s limit)
+
+                    async def _worker():
+                        while not queue.empty():
+                            try:
+                                u = queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+
+                            uid = u.get("user_id")
+                            if not uid:
+                                async with lock:
+                                    stats["failed"] += 1
+                                    stats["processed"] += 1
+                                queue.task_done()
+                                continue
+
                             target_peer = None
                             # 1. Stored access_hash is fastest (0 network roundtrips)
                             if u.get("access_hash"):
@@ -1734,75 +1799,99 @@ def register_handlers(client):
                                 except Exception:
                                     pass
 
-                            # 2. Try Telethon internal cache / entity lookup
+                            # 2. Try Telethon internal cache / entity lookup safely
                             if not target_peer:
                                 try:
-                                    target_peer = await client.get_input_entity(int(uid))
+                                    target_peer = await asyncio.wait_for(client.get_input_entity(int(uid)), timeout=2.0)
                                 except Exception:
                                     if u.get("username"):
                                         try:
-                                            target_peer = await client.get_input_entity(u["username"])
+                                            target_peer = await asyncio.wait_for(client.get_input_entity(u["username"]), timeout=2.0)
                                         except Exception:
                                             pass
 
                             if not target_peer:
                                 async with lock:
-                                    fail_count += 1
-                                    processed_count += 1
-                                return
+                                    stats["failed"] += 1
+                                    stats["processed"] += 1
+                                queue.task_done()
+                                continue
 
                             sent = False
                             try:
                                 await client.send_message(target_peer, broadcast_message)
                                 sent = True
                             except FloodWaitError as fwe:
-                                wait_time = min(fwe.seconds, 15)
-                                logger.warning(f"Flood wait {wait_time}s for user {uid}")
+                                wait_time = min(fwe.seconds, 20)
+                                logger.warning(f"Broadcast flood wait {wait_time}s on bot token, pausing worker...")
                                 await asyncio.sleep(wait_time)
                                 try:
                                     await client.send_message(target_peer, broadcast_message)
                                     sent = True
-                                except Exception as retry_err:
-                                    logger.error(f"Failed retry to {uid}: {retry_err}")
+                                except Exception:
+                                    pass
                             except Exception as err:
-                                logger.warning(f"Failed to send broadcast to {uid}: {err}")
+                                logger.debug(f"Failed to send broadcast to user {uid}: {err}")
 
                             async with lock:
                                 if sent:
-                                    success_count += 1
+                                    stats["success"] += 1
                                 else:
-                                    fail_count += 1
-                                processed_count += 1
+                                    stats["failed"] += 1
+                                stats["processed"] += 1
+                            queue.task_done()
 
-                                now = time.time()
-                                if now - last_edit_time >= 3.0:
-                                    last_edit_time = now
-                                    try:
-                                        await prog_msg.edit(
-                                            f"<blockquote><b>» 📢 MAIN BOT BROADCAST IN PROGRESS</b>\n\n"
-                                            f"👥 <b>Processed:</b> <code>[{processed_count} / {total_users}]</code>\n"
-                                            f"✅ <b>Delivered:</b> <code>{success_count}</code>\n"
-                                            f"❌ <b>Failed / Skipped:</b> <code>{fail_count}</code></blockquote>"
-                                        )
-                                    except Exception:
-                                        pass
+                            # Delay to maintain smooth rate limiting and keep event loop free
+                            await asyncio.sleep(0.15)
 
-                            await asyncio.sleep(0.04)
+                    # Isolated progress updater loop
+                    async def _reporter_loop():
+                        while not stop_reporter.is_set():
+                            try:
+                                await asyncio.sleep(3.5)
+                                if stop_reporter.is_set():
+                                    break
+                                async with lock:
+                                    p_cnt = stats["processed"]
+                                    s_cnt = stats["success"]
+                                    f_cnt = stats["failed"]
+                                await prog_msg.edit(
+                                    f"<blockquote><b>» 📢 MAIN BOT BROADCAST IN PROGRESS</b>\n\n"
+                                    f"👥 <b>Processed:</b> <code>[{p_cnt} / {total_users}]</code>\n"
+                                    f"✅ <b>Delivered:</b> <code>{s_cnt}</code>\n"
+                                    f"❌ <b>Failed / Skipped:</b> <code>{f_cnt}</code>\n\n"
+                                    f"⚡ <i>Broadcasting in background in parallel without blocking bot...</i></blockquote>"
+                                )
+                            except asyncio.CancelledError:
+                                break
+                            except Exception:
+                                pass
 
-                    tasks = [asyncio.create_task(_send_to_user(u)) for u in all_users]
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                    reporter_task = asyncio.create_task(_reporter_loop())
+                    workers = [asyncio.create_task(_worker()) for _ in range(NUM_WORKERS)]
+                    
+                    await asyncio.gather(*workers, return_exceptions=True)
+                    stop_reporter.set()
+                    reporter_task.cancel()
+
+                    async with lock:
+                        s_cnt = stats["success"]
+                        f_cnt = stats["failed"]
 
                     report = (
                         f"<blockquote><b>» 📢 MAIN BOT BROADCAST COMPLETED</b>\n\n"
                         f"👥 <b>Total Target Users:</b> <b>{total_users}</b>\n"
-                        f"✅ <b>Successfully Sent:</b> <b>{success_count}</b>\n"
-                        f"❌ <b>Failed (Blocked/Deleted/Unresolved):</b> <b>{fail_count}</b></blockquote>"
+                        f"✅ <b>Successfully Sent:</b> <b>{s_cnt}</b>\n"
+                        f"❌ <b>Failed (Blocked/Deleted/Unresolved):</b> <b>{f_cnt}</b>\n"
+                        f"⚡ <b>Status:</b> <b>Completed Smoothly in Parallel</b></blockquote>"
                     )
                     try:
                         await prog_msg.edit(report)
                     except Exception:
-                        await event.reply(report)
+                        try:
+                            await event.reply(report)
+                        except Exception:
+                            pass
                         
                 import asyncio
                 asyncio.create_task(_run_bot_broadcast())

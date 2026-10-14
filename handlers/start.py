@@ -122,7 +122,12 @@ async def show_main_menu(event, user_id):
                     await event.delete()
                 except Exception:
                     pass
-            await event.respond(text, file=start_image, buttons=buttons)
+            try:
+                # Timeout image delivery to fall back instantly if network or upload is busy
+                await asyncio.wait_for(event.respond(text, file=start_image, buttons=buttons), timeout=4.0)
+            except Exception as img_err:
+                logger.warning(f"Start image delayed or failed ({img_err}), falling back to text dashboard.")
+                await event.respond(text, buttons=buttons)
         else:
             if hasattr(event, "edit"):
                 await event.edit(text, buttons=buttons)
@@ -130,121 +135,142 @@ async def show_main_menu(event, user_id):
                 await event.respond(text, buttons=buttons)
     except Exception as e:
         logger.error(f"Error rendering main menu: {e}")
-        await event.respond(text, buttons=buttons)
+        try:
+            await event.respond(text, buttons=buttons)
+        except Exception:
+            pass
 
 def register_handlers(client):
+    import asyncio
+
     @client.on(events.NewMessage(pattern="/start"))
     async def start_cmd(event):
-        # Handle group start commands by offering a start in DM button
-        if not event.is_private:
-            try:
-                me = await client.get_me()
-                bot_username = me.username
-                text = (
-                    f"<blockquote><b>» ⚡ {config.BOT_NAME.upper()} Manager</b>\n\n"
-                    f"Configure Your Own Automated Userbots, Group Broadcasts, Auto-Welcome, Vc Streaming, And Ai Automations!\n\n"
-                    f"Tap Below To Get Help In Pm With Everything You Need.</blockquote>"
-                )
-                buttons = [[Button.url("🚀 Start In Pm", url=f"https://t.me/{bot_username}?start=true")]]
-                await event.reply(text, buttons=buttons)
-            except Exception as e:
-                logger.error(f"Failed to respond to start command in group: {e}")
-            return
-            
-        user_id = event.sender_id
-        ref_id = None
-        
-        # Parse referral details if present
-        if event.text and len(event.text.split()) > 1:
-            arg = event.text.split()[1]
-            if arg.startswith("ref_"):
+        try:
+            # Handle group start commands by offering a start in DM button
+            if not event.is_private:
                 try:
-                    ref_id = int(arg.replace("ref_", ""))
-                except ValueError:
-                    pass
-                    
-        # Get sender details for username mapping
-        sender = await event.get_sender()
-        sender_username = sender.username if sender else None
-        sender_first = sender.first_name if sender else None
-        sender_last = sender.last_name if sender else None
-        
-        user = database.get_user(user_id)
-        if not user:
-            user = models.create_default_user(user_id)
-            user["username"] = sender_username
-            user["first_name"] = sender_first
-            user["last_name"] = sender_last
+                    me = await client.get_me()
+                    bot_username = me.username
+                    text = (
+                        f"<blockquote><b>» ⚡ {config.BOT_NAME.upper()} Manager</b>\n\n"
+                        f"Configure Your Own Automated Userbots, Group Broadcasts, Auto-Welcome, Vc Streaming, And Ai Automations!\n\n"
+                        f"Tap Below To Get Help In Pm With Everything You Need.</blockquote>"
+                    )
+                    buttons = [[Button.url("🚀 Start In Pm", url=f"https://t.me/{bot_username}?start=true")]]
+                    await event.reply(text, buttons=buttons)
+                except Exception as e:
+                    logger.error(f"Failed to respond to start command in group: {e}")
+                return
+                
+            user_id = event.sender_id
+            ref_id = None
             
-            if ref_id and ref_id != user_id:
-                ref_parent = database.get_user(ref_id)
-                if ref_parent:
-                    user["referred_by"] = ref_id
-                    # Instantly credit ₹1.00 referral bonus to referrer
-                    ref_parent["wallet_balance"] = ref_parent.get("wallet_balance", 0.0) + 1.0
-                    ref_parent["referral_earnings"] = ref_parent.get("referral_earnings", 0.0) + 1.0
-                    database.save_user(ref_parent)
-                    logger.info(f"New user {user_id} referred by {ref_id}. Credited ₹1 to referrer.")
-                    
+            # Parse referral details if present
+            if event.text and len(event.text.split()) > 1:
+                arg = event.text.split()[1]
+                if arg.startswith("ref_"):
                     try:
-                        name_str = f"@{sender_username}" if sender_username else f"{sender_first or ''} {sender_last or ''}".strip()
-                        if not name_str:
-                            name_str = f"User {user_id}"
-                            
-                        await client.send_message(
-                            ref_id,
-                            f"<blockquote><b>» 🎁 New Referral!</b>\n\n"
-                            f"👤 <b>{name_str}</b> Joined The Bot Using Your Link.\n"
-                            f"💰 Your Reward <b>₹1.00</b> Has Been Credited To Your Wallet.</blockquote>"
-                        )
-                    except Exception as ref_err:
-                        logger.warning(f"Could not notify referrer {ref_id}: {ref_err}")
-            database.save_user(user)
-        else:
-            # Update username details if changed
-            if user.get("username") != sender_username or user.get("first_name") != sender_first or user.get("last_name") != sender_last:
+                        ref_id = int(arg.replace("ref_", ""))
+                    except ValueError:
+                        pass
+                        
+            # Get sender details safely with timeout so busy connection never hangs /start
+            sender = None
+            try:
+                sender = await asyncio.wait_for(event.get_sender(), timeout=2.0)
+            except Exception:
+                sender = getattr(event, "sender", None)
+
+            sender_username = getattr(sender, "username", None) if sender else None
+            sender_first = getattr(sender, "first_name", None) if sender else None
+            sender_last = getattr(sender, "last_name", None) if sender else None
+            
+            user = database.get_user(user_id)
+            if not user:
+                user = models.create_default_user(user_id)
                 user["username"] = sender_username
                 user["first_name"] = sender_first
                 user["last_name"] = sender_last
-                database.save_user(user)
-            
-        # Security verification checks (bans, maintenance, force subscribe)
-        import utils
-        if await utils.guard(event, client):
-            return
-            
-        # Check if deep link is for managing a specific userbot e.g. /start bot_918518814006
-        if event.text and len(event.text.split()) > 1:
-            arg = event.text.split()[1].strip()
-            if arg.startswith("bot_"):
-                phone_target = arg.replace("bot_", "").strip()
-                global_settings = database.get_global_settings()
-                admins_list = global_settings.get("admins", [])
-                is_admin = user_id in admins_list or user_id in config.ORIGINAL_ADMIN_IDS
                 
-                if not is_admin:
-                    await event.reply("<blockquote><b>» ⚠️ Access Denied</b>\n\nOnly The Bot Owner Can Control This Userbot.</blockquote>", parse_mode="html")
-                    return
-                    
-                sess = database.get_session(phone_target)
-                if not sess:
-                    await event.reply(f"<blockquote><b>» ❌ Userbot Session Not Found :</b> <code>{phone_target}</code></blockquote>", parse_mode="html")
-                    return
-                    
-                target_user_id = sess.get("user_id")
-                from .my_bots import show_bot_dashboard
-                # Admins have full access to control without replacing their own userbot dashboard
-                await show_bot_dashboard(
-                    event, 
-                    sess.get("phone", phone_target), 
-                    user_id, 
-                    flash_message=f"<blockquote><b>» 👑 Owner Access :</b> Controlling Userbot <code>{sess.get('phone', phone_target)}</code> (User: <code>{target_user_id}</code>)</blockquote>"
-                )
+                if ref_id and ref_id != user_id:
+                    ref_parent = database.get_user(ref_id)
+                    if ref_parent:
+                        user["referred_by"] = ref_id
+                        # Instantly credit ₹1.00 referral bonus to referrer
+                        ref_parent["wallet_balance"] = ref_parent.get("wallet_balance", 0.0) + 1.0
+                        ref_parent["referral_earnings"] = ref_parent.get("referral_earnings", 0.0) + 1.0
+                        database.save_user(ref_parent)
+                        logger.info(f"New user {user_id} referred by {ref_id}. Credited ₹1 to referrer.")
+                        
+                        try:
+                            name_str = f"@{sender_username}" if sender_username else f"{sender_first or ''} {sender_last or ''}".strip()
+                            if not name_str:
+                                name_str = f"User {user_id}"
+                                
+                            # Notify referrer in background task so it doesn't block the /start response
+                            asyncio.create_task(client.send_message(
+                                ref_id,
+                                f"<blockquote><b>» 🎁 New Referral!</b>\n\n"
+                                f"👤 <b>{name_str}</b> Joined The Bot Using Your Link.\n"
+                                f"💰 Your Reward <b>₹1.00</b> Has Been Credited To Your Wallet.</blockquote>"
+                            ))
+                        except Exception as ref_err:
+                            logger.warning(f"Could not notify referrer {ref_id}: {ref_err}")
+                database.save_user(user)
+            else:
+                # Update username details if changed
+                if user.get("username") != sender_username or user.get("first_name") != sender_first or user.get("last_name") != sender_last:
+                    user["username"] = sender_username
+                    user["first_name"] = sender_first
+                    user["last_name"] = sender_last
+                    database.save_user(user)
+                
+            # Security verification checks (bans, maintenance, force subscribe)
+            import utils
+            if await utils.guard(event, client):
                 return
+                
+            # Check if deep link is for managing a specific userbot e.g. /start bot_918518814006
+            if event.text and len(event.text.split()) > 1:
+                arg = event.text.split()[1].strip()
+                if arg.startswith("bot_"):
+                    phone_target = arg.replace("bot_", "").strip()
+                    global_settings = database.get_global_settings()
+                    admins_list = global_settings.get("admins", [])
+                    is_admin = user_id in admins_list or user_id in config.ORIGINAL_ADMIN_IDS
+                    
+                    if not is_admin:
+                        await event.reply("<blockquote><b>» ⚠️ Access Denied</b>\n\nOnly The Bot Owner Can Control This Userbot.</blockquote>", parse_mode="html")
+                        return
+                        
+                    sess = database.get_session(phone_target)
+                    if not sess:
+                        await event.reply(f"<blockquote><b>» ❌ Userbot Session Not Found :</b> <code>{phone_target}</code></blockquote>", parse_mode="html")
+                        return
+                        
+                    target_user_id = sess.get("user_id")
+                    from .my_bots import show_bot_dashboard
+                    # Admins have full access to control without replacing their own userbot dashboard
+                    await show_bot_dashboard(
+                        event, 
+                        sess.get("phone", phone_target), 
+                        user_id, 
+                        flash_message=f"<blockquote><b>» 👑 Owner Access :</b> Controlling Userbot <code>{sess.get('phone', phone_target)}</code> (User: <code>{target_user_id}</code>)</blockquote>"
+                    )
+                    return
 
-        onboarded = await check_onboarding(client, event)
-        if onboarded:
-            await show_main_menu(event, event.sender_id)
+            onboarded = await check_onboarding(client, event)
+            if onboarded:
+                await show_main_menu(event, event.sender_id)
+        except Exception as top_err:
+            logger.error(f"Error handling /start: {top_err}", exc_info=True)
+            try:
+                await event.respond(
+                    f"<blockquote><b>» ⚡ {config.BOT_NAME} Dashboard</b>\n\nTap below to open your control panel:</blockquote>",
+                    buttons=[[styled_button("🚀 Open Menu", "menu_start", style="primary")]]
+                )
+            except Exception:
+                pass
 
     @client.on(events.CallbackQuery(pattern="^menu_start$"))
     async def menu_start_callback(event):

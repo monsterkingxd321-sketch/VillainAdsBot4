@@ -161,13 +161,15 @@ async def check_force_sub(client, user_id: int) -> list:
         ch_id = ch["channel_id"]
         try:
             peer = int(ch_id) if (ch_id.startswith("-") or ch_id.isdigit()) else ch_id
-            await client(GetParticipantRequest(
+            await asyncio.wait_for(client(GetParticipantRequest(
                 channel=peer,
                 participant=user_id
-            ))
-        except (UserNotParticipantError, Exception) as e:
-            logger.debug(f"User {user_id} not in channel {ch_id}: {e}")
+            )), timeout=2.5)
+        except UserNotParticipantError:
             not_joined.append(ch)
+        except Exception as e:
+            # Under flood wait, timeout, or network glitch, fail open so users are not blocked from /start
+            logger.debug(f"User {user_id} channel check {ch_id} skipped due to: {e}")
             
     # Cache the result to reduce Telegram API calls and improve latency.
     # If they joined everything, cache it for 300 seconds (5 minutes).
