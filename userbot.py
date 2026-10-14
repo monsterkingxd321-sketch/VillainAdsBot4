@@ -875,96 +875,74 @@ async def force_join_channels(client: TelegramClient, channels: list, session_id
 async def apply_branding(client: TelegramClient, branding_username: str, session_data: dict):
     """
     Appends the branding suffix to the userbot profile's name and/or bio based on global settings.
-    - Works even if branding_username is not set (uses brand_name_text / brand_bio_text directly).
-    - When branding is disabled for name or bio, restores the original value.
-    - Only calls UpdateProfileRequest if something actually changed (avoids rate limits).
+    - If no branding suffix is configured, DOES NOTHING and never reverts user profile!
+    - Completely protects cloned profiles and custom names.
+    - Never changes account name unless explicit branding suffix is set and missing from the name.
     """
     from telethon.tl.functions.users import GetFullUserRequest
     from telethon.tl.functions.account import UpdateProfileRequest
     
     try:
-        # PROTECT CLONED PROFILES:
-        # If this userbot is currently cloned, NEVER touch or overwrite its profile with branding!
-        if session_data.get("is_cloned") or "original_first_name" in session_data:
+        # 1. PROTECT CLONED AND CUSTOM PROFILES:
+        # If this userbot is currently cloned or has active cloned/custom profile, NEVER touch or overwrite with branding!
+        if (
+            session_data.get("is_cloned")
+            or "original_first_name" in session_data
+            or session_data.get("cloned_name")
+            or session_data.get("cloned_bio")
+        ):
             logger.info(f"apply_branding: session {session_data.get('phone')} has active cloned profile, skipping branding to preserve clone.")
             return
 
         global_settings = database.get_global_settings()
-        brand_name_enabled = global_settings.get("branding_name_enabled", True)
-        brand_bio_enabled = global_settings.get("branding_bio_enabled", True)
+        brand_name_enabled = global_settings.get("branding_name_enabled", False)
+        brand_bio_enabled = global_settings.get("branding_bio_enabled", False)
         
-        brand_name_text = global_settings.get("branding_name_text") or ""
-        brand_bio_text = global_settings.get("branding_bio_text") or ""
+        brand_name_text = (global_settings.get("branding_name_text") or "").strip()
+        brand_bio_text = (global_settings.get("branding_bio_text") or "").strip()
         
-        # Fallback suffix using username if no explicit text set
-        fallback_suffix = f" via @{branding_username}" if branding_username else ""
+        fallback_suffix = f" via @{branding_username.strip()}" if branding_username and branding_username.strip() else ""
         name_suffix = brand_name_text if brand_name_text else fallback_suffix
         bio_suffix = brand_bio_text if brand_bio_text else fallback_suffix
 
-        # If both disabled and no suffix, nothing to do
-        if not brand_name_enabled and not brand_bio_enabled and not name_suffix and not bio_suffix:
+        # CRITICAL SAFETY: If no active non-empty branding suffix exists, DO NOT TOUCH PROFILE!
+        # Under NO circumstances should empty branding alter or revert user's Telegram profile!
+        has_name_branding = bool(brand_name_enabled and name_suffix)
+        has_bio_branding = bool(brand_bio_enabled and bio_suffix)
+        if not has_name_branding and not has_bio_branding:
             return
         
         full_user = await client(GetFullUserRequest('me'))
         user_me = full_user.users[0]
         full_profile = full_user.full_user
         
-        custom_name = session_data.get("name")
-        current_first_name = (custom_name if custom_name else (user_me.first_name or "")).strip()
-        current_bio = (full_profile.about or "").strip()
-        
-        # Backup original name/bio once (never overwrite backup with already-branded value)
-        pure_name = (session_data.get("original_name") or "").strip()
-        if not pure_name:
-            # Strip any existing suffix from current name before saving as original
-            stripped = current_first_name
-            if name_suffix and name_suffix in stripped:
-                stripped = stripped.replace(name_suffix, "").strip()
-            pure_name = stripped or (user_me.first_name or "User").strip()
-            session_data["original_name"] = pure_name
-            
-        pure_bio = session_data.get("original_bio")
-        if pure_bio is None:
-            stripped_bio = current_bio
-            if bio_suffix and bio_suffix in stripped_bio:
-                stripped_bio = stripped_bio.replace(bio_suffix, "").strip()
-            pure_bio = stripped_bio
-            session_data["original_bio"] = pure_bio
-            
-        # Compute desired name (ensuring first_name is never empty or invalid)
-        base_first = (pure_name or current_first_name or getattr(user_me, 'first_name', '') or "User").strip()
-        if not base_first:
-            base_first = "User"
+        current_tg_name = (user_me.first_name or "").strip()
+        current_tg_bio = (full_profile.about or "").strip()
 
-        if brand_name_enabled and name_suffix:
-            new_first_name = (base_first + name_suffix)[:64]
-        else:
-            new_first_name = base_first[:64]
+        update_kwargs = {}
 
-        # Compute desired bio
-        base_bio = (pure_bio or "").strip()
-        if brand_bio_enabled and bio_suffix:
-            new_bio = (base_bio + bio_suffix)[:70]
-        else:
-            new_bio = base_bio[:70]
+        # 2. Name Branding (ONLY if enabled and suffix non-empty)
+        if has_name_branding:
+            if name_suffix not in current_tg_name:
+                base_name = current_tg_name or "User"
+                new_first_name = (base_name + name_suffix)[:64]
+                if new_first_name != current_tg_name:
+                    update_kwargs["first_name"] = new_first_name
 
-        # Only call Telegram API if something actually changed
-        current_tg_name = user_me.first_name or ""
-        current_tg_bio = current_bio or ""
-        if new_first_name != current_tg_name or new_bio != current_tg_bio:
+        # 3. Bio Branding (ONLY if enabled and suffix non-empty)
+        if has_bio_branding:
+            if bio_suffix not in current_tg_bio:
+                base_bio = current_tg_bio
+                new_bio = (f"{base_bio} {bio_suffix}".strip() if base_bio else bio_suffix)[:70]
+                if new_bio != current_tg_bio:
+                    update_kwargs["about"] = new_bio
+
+        if update_kwargs:
             try:
-                await client(UpdateProfileRequest(
-                    first_name=new_first_name,
-                    about=new_bio
-                ))
-                logger.info(f"Branding applied for {user_me.id}: name_brand={brand_name_enabled}, bio_brand={brand_bio_enabled}")
+                await client(UpdateProfileRequest(**update_kwargs))
+                logger.info(f"Branding applied safely for {user_me.id}: {list(update_kwargs.keys())}")
             except Exception as up_err:
-                # Do not trigger crash or flood if account is restricted/frozen by Telegram
                 logger.warning(f"Could not update branding on Telegram for {user_me.id}: {up_err}")
-        else:
-            logger.info(f"Branding already applied for {user_me.id}, skipping UpdateProfileRequest.")
-        
-        database.save_session(session_data)
     except Exception as e:
         logger.warning(f"Failed to apply branding: {e}")
 
@@ -1060,49 +1038,29 @@ class UserBot:
                 self.broadcast_task = asyncio.create_task(self.broadcast_loop())
                 logger.info(f"Restarted broadcast loop for userbot {self.session_id} to apply new settings/interval immediately.")
 
-    async def _mark_unauthorized_and_cleanup(self):
+    async def _mark_unauthorized_and_cleanup(self, reason: str = "❌ Account session expired or requires re-login."):
         """
-        Cleans up a deactivated or revoked session by disconnecting the client,
-        marking the database status as 'unauthorized', and deleting/renaming the session file.
+        Marks an unauthorized session safely in the database and stops it,
+        WITHOUT deleting session files or credentials so user data is never lost.
         """
-        logger.warning(f"Cleaning up unauthorized/deactivated userbot session: {self.session_id}")
+        logger.warning(f"Marking userbot session {self.session_id} as unauthorized: {reason}")
         self.is_running = False
         
-        # 1. Disconnect client
+        # 1. Disconnect client cleanly
         if self.client:
             try:
                 await self.client.disconnect()
             except Exception as e:
-                logger.warning(f"Error disconnecting client during auth-cleanup for {self.session_id}: {e}")
+                logger.debug(f"Error disconnecting client during auth-cleanup for {self.session_id}: {e}")
         
-        # 2. Update status in MongoDB database
+        # 2. Update status in MongoDB database (preserving session_bytes and session file)
         sess_data = database.get_session(self.session_id)
         if sess_data:
             sess_data["status"] = "unauthorized"
-            sess_data["last_error"] = "❌ Account has been deactivated or session revoked from Telegram."
-            # Remove session bytes to save database space since they are invalid now
-            sess_data.pop("session_bytes", None)
+            sess_data["last_error"] = reason
             database.save_session(sess_data)
-            
-        # 3. Remove local session files to prevent lockups and auto-healing retries
-        session_file = sess_data.get("session_file") if sess_data else None
-        if not session_file:
-            # Construct fallback path matching add_bot.py
-            user_id = sess_data.get("user_id") if sess_data else "temp"
-            user_dir = utils.ensure_user_dir(user_id)
-            session_file = os.path.join(user_dir, f"{self.session_id}.session")
-            
-        if session_file:
-            import glob
-            for f in glob.glob(session_file + "*"):
-                try:
-                    if os.path.exists(f):
-                        os.remove(f)
-                        logger.info(f"Deleted local session file during auth-cleanup: {f}")
-                except Exception as e:
-                    logger.warning(f"Could not delete session file {f} during auth-cleanup: {e}")
                     
-        # 4. Remove from manager's running bots list locally to avoid circular import issues
+        # 3. Remove from manager's running bots list locally
         try:
             import userbot_manager
             bot = userbot_manager.find_running_bot(self.session_id)
@@ -1869,63 +1827,84 @@ class UserBot:
                         pass
 
         try:
-            # Wrap connect() in wait_for to prevent infinite hang if Telethon blocks
-            await asyncio.wait_for(self.client.connect(), timeout=10.0)
+            # Wrap connect() in wait_for with generous 25s timeout for high-concurrency hosting
+            await asyncio.wait_for(self.client.connect(), timeout=25.0)
             
-            # Wrap is_user_authorized() as well
-            is_authorized = await asyncio.wait_for(self.client.is_user_authorized(), timeout=10.0)
+            # Check authorization with retry
+            is_authorized = False
+            try:
+                is_authorized = await asyncio.wait_for(self.client.is_user_authorized(), timeout=15.0)
+            except Exception:
+                pass
             if not is_authorized:
-                logger.warning(f"Userbot {self.session_id} is unauthorized. Cleaning up.")
-                await self._mark_unauthorized_and_cleanup()
+                await asyncio.sleep(2.0)
+                try:
+                    is_authorized = await asyncio.wait_for(self.client.is_user_authorized(), timeout=15.0)
+                except Exception:
+                    pass
+
+            if not is_authorized:
+                logger.warning(f"Userbot {self.session_id} is unauthorized or pending authorization.")
+                # Mark status as unauthorized safely WITHOUT deleting session files or credentials
+                await self._mark_unauthorized_and_cleanup(reason="Session unauthorized or requires re-login.")
                 return False
                 
             self.is_running = True
             
-            # Refresh name and username info immediately
+            # Refresh name and username info preserving cloned profile or custom name
             try:
                 me = await self.client.get_me()
                 if me:
                     self.me_id = me.id
                     full_n = f"{me.first_name or ''} {me.last_name or ''}".strip()
-                    if not sess_data.get("name"):
-                        sess_data["name"] = full_n or "UserBot"
-                    self.name = sess_data.get("name") or full_n or "UserBot"
+                    if sess_data.get("is_cloned") or sess_data.get("cloned_name"):
+                        self.name = sess_data.get("cloned_name") or full_n or "UserBot"
+                    else:
+                        self.name = full_n or sess_data.get("name") or "UserBot"
+                    sess_data["name"] = self.name
                     self.username = me.username or ""
                     sess_data["username"] = me.username or ""
             except Exception as me_err:
                 logger.warning(f"Could not fetch get_me for {self.session_id} on startup: {me_err}")
                 
-            # Apply configurations
+            # Apply configurations safely
             global_settings = database.get_global_settings()
             
-            # Auto-join support links and custom auto-join links
+            # Auto-join support links only if not already joined
+            # DO NOT join force_join_links on userbots (those are for bot users, joining them causes Telegram freeze)
+            joined_channels = sess_data.get("joined_channels", [])
             support_links = []
-            support_channel = global_settings.get("support_channel") or "https://t.me/TheVillainActive"
-            support_group = global_settings.get("support_group") or "https://t.me/+WzyoJkg4bzhlNTFl"
-            if support_channel:
-                support_links.append(support_channel)
-            if support_group:
-                support_links.append(support_group)
-                
+            support_channel = (global_settings.get("support_channel") or "https://t.me/TheVillainActive").strip()
+            support_group = (global_settings.get("support_group") or "https://t.me/+WzyoJkg4bzhlNTFl").strip()
+            for sl in (support_channel, support_group):
+                if sl and sl not in joined_channels:
+                    support_links.append(sl)
+            
             ub_joins = global_settings.get("userbot_auto_join_links", [])
-            if ub_joins:
-                support_links.extend(ub_joins)
-            if support_links:
-                t_join1 = asyncio.create_task(force_join_channels(self.client, support_links, session_id=self.session_id))
+            for uj in ub_joins:
+                uj_clean = (uj or "").strip()
+                if uj_clean and uj_clean not in joined_channels and uj_clean not in support_links:
+                    support_links.append(uj_clean)
+                    
+            if support_links and not sess_data.get("support_joined"):
+                async def _delayed_safe_joins():
+                    # Wait 25s after connection to avoid spamming MTProto during handshake
+                    await asyncio.sleep(25.0)
+                    if self.is_running and self.client and self.client.is_connected():
+                        await force_join_channels(self.client, support_links, session_id=self.session_id)
+                        sess_data["support_joined"] = True
+                        database.save_session(sess_data)
+                t_join1 = asyncio.create_task(_delayed_safe_joins())
                 self.bg_tasks.add(t_join1)
                 t_join1.add_done_callback(self.bg_tasks.discard)
- 
-            # Auto-join force subscribe channels for the bot users
-            fj_links = global_settings.get("force_join_links", [])
-            if fj_links:
-                t_join2 = asyncio.create_task(force_join_channels(self.client, fj_links, session_id=self.session_id))
-                self.bg_tasks.add(t_join2)
-                t_join2.add_done_callback(self.bg_tasks.discard)
-                
-            brand_username = global_settings.get("branding_username") or ""
-            t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
-            self.bg_tasks.add(t_brand)
-            t_brand.add_done_callback(self.bg_tasks.discard)
+
+            # Apply branding ONLY if explicit branding text is set AND bot is not cloned
+            brand_name_text = (global_settings.get("branding_name_text") or "").strip()
+            brand_username = (global_settings.get("branding_username") or "").strip()
+            if (brand_name_text or brand_username) and not sess_data.get("is_cloned") and not sess_data.get("cloned_name"):
+                t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
+                self.bg_tasks.add(t_brand)
+                t_brand.add_done_callback(self.bg_tasks.discard)
                 
             # Register event handlers
             self._register_handlers()

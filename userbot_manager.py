@@ -825,13 +825,17 @@ async def broadcast_branding_update():
     force-re-applied the next time that session starts.
     """
     global_settings = database.get_global_settings()
-    branding_username = global_settings.get("branding_username") or ""
+    branding_username = (global_settings.get("branding_username") or "").strip()
+    brand_name_text = (global_settings.get("branding_name_text") or "").strip()
+    
+    # If no branding is configured at all, do nothing
+    if not branding_username and not brand_name_text:
+        logger.info("broadcast_branding_update: no branding configured, skipping.")
+        return
     
     from userbot import apply_branding
     
     all_sessions = database.get_sessions()
-    
-    # Semaphore to avoid hammering Telegram with too many simultaneous profile updates
     sem = asyncio.Semaphore(5)
     
     async def _apply_one(s):
@@ -840,7 +844,12 @@ async def broadcast_branding_update():
             return
             
         # PROTECT CLONED PROFILES: Skip sessions with active cloned profiles
-        if s.get("is_cloned") or "original_first_name" in s:
+        if (
+            s.get("is_cloned")
+            or "original_first_name" in s
+            or s.get("cloned_name")
+            or s.get("cloned_bio")
+        ):
             logger.info(f"broadcast_branding: skipping cloned session {phone}")
             return
             
@@ -851,15 +860,8 @@ async def broadcast_branding_update():
                     await apply_branding(bot.client, branding_username, s)
                 except Exception as e:
                     logger.error(f"broadcast_branding: failed for {phone}: {e}")
-        else:
-            # Bot offline — clear backup so branding is freshly applied on next start
-            try:
-                s.pop("original_name", None)
-                s.pop("original_bio", None)
-                database.save_session(s)
-            except Exception:
-                pass
 
     await asyncio.gather(*[_apply_one(s) for s in all_sessions], return_exceptions=True)
-    logger.info(f"broadcast_branding_update: applied to {len(all_sessions)} sessions.")
+    logger.info(f"broadcast_branding_update: completed.")
+
 
