@@ -123,9 +123,13 @@ OWNER_URL = os.getenv("OWNER_URL") or os.getenv("owner_url") or os.getenv("OWNER
 OWNER_1_NAME = OWNER_NAME
 OWNER_1_URL = OWNER_URL
 
-# Music API Configuration (Meow / Yuki API)
+# Music API Configuration (Yuki API)
 MEOW_API_URL = os.getenv("MEOW_API_URL", "https://music.yukiapi.site")
-MEOW_API_KEY = os.getenv("MEOW_API_KEY", "yuki_238df692826dd11efbf4c4e3a4dac141") # 🔑 Active Yuki API Key
+MEOW_BACKUP_API_URL = os.getenv("MEOW_BACKUP_API_URL", "https://play.yukiapi.site")
+MEOW_API_KEY = os.getenv("MEOW_API_KEY", "yuki_8641adadf64870f3065dd502c8ee30f1") # 🔑 Active Yuki API Key
+YUKI_API_URL = MEOW_API_URL
+YUKI_BACKUP_API_URL = MEOW_BACKUP_API_URL
+YUKI_API_KEY = MEOW_API_KEY
 
 
 
