@@ -264,6 +264,10 @@ def log_audit(actor_id, action: str, target=None, details: str = "", meta: Dict[
     Records an action performed by an admin.
 
     `actor_id` may be None for system actions.
+
+    The entry is written SYNCHRONOUSLY on purpose: an audit trail that can
+    lose entries is worthless. A crash right after an action must not erase
+    the proof of that action.
     """
     try:
         doc = {
@@ -275,7 +279,7 @@ def log_audit(actor_id, action: str, target=None, details: str = "", meta: Dict[
             "details": str(details or "")[:1000],
             "meta": meta or {},
         }
-        _db_executor.submit(lambda: _db.audit_log.insert_one(doc))
+        _db.audit_log.insert_one(doc)
         return doc
     except Exception as e:
         logger.warning(f"Could not write the audit log: {e}")
