@@ -35,6 +35,7 @@ SUITES = [
     "test_antiban.py",
     "test_antispam.py",
     "test_antispam_guard.py",
+    "test_ui_cards.py",
 ]
 
 

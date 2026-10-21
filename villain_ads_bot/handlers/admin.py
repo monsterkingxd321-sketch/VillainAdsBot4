@@ -175,14 +175,14 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button("🧙 Manage Admin Roles", "admin_roles", style="primary")
         ],
         [
-            utils.styled_button("🌐 Proxy Manager (Unlimited Accounts)", "admin_proxies", style="success"),
-            utils.styled_button("💾 Unlimited Accounts", "admin_toggle_unlimited_accounts", style="primary")
+            utils.styled_button("🌐 Proxy Manager", "admin_proxies", style="success")
         ],
         [
             utils.styled_button("📡 Proxy Source Channel", "admin_proxy_channel", style="success")
         ],
         [
-            utils.styled_button("🛡️ Toggle Anti-Spam Protection", "admin_toggle_antispam", style="primary")
+            utils.styled_button("🛡️ Toggle Anti-Spam Protection", "admin_toggle_antispam", style="primary"),
+            utils.styled_button("🧪 Check Spam Status", "admin_check_spam_status", style="primary")
         ],
         [
             utils.styled_button("💾 Backup Now", "admin_backup_now", style="success"),
@@ -2501,34 +2501,7 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern="^admin_manage_users$"))
     async def admin_manage_users_callback(event):
-        user_id = event.sender_id
-        if not check_admin(user_id):
-            return
-            
-        text = (
-            "👥 <b>User Management Panel</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Manage user accounts, view detailed stats, and apply bans/unbans."
-        )
-        buttons = [
-            [
-                utils.styled_button("📊 View User Stats", "admin_usr_stats_start", style="primary"),
-                utils.styled_button("👛 Check User Balance", "admin_usr_bal_start", style="success")
-            ],
-            [
-                utils.styled_button("🚫 Ban User", "admin_usr_ban_start", style="danger"),
-                utils.styled_button("🟢 Unban User", "admin_usr_unban_start", style="success")
-            ],
-            [
-                utils.styled_button("🎮 Control Userbots", "admin_usr_ctrl_start", style="success")
-            ],
-            [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")]
-        ]
-        
-        try:
-            await event.edit(text, buttons=buttons)
-        except Exception:
-            await event.respond(text, buttons=buttons)
+        await render_user_management_panel(event)
 
     @client.on(events.CallbackQuery(pattern=r"^admin_usr_(stats|ban|unban|bal|ctrl)_start$"))
     async def admin_usr_action_start(event):
@@ -2764,6 +2737,72 @@ def register_handlers(client):
         audit("antispam.toggle", None, f"anti_spam_protection={not current}", user_id)
         state = "ON - the bot advises you" if not current else "OFF - no advice at all"
         await event.answer(f"\U0001f6e1\ufe0f Anti-spam protection: {state}", alert=True)
+
+    @client.on(events.CallbackQuery(pattern="^admin_check_spam_status$"))
+    async def admin_check_spam_status_callback(event):
+        """
+        Checks the @SpamBot restriction of every running account.
+
+        This is an OWNER tool: the end user never sees it. @SpamBot is the
+        real risk for an ads bot - a limited account can not post anything.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can do this.", alert=True)
+            return
+
+        from villain_ads_bot.core import antispam
+        from villain_ads_bot.services import userbot_manager
+
+        sessions = []
+        for sess in database.get_sessions():
+            phone = sess.get("phone") or sess.get("session_id")
+            if phone and userbot_manager.is_bot_running(phone):
+                sessions.append(sess)
+
+        if not sessions:
+            await event.answer("\u26a0\ufe0f No account is running.", alert=True)
+            return
+
+        status = await event.respond(
+            f"\U0001f9ea <b>Checking the @SpamBot status of "
+            f"{len(sessions)} account(s)...</b>",
+            parse_mode="html"
+        )
+
+        limited = []
+        errors = 0
+        for sess in sessions:
+            phone = sess.get("phone") or sess.get("session_id")
+            bot_obj = userbot_manager.find_running_bot(phone)
+            if not bot_obj or not getattr(bot_obj, "client", None):
+                continue
+            try:
+                result = await antispam.check_spam_status(bot_obj.client, force=True)
+            except Exception:
+                errors += 1
+                continue
+            if result.get("error"):
+                errors += 1
+            if result.get("limited"):
+                limited.append((sess.get("name") or phone,
+                                result.get("severity") or "unknown"))
+
+        body = (f"\U0001f9ea <b>@SpamBot check finished</b>\n\n"
+                f"\u2705 <b>Checked :</b> <code>{len(sessions)}</code>\n"
+                f"\U0001f6a8 <b>Limited :</b> <code>{len(limited)}</code>")
+        if limited:
+            body += "\n\n" + "\n".join(
+                f"\u2022 <b>{name}</b> - <code>{sev}</code>" for name, sev in limited[:25])
+        if errors:
+            body += f"\n\n\u26a0\ufe0f <i>{errors} account(s) did not answer.</i>"
+        if not limited and not errors:
+            body += "\n\n\u2705 <i>All accounts are clean.</i>"
+
+        try:
+            await status.edit(body, parse_mode="html")
+        except Exception:
+            pass
 
     @client.on(events.CallbackQuery(pattern="^admin_proxy_channel$"))
     async def admin_proxy_channel_callback(event):
@@ -3322,18 +3361,16 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern="^admin_toggle_unlimited_accounts$"))
     async def admin_toggle_unlimited_accounts_callback(event):
-        """Removes the concurrent userbot limit completely."""
-        user_id = event.sender_id
-        if not check_role(user_id, ROLE_OWNER):
-            await event.answer("\u274c Only the owner can change this.", alert=True)
-            return
-        global_settings = database.get_global_settings()
-        current = bool(global_settings.get("unlimited_accounts", False))
-        global_settings["unlimited_accounts"] = not current
-        database.save_global_settings(global_settings)
-        audit("accounts.unlimited_toggle", None, f"unlimited_accounts={not current}", user_id)
-        state = "ON - no account is limited" if not current else "OFF - the limit applies again"
-        await event.answer(f"\U0001f4be Unlimited accounts: {state}", alert=True)
+        """
+        The "unlimited accounts" switch was removed from the panel - the
+        owner does not need it. The callback only says so, it does not
+        change anything any more.
+        """
+        await event.answer(
+            "\u274c The unlimited-accounts switch was removed. "
+            "Set MAX_RUNNING_USERBOTS in the .env instead.",
+            alert=True
+        )
 
     # ==================== #2  COUPON GENERATOR UI ====================
     @client.on(events.CallbackQuery(pattern="^admin_plan_unlimited_opt$"))
@@ -3944,6 +3981,44 @@ async def show_branding_settings(event, user_id: int):
         await event.respond(text, buttons=buttons)
 
 
+async def render_user_management_panel(event):
+    """
+    The User Management screen.
+
+    It is a module level function so it can be re-rendered from anywhere
+    (after a ban / unban for example) - a nested callback could not be
+    called from outside.
+    """
+    user_id = event.sender_id
+    if not check_admin(user_id):
+        return
+
+    text = (
+        "👥 <b>User Management Panel</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Manage user accounts, view detailed stats, and apply bans/unbans."
+    )
+    buttons = [
+        [
+            utils.styled_button("📊 View User Stats", "admin_usr_stats_start", style="primary"),
+            utils.styled_button("👛 Check User Balance", "admin_usr_bal_start", style="success")
+        ],
+        [
+            utils.styled_button("🚫 Ban User", "admin_usr_ban_start", style="danger"),
+            utils.styled_button("🟢 Unban User", "admin_usr_unban_start", style="success")
+        ],
+        [
+            utils.styled_button("🎮 Control Userbots", "admin_usr_ctrl_start", style="success")
+        ],
+        [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")]
+    ]
+
+    try:
+        await event.edit(text, buttons=buttons)
+    except Exception:
+        await event.respond(text, buttons=buttons)
+
+
 async def process_admin_usr_search(event, search_query: str, action: str):
     user_id = event.sender_id
     search_query = search_query.strip()
@@ -4033,30 +4108,16 @@ async def process_admin_usr_search(event, search_query: str, action: str):
         database.save_user(target_user)
         audit("user.ban", str(target_id), f"by admin {user_id}", user_id)
         await event.reply(f"✅ <b>User Banned successfully!</b>\nUser ID: `{target_id}`\nUsername: @{username}")
-        # Re-render menu
-        class MockEvent:
-            def __init__(self):
-                self.sender_id = user_id
-                self.respond = event.respond
-                self.edit = event.respond
-            async def answer(self, *args, **kwargs):
-                pass
-        await admin_manage_users_callback(MockEvent())
+        # Re-render the management screen
+        await render_user_management_panel(event)
         
     elif action == "unban":
         target_user["is_banned"] = False
         database.save_user(target_user)
         audit("user.unban", str(target_id), f"by admin {user_id}", user_id)
         await event.reply(f"✅ <b>User Unbanned successfully!</b>\nUser ID: `{target_id}`\nUsername: @{username}")
-        # Re-render menu
-        class MockEvent:
-            def __init__(self):
-                self.sender_id = user_id
-                self.respond = event.respond
-                self.edit = event.respond
-            async def answer(self, *args, **kwargs):
-                pass
-        await admin_manage_users_callback(MockEvent())
+        # Re-render the management screen
+        await render_user_management_panel(event)
 
     elif action == "bal":
         wallet_bal = target_user.get("wallet_balance", 0.0)

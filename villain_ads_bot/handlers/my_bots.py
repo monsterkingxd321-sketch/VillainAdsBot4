@@ -234,7 +234,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
     if flash_message:
         text += f"{flash_message}\n\n"
     text += (
-        f"{ui.card_open(utils.get_text('premium_bots_title', lang), utils.get_text('premium_bots_sub', lang))}\n"
+        f"{ui.card_open(utils.get_text('premium_bots_title', lang), '', utils.get_text('premium_bots_sub', lang))}\n"
     )
     buttons = [
         [
@@ -342,13 +342,13 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             text += f"{flash_message}\n\n"
             
         text += (
-            f"<blockquote><b>» 🤖 Userbot Control Panel</b>\n\n"
-            f"👤 <b>Account :</b> <b>{name}</b>\n"
-            f"⚡ <b>Status :</b> {status_emoji} <b>{status_text}</b>\n"
-            f"🔄 <b>Auto Broadcast :</b> <b>{auto_spam}</b>\n"
-            f"👋 <b>Auto-Welcome :</b> <b>{auto_welcome}</b>\n"
-            f"💬 <b>Tag Auto-Reply :</b> <b>{auto_reply}</b>\n"
-            f"👥 <b>Auto-Contact :</b> <b>{auto_add_contact}</b></blockquote>"
+            f"{ui.card('Userbot Control Panel', 'Everything for this account in one place', name, chr(129496))}\n\n"
+            f"{ui.kv('Account', user_handle, chr(128100))}\n"
+            f"{ui.kv('Status', status_text, chr(128994))}\n"
+            f"{ui.kv('Auto broadcast', auto_spam, chr(128225))}\n"
+            f"{ui.kv('Auto welcome', auto_welcome, chr(128075))}\n"
+            f"{ui.kv('Tag auto-reply', auto_reply, chr(128172))}\n"
+            f"{ui.kv('Auto contact', auto_add_contact, chr(128101))}"
         )
         
         # Configure dashboard buttons (Large full-width layout)
@@ -377,6 +377,12 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # The proxy section is OWNER ONLY - it must not appear in the ads
         # userbot dashboard.
 
+        # Row 1.1: Broadcast Now - the MAIN action of an ads bot.
+        # It is on the dashboard directly, no extra sub menu needed.
+        rows.append([
+            ("\U0001f4e2 Broadcast Now", f"broadcast_now_{phone}")
+        ])
+
         # Row 1.2: Set DM Welcome Message (Full width)
         rows.append([
             ("btn_set_welcome", f"set_welcome_{phone}")
@@ -396,9 +402,6 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         rows.append([
             ("\U0001f399\ufe0f VC & Music", f"vc_menu_{phone}"),
             ("\U0001f465 Group Joining", f"grp_menu_{phone}")
-        ])
-        rows.append([
-            ("\U0001f4e2 Broadcast & Spam", f"bcast_menu_{phone}")
         ])
         
         # Row 2: Auto Feature Toggles (Spam, Welcome, Tag Reply, Contact)
@@ -424,9 +427,6 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         rows.append([
             ("btn_help", f"help_bot_{phone}"),
             ("btn_how_to_use", f"how_to_use_{phone}")
-        ])
-        rows.append([
-            ("btn_settings_info", f"view_settings_info_{phone}")
         ])
         
         # Row 5: Refresh Stats & Delete Bot
@@ -551,7 +551,7 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
     desc_text = "Control every connected userbot across the entire system simultaneously." if is_sys_all else "Control all of your userbots simultaneously from this panel."
 
     text += (
-        f"{ui.card_open(utils.get_text('premium_slots_title', lang), utils.get_text('premium_slots_sub', lang))}\n\n"
+        f"{ui.card_open(utils.get_text('premium_slots_title', lang), '', utils.get_text('premium_slots_sub', lang))}\n\n"
         f"{ui.kv('Total linked bots', str(total_slots), '📊')}\n"
         f"{ui.kv('Active', f'🟢 {running_bots}', '⚡')}\n"
         f"{ui.kv('Stopped', f'🔴 {stopped_bots}', '⏹️')}\n\n"
@@ -863,11 +863,9 @@ def register_handlers(client):
         buttons = [
             [
                 utils.styled_button("\U0001f4dd Set Message", f"set_broadcast_{phone}", style="primary"),
-                utils.styled_button("\U0001f9ea Test Send", f"broadcast_test_{phone}", style="success"),
             ],
             [
                 utils.styled_button("\U0001f4e2 Broadcast Now", f"broadcast_now_{phone}", style="success"),
-                utils.styled_button("\U0001f6e1\ufe0f Spam Status", f"spam_status_{phone}", style="primary"),
             ],
             [
                 utils.styled_button("\u23f1\ufe0f Run Timer", f"set_run_timer_{phone}", style="primary"),

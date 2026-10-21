@@ -45,12 +45,14 @@ def card(title: str, body: str = "", subtitle: str = "", emoji: str = "✦") -> 
     return f"<blockquote>{chr(10).join(parts)}</blockquote>"
 
 
-def card_open(title: str, subtitle: str = "", emoji: str = "✦") -> str:
+def card_open(title: str, body: str = "", subtitle: str = "", emoji: str = "✦") -> str:
     """
     Opens a premium card. Use together with card_close() when the body is
     built dynamically (e.g. a list of accounts).
+
+    The signature matches card() so the two can never be mixed up.
     """
-    return f"<blockquote>{header(title, subtitle, emoji)}"
+    return f"<blockquote>{header(title, subtitle, emoji)}\n{body}"
 
 
 def card_close(footer_text: str = "") -> str:

@@ -36,7 +36,6 @@ import logging
 import random
 import re
 import time
-
 logger = logging.getLogger(__name__)
 
 SPAM_BOT = "SpamBot"
@@ -318,22 +317,41 @@ async def check_spam_status(client, force: bool = False) -> dict:
 
     result = {"limited": False, "severity": "none", "until": None, "raw": ""}
     try:
-        from telethon import functions
-        await client(functions.messages.GetBotRequest(bot_username=SPAM_BOT))
+        # NOTE: there is NO "GetBotRequest" in Telethon - calling it always
+        # raised "module 'telethon.tl.functions.messages' has no attribute
+        # 'GetBotRequest'". The entity is resolved directly instead.
         entity = await client.get_entity(SPAM_BOT)
-        await client.send_message(entity, "/start")
-        await asyncio_sleep_safe(2.5)
-        messages = await client.get_messages(entity, limit=3)
+        # Start the bot if it was never started by this account.
+        try:
+            from telethon.tl.functions.messages import StartBotRequest
+            await client(StartBotRequest(entity, "/start", random.randint(0, 2**31 - 1)))
+        except Exception:
+            pass
+        await asyncio_sleep_safe(2.0)
+        # Ask again and read the answer.
+        try:
+            await client.send_message(entity, "/start")
+        except Exception:
+            pass
+        await asyncio_sleep_safe(3.0)
+
         answer = ""
+        messages = await client.get_messages(entity, limit=5)
         for message in messages:
             text = getattr(message, "text", None) or getattr(message, "message", None) or ""
-            if text and "spam" in text.lower() or "limit" in text.lower():
+            if not text:
+                continue
+            low = text.lower()
+            if "spam" in low or "limit" in low or "restriction" in low or "flood" in low:
                 answer = text
                 break
         if not answer and messages:
             first = messages[0]
             answer = getattr(first, "text", None) or getattr(first, "message", None) or ""
-        result = parse_spam_status(answer)
+        if not answer:
+            result["error"] = "@SpamBot did not answer (the account may never have started it)"
+        else:
+            result = parse_spam_status(answer)
     except Exception as e:
         logger.warning(f"Could not read the @SpamBot status: {e}")
         result["error"] = str(e)
