@@ -135,8 +135,10 @@ def register_handlers(client):
             # Update user slot limit with subscription duration
             days = payment_req.get("days", 30)
             plan_name = payment_req.get("plan_name", "Slot Upgrade")
+            # An "unlimited" plan lifts the slot limit completely.
+            is_unlimited = bool(payment_req.get("unlimited", False))
             expires_at = utils.allocate_slots_subscription(
-                user_id, qty, days, plan_name, payment_id
+                user_id, qty, days, plan_name, payment_id, unlimited=is_unlimited
             )
             
             # The referrer earns a commission on EVERY approved payment

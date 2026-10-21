@@ -86,12 +86,44 @@ def inr_to_ton(amount_inr: float, rate: float = None) -> float:
     return _round_up(float(amount_inr) / float(rate), 4)
 
 
-def calculate_total(qty: int) -> float:
+def calculate_total(qty: int, price_per_slot: float = None) -> float:
     """Total price in INR for `qty` slots."""
-    return round(get_price_per_slot() * max(1, int(qty)), 2)
+    if price_per_slot is None:
+        price_per_slot = get_price_per_slot()
+    return round(float(price_per_slot) * max(1, int(qty)), 2)
 
 
-def breakdown(qty: int) -> dict:
+def plan_price_per_slot(plan: dict) -> float:
+    """
+    Returns the price of ONE slot for a plan.
+
+    A plan may define its own "price_per_slot". If it does not, the global
+    price per slot is used.
+    """
+    plan = plan or {}
+    try:
+        value = plan.get("price_per_slot")
+        if value:
+            value = float(value)
+            if value > 0:
+                return value
+    except (TypeError, ValueError):
+        pass
+    return get_price_per_slot()
+
+
+def plan_is_unlimited(plan: dict) -> bool:
+    """Returns True when the plan grants an unlimited number of slots."""
+    plan = plan or {}
+    if plan.get("unlimited"):
+        return True
+    try:
+        return int(plan.get("slots", 0) or 0) <= 0 and bool(plan.get("unlimited", False))
+    except (TypeError, ValueError):
+        return False
+
+
+def breakdown(qty: int, price_per_slot: float = None) -> dict:
     """
     Returns the full price breakdown for `qty` slots.
 
@@ -106,7 +138,7 @@ def breakdown(qty: int) -> dict:
         }
     """
     qty = max(1, int(qty))
-    per_slot = get_price_per_slot()
+    per_slot = get_price_per_slot() if price_per_slot is None else float(price_per_slot)
     total_inr = round(per_slot * qty, 2)
     usdt_rate = get_usdt_rate()
     ton_rate = get_ton_rate()

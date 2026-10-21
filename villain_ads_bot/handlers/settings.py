@@ -92,7 +92,7 @@ async def show_purchase_menu(event, user_id: int):
         
     text = (
         f"{ui.card('Purchase Slot Upgrades', '', 'Activate more userbot accounts on your plan', '💎')}\n\n"
-        f"{ui.kv('Current slots', str(allowed), '📦')}\n"
+        f"{ui.kv('Current slots', utils.format_slots(allowed), '📦')}\n"
         f"{ui.kv('Price per slot', f'₹{per_slot:.2f}', '💎')}\n\n"
         f"{ui.help_hint('Pick a plan — you choose the number of slots on the next screen.')}"
     )
@@ -102,7 +102,8 @@ async def show_purchase_menu(event, user_id: int):
         plan_id = plan.get("id", "plan")
         name = plan.get("button_name", "Slot Upgrade")
         days = int(plan.get("days", 30) or 30)
-        btn_label = f"💎 {name}  •  {days} days  •  ₹{per_slot:.2f}/slot"
+        limit_txt = "♾ UNLIMITED" if pricing.plan_is_unlimited(plan) else f"{plan.get('slots', '?')} slots"
+        btn_label = f"💎 {name}  •  {days} days  •  {limit_txt}  •  ₹{per_slot:.2f}/slot"
         buttons.append([
             utils.styled_button(btn_label, f"buy_plan_{plan_id}", style="primary")
         ])

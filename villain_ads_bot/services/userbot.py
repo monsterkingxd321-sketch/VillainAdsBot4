@@ -2035,6 +2035,28 @@ class UserBot:
                 sess_data["api_hash"] = api_hash
                 database.save_session(sess_data)
         from telethon.network.connection import ConnectionTcpObfuscated
+
+        # The proxy of this account. Telegram counts every account of an IP
+        # address together, so without a proxy only a handful of accounts can
+        # be active at the same time.
+        proxy_kwargs = {}
+        try:
+            from villain_ads_bot.core import proxy as _proxy
+            account_proxy = (sess_data or {}).get("proxy") if sess_data else None
+            if not account_proxy:
+                # Auto assign a proxy from the admin pool (round robin).
+                account_proxy = _proxy.assign_round_robin(self.session_id)
+            if account_proxy:
+                telethon_proxy = _proxy.build_telethon_proxy(account_proxy)
+                if telethon_proxy:
+                    proxy_kwargs["proxy"] = telethon_proxy
+                    logger.info(
+                        f"Userbot {self.session_id} will connect through "
+                        f"{_proxy.redact(account_proxy)}"
+                    )
+        except Exception as proxy_err:
+            logger.warning(f"Could not apply the proxy for {self.session_id}: {proxy_err}")
+
         self.client = TelegramClient(
             session_file, 
             api_id, 
@@ -2046,7 +2068,8 @@ class UserBot:
             auto_reconnect=True,
             device_model=device_prof["device_model"],
             system_version=device_prof["system_version"],
-            app_version=device_prof["app_version"]
+            app_version=device_prof["app_version"],
+            **proxy_kwargs
         )
         self.client.parse_mode = "html"
         

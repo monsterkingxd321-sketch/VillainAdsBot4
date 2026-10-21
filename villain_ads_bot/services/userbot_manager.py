@@ -70,6 +70,20 @@ def can_start_more_bots() -> bool:
     """
     max_running = getattr(config, "MAX_RUNNING_USERBOTS", 99999)
     active_count = len([b for b in set(_running_bots.values()) if b.is_running])
+    # The owner can remove the concurrent limit completely.
+    try:
+        from villain_ads_bot.data import database as _db
+        if (_db.get_global_settings() or {}).get("unlimited_accounts"):
+            return True
+    except Exception:
+        pass
+    # The owner can remove the concurrent limit completely.
+    try:
+        from villain_ads_bot.data import database as _db
+        if (_db.get_global_settings() or {}).get("unlimited_accounts"):
+            return True
+    except Exception:
+        pass
     try:
         max_running = int(max_running)
     except (TypeError, ValueError):

@@ -1,4 +1,5 @@
 telethon
+python-socks[asyncio]
 nest_asyncio
 pymongo[srv]
 python-dotenv

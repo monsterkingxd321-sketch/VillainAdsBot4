@@ -8,6 +8,7 @@ from villain_ads_bot import config
 from villain_ads_bot.core import utils
 from villain_ads_bot.core import ui
 from villain_ads_bot.core import pricing
+from villain_ads_bot.core import proxy as proxy_tool
 import time
 import os
 
@@ -168,6 +169,10 @@ async def show_admin_panel(event, user_id: int):
         [
             utils.styled_button("🎟️ Coupons", "admin_coupons", style="success"),
             utils.styled_button("🧙 Manage Admin Roles", "admin_roles", style="primary")
+        ],
+        [
+            utils.styled_button("🌐 Proxy Manager (Unlimited Accounts)", "admin_proxies", style="success"),
+            utils.styled_button("💾 Unlimited Accounts", "admin_toggle_unlimited_accounts", style="primary")
         ],
         [
             utils.styled_button("💾 Backup Now", "admin_backup_now", style="success"),
@@ -1616,7 +1621,10 @@ def register_handlers(client):
                     raise ValueError("Days must be positive")
                 _admin_plan_temp.setdefault(user_id, {})["days"] = days
                 _admin_action_states[user_id] = "WAITING_FOR_PLAN_SLOTS"
-                buttons = [[utils.styled_button("🔙 Cancel", "cancel_admin_plan", style="danger")]]
+                buttons = [
+                    [utils.styled_button("♾ Unlimited Slots (No ID Limit)", "admin_plan_unlimited_opt", style="success")],
+                    [utils.styled_button("🔙 Cancel", "cancel_admin_plan", style="danger")]
+                ]
                 await event.reply(utils.get_text("prompt_plan_slots", lang), buttons=buttons)
                 return
                 
@@ -1626,6 +1634,15 @@ def register_handlers(client):
                 if slots <= 0:
                     raise ValueError("Slots must be positive")
                 _admin_plan_temp.setdefault(user_id, {})["slots"] = slots
+                _admin_action_states[user_id] = "WAITING_FOR_PLAN_PRICE"
+                buttons = [[utils.styled_button("🔙 Cancel", "cancel_admin_plan", style="danger")]]
+                await event.reply(utils.get_text("prompt_plan_price", lang), buttons=buttons)
+                return
+                
+            # 0.1.b.2 An unlimited plan (no slot limit at all)
+            elif action == "WAITING_FOR_PLAN_UNLIMITED":
+                _admin_plan_temp.setdefault(user_id, {})["slots"] = 0
+                _admin_plan_temp.setdefault(user_id, {})["unlimited"] = True
                 _admin_action_states[user_id] = "WAITING_FOR_PLAN_PRICE"
                 buttons = [[utils.styled_button("🔙 Cancel", "cancel_admin_plan", style="danger")]]
                 await event.reply(utils.get_text("prompt_plan_price", lang), buttons=buttons)
@@ -1665,6 +1682,7 @@ def register_handlers(client):
                 days = temp_data["days"]
                 slots = temp_data["slots"]
                 price = temp_data["price"]
+                unlimited = bool(temp_data.get("unlimited", False))
                 
                 import uuid
                 plan_id = "plan_" + str(uuid.uuid4())[:6]
@@ -1674,7 +1692,9 @@ def register_handlers(client):
                     "id": plan_id,
                     "days": days,
                     "slots": slots,
+                    "unlimited": unlimited,
                     "price": price,
+                    "price_per_slot": temp_data.get("price_per_slot") or price,
                     "button_name": name
                 })
                 database.save_global_settings(global_settings)
@@ -1844,6 +1864,29 @@ def register_handlers(client):
                     f"⚠️ <i>Restart the bot so every restored session is picked up.</i>",
                     parse_mode="html"
                 )
+                return
+
+            # ── Add a proxy to the pool ──
+            elif action == "WAITING_FOR_PROXY":
+                raw = val_str.strip()
+                if raw in ("\u271d", "remove", "delete"):
+                    pool = proxy_tool.get_pool()
+                    if not pool:
+                        await event.reply("\u2139\ufe0f The proxy pool is already empty.", parse_mode="html")
+                        return
+                    ok, msg = proxy_tool.remove_proxy(len(pool) - 1)
+                else:
+                    ok, msg = proxy_tool.add_proxy(raw)
+                audit("proxy.add", None, msg, user_id)
+                await event.reply(msg, parse_mode="html")
+                class _MockProxyEvent:
+                    def __init__(self, uid, ev):
+                        self.sender_id = uid
+                        self.respond = ev.respond
+                        self.edit = ev.respond
+                    async def answer(self, *args, **kwargs):
+                        pass
+                await admin_proxies_callback(_MockProxyEvent(user_id, event))
                 return
 
             # 1. Set the global price per slot (INR) - USDT/TON are derived
@@ -2674,7 +2717,169 @@ def register_handlers(client):
         
         await show_branding_settings(event, user_id)
 
+    # ==================== PROXY MANAGER ====================
+    @client.on(events.CallbackQuery(pattern="^admin_proxies$"))
+    async def admin_proxies_callback(event):
+        """
+        The proxy manager.
+
+        Telegram counts every account of an IP address together, so without a
+        proxy only a handful of accounts can be active at the same time. One
+        proxy per account removes that limit.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can manage the proxies.", alert=True)
+            return
+
+        pool = proxy_tool.get_pool()
+        global_settings = database.get_global_settings()
+        default_idx = global_settings.get("default_proxy", -1)
+
+        text = f"{ui.card_open('Proxy Manager', 'One proxy = one IP address', 'Run an unlimited number of Telegram accounts', chr(127760))}\n\n"
+        if not pool:
+            text += ui.help_hint("No proxy in the pool yet. Add one below.")
+        else:
+            for idx, p in enumerate(pool):
+                mark = " \u2b50 DEFAULT" if idx == default_idx else ""
+                text += f"\n{ui.kv(f'{idx + 1}', proxy_tool.redact(p) + mark, chr(127752))}"
+        accounts = len(database.get_sessions())
+        text += (
+            f"\n\n{ui.kv('Accounts in the system', str(accounts), chr(128100))}"
+            f"\n{ui.help_hint('Every account gets its own proxy, so Telegram never counts them together.')}"
+            f"\n{ui.card_close()}"
+        )
+
+        buttons = [[utils.styled_button("\u2795 Add Proxy", "admin_add_proxy", style="success")]]
+        for idx in range(len(pool)):
+            buttons.append([
+                utils.styled_button(f"\u2b50 {idx + 1}", f"admin_proxy_default_{idx}", style="primary"),
+                utils.styled_button(f"\U0001f5d1 {idx + 1}", f"admin_proxy_remove_{idx}", style="danger"),
+            ])
+        if pool:
+            buttons.append([utils.styled_button("\U0001f504 Assign Proxies To All Accounts", "admin_proxy_assign_all", style="success")])
+        buttons.append([utils.styled_button("\U0001f519 Back To Admin Panel", "menu_admin", style="primary")])
+
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_add_proxy$"))
+    async def admin_add_proxy_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can manage the proxies.", alert=True)
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_PROXY"
+        remove_hint = "Send the word remove to delete the last one."
+        prompt = (
+            f"{ui.card('Add Proxy', 'One proxy per account', 'SOCKS5 is recommended by Telegram', chr(127760))}\n\n"
+            f"{ui.help_hint('Send the proxy in this format:')}\n"
+            f"<code>socks5://user:password@host:port</code>\n\n"
+            f"{ui.help_hint(remove_hint)}"
+        )
+        buttons = [[utils.styled_button("\U0001f519 Cancel", "admin_proxies", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_proxy_remove_(\d+)$"))
+    async def admin_proxy_remove_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can manage the proxies.", alert=True)
+            return
+        index = int(event.pattern_match.group(1))
+        ok, msg = proxy_tool.remove_proxy(index)
+        audit("proxy.remove", str(index), msg, user_id)
+        await event.answer(msg, alert=True)
+        await admin_proxies_callback(event)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_proxy_default_(\d+)$"))
+    async def admin_proxy_default_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can manage the proxies.", alert=True)
+            return
+        index = int(event.pattern_match.group(1))
+        ok, msg = proxy_tool.set_default_proxy(index)
+        audit("proxy.set_default", str(index), msg, user_id)
+        await event.answer(msg, alert=True)
+        await admin_proxies_callback(event)
+
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_assign_all$"))
+    async def admin_proxy_assign_all_callback(event):
+        """Assigns a proxy to EVERY account (round robin)."""
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can manage the proxies.", alert=True)
+            return
+        pool = proxy_tool.get_pool()
+        if not pool:
+            await event.answer("\u26a0\ufe0f There is no proxy in the pool.", alert=True)
+            return
+
+        status = await event.respond("\U0001f504 <b>Assigning proxies to every account...</b>", parse_mode="html")
+        sessions = database.get_sessions()
+        done = 0
+        for s in sessions:
+            sid = s.get("session_id") or s.get("phone")
+            if not sid:
+                continue
+            assigned = proxy_tool.assign_round_robin(sid)
+            if not assigned:
+                continue
+            s["proxy"] = assigned
+            database.save_session(s)
+            done += 1
+        audit("proxy.assign_all", None, f"accounts={done}", user_id)
+        try:
+            await status.edit(
+                f"\u2705 <b>Proxies assigned</b>\n\n"
+                f"\U0001f4dc <b>Accounts updated :</b> <code>{done}</code>\n"
+                f"\U0001f504 <i>Restart the accounts to apply them.</i>",
+                parse_mode="html"
+            )
+        except Exception:
+            pass
+
+    @client.on(events.CallbackQuery(pattern="^admin_toggle_unlimited_accounts$"))
+    async def admin_toggle_unlimited_accounts_callback(event):
+        """Removes the concurrent userbot limit completely."""
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can change this.", alert=True)
+            return
+        global_settings = database.get_global_settings()
+        current = bool(global_settings.get("unlimited_accounts", False))
+        global_settings["unlimited_accounts"] = not current
+        database.save_global_settings(global_settings)
+        audit("accounts.unlimited_toggle", None, f"unlimited_accounts={not current}", user_id)
+        state = "ON - no account is limited" if not current else "OFF - the limit applies again"
+        await event.answer(f"\U0001f4be Unlimited accounts: {state}", alert=True)
+
     # ==================== #2  COUPON GENERATOR UI ====================
+    @client.on(events.CallbackQuery(pattern="^admin_plan_unlimited_opt$"))
+    async def admin_plan_unlimited_opt_callback(event):
+        """Switches the plan that is being created to 'unlimited slots'."""
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can do this.", alert=True)
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_PLAN_UNLIMITED"
+        await event.answer("♾ Unlimited slots selected.", alert=True)
+        prompt = (
+            f"{ui.card('Unlimited Plan', 'No ID limit at all', 'The user can connect as many accounts as they want', '♾')}\n\n"
+            f"{ui.help_hint('Now send the price of the plan in INR.')}"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "cancel_admin_plan", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
     @client.on(events.CallbackQuery(pattern="^admin_coupons$"))
     async def admin_coupons_callback(event):
         user_id = event.sender_id

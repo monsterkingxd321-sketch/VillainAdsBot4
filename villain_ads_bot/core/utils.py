@@ -606,6 +606,57 @@ async def guard(event, client) -> bool:
             
     return False
 
+# A very large number that is used to represent "no limit at all".
+UNLIMITED_SLOTS = 999999
+
+
+def is_unlimited(user_id: int) -> bool:
+    """
+    Returns True when the user must NOT be limited at all.
+
+    This can come from:
+      * the global "unlimited slots" switch (admin)
+      * a per user override (admin gives a VIP user unlimited slots)
+      * an active subscription on an "unlimited" plan
+    """
+    try:
+        settings = database.get_global_settings() or {}
+    except Exception:
+        settings = {}
+
+    if settings.get("unlimited_slots"):
+        return True
+
+    user = database.get_user(user_id)
+    if not user:
+        return False
+
+    override = user.get("slot_limit_override")
+    if override is not None:
+        try:
+            return int(override) <= 0      # 0 or less = unlimited
+        except (TypeError, ValueError):
+            pass
+
+    import time
+    now = time.time()
+    for sub in user.get("subscriptions", []) or []:
+        if sub.get("expires_at", 0) > now and sub.get("unlimited"):
+            return True
+    return False
+
+
+def format_slots(count) -> str:
+    """Formats a slot count for the UI (unlimited -> infinity sign)."""
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return "∞"
+    if count >= UNLIMITED_SLOTS:
+        return "∞"
+    return str(count)
+
+
 def get_allowed_slots(user_id: int) -> int:
     """
     Calculates the user's allowed bot slots dynamically based on active subscriptions.
@@ -613,33 +664,70 @@ def get_allowed_slots(user_id: int) -> int:
 
     The free slot is already stored inside "allowed_slots" (see
     models.create_default_user) so it must NOT be added a second time.
+
+    Returns UNLIMITED_SLOTS when no limit applies at all.
     """
+    try:
+        settings = database.get_global_settings() or {}
+    except Exception:
+        settings = {}
+
+    # The global switch: nobody is limited.
+    if settings.get("unlimited_slots"):
+        return UNLIMITED_SLOTS
+
     user = database.get_user(user_id)
     if not user:
-        return 1
-        
+        # A new user gets the configured free allowance.
+        try:
+            default_limit = int(settings.get("default_slot_limit", 1) or 1)
+        except (TypeError, ValueError):
+            default_limit = 1
+        return UNLIMITED_SLOTS if default_limit <= 0 else default_limit
+
+    # A per user override (the admin can lift the limit for one user).
+    override = user.get("slot_limit_override")
+    if override is not None:
+        try:
+            override = int(override)
+            if override <= 0:
+                return UNLIMITED_SLOTS
+            return max(1, override)
+        except (TypeError, ValueError):
+            pass
+
     import time
     now = time.time()
     subs = user.get("subscriptions", [])
     active_subs = []
     # "allowed_slots" already contains the free slot + every gifted slot.
     total_slots = int(user.get("allowed_slots", 1) or 1)
-    
+    unlimited = False
+
     for sub in subs:
         if sub.get("expires_at", 0) > now:
-            total_slots += int(sub.get("qty", 0) or 0)
+            if sub.get("unlimited"):
+                unlimited = True
+            else:
+                total_slots += int(sub.get("qty", 0) or 0)
             active_subs.append(sub)
-            
+
     # Save cleaned up list to DB if changes occurred
     if len(active_subs) != len(subs):
         user["subscriptions"] = active_subs
         database.save_user(user)
-            
+
+    if unlimited:
+        return UNLIMITED_SLOTS
     return max(1, total_slots)
 
-def allocate_slots_subscription(user_id: int, qty: int, days: int, plan_name: str, payment_id: str) -> float:
+def allocate_slots_subscription(user_id: int, qty: int, days: int, plan_name: str,
+                                payment_id: str, unlimited: bool = False) -> float:
     """
     Allocates slot subscription to a user and returns the expires_at timestamp.
+
+    With `unlimited=True` the subscription lifts the slot limit completely -
+    no ID limit applies while it is active.
     """
     user = database.get_user(user_id)
     if not user:
@@ -653,7 +741,8 @@ def allocate_slots_subscription(user_id: int, qty: int, days: int, plan_name: st
         "subscription_id": payment_id,
         "qty": qty,
         "expires_at": expires_at,
-        "plan_name": plan_name
+        "plan_name": plan_name,
+        "unlimited": bool(unlimited)
     })
     
     database.save_user(user)

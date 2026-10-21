@@ -89,7 +89,7 @@ async def show_main_menu(event, user_id):
     used_pct = int((used / allowed) * 100) if allowed else 0
     text = (
         f"{_ui.card(utils.get_text('premium_main_title', lang), utils.get_text('premium_main_sub', lang), utils.get_text('premium_main_hint', lang), '✦')}\n\n"
-        f"{_ui.kv('Slots used', f'{used} / {allowed}', '📦')}\n"
+        f"{_ui.kv('Slots used', f'{used} / {utils.format_slots(allowed)}', '📦')}\n"
         f"{_ui.kv('Usage', f'{_ui.progress_bar(used, allowed)}  {used_pct}%', '📈')}\n\n"
         f"{_ui.footer()}"
     )

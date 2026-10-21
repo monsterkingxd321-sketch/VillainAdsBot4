@@ -10,6 +10,7 @@ from villain_ads_bot.data import models
 from villain_ads_bot.core import utils
 from villain_ads_bot.core import ui
 from villain_ads_bot.core import joiner
+from villain_ads_bot.core import proxy as proxy_tool
 from villain_ads_bot import config
 from villain_ads_bot.services import userbot_manager
 from villain_ads_bot.services.userbot import join_vc_by_link, leave_chat_single, join_channel_single
@@ -377,6 +378,13 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # Row 1.15: Test the message on ONE group before going live
         rows.append([
             ("🧪 Test Send (1 Group)", f"broadcast_test_{phone}")
+        ])
+        
+        # Row 1.2: The proxy of this account (one proxy = one IP = no limit)
+        account_proxy = sess.get("proxy") if sess else None
+        proxy_label = proxy_tool.redact(account_proxy) if account_proxy else "None (direct)"
+        rows.append([
+            (f"🌐 Proxy: {proxy_label}", f"set_proxy_{phone}")
         ])
 
         # Row 1.2: Set DM Welcome Message (Full width)
@@ -1097,6 +1105,44 @@ def register_handlers(client):
                 )
             except Exception:
                 pass
+
+    @client.on(events.CallbackQuery(pattern=r"^set_proxy_(.+)$"))
+    async def set_proxy_callback(event):
+        """
+        Sets the proxy of one account.
+
+        Telegram counts every account of an IP address together - with one
+        proxy per account that limit practically disappears.
+        """
+        phone = event.pattern_match.group(1).strip()
+        user_id = event.sender_id
+
+        sess = database.get_session(phone)
+        if not sess or not is_session_owner_or_admin(sess, event.sender_id):
+            await event.answer("❌ Session not found.", alert=True)
+            return
+
+        current = sess.get("proxy")
+        current_txt = proxy_tool.redact(current) if current else "No proxy (direct connection)"
+        account_name = sess.get("name") or phone
+
+        _bot_action_states[user_id] = {
+            "phone": phone,
+            "action": "WAITING_FOR_PROXY"
+        }
+
+        prompt = (
+            f"{ui.card('Account Proxy', f'Account : {account_name}', 'One proxy = one IP address = no Telegram limit', chr(127760))}\n\n"
+            f"{ui.kv('Current proxy', current_txt, chr(127752))}\n\n"
+            f"{ui.help_hint('Send the proxy in this format:')}\n"
+            f"<code>socks5://user:password@host:port</code>\n\n"
+            f"{ui.help_hint('Send the word remove to delete the proxy, or /cancel to abort.')}"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", f"select_bot_{phone}", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
 
     @client.on(events.CallbackQuery(pattern=r"^broadcast_now_(.+)$"))
     async def broadcast_now_callback(event):
@@ -3906,6 +3952,23 @@ def register_handlers(client):
                 flash = "<blockquote><b>» ❌ Failed To Play Song On Any Userbot.</b></blockquote>"
                 
             await show_all_slots_dashboard(event, user_id, flash_message=flash)
+            return
+
+        # ── The proxy of one account ──
+        elif action == "WAITING_FOR_PROXY":
+            raw = (getattr(event, "raw_text", None) or event.text or "").strip()
+            if raw.lower() in ("/cancel", "cancel"):
+                await show_bot_dashboard(event, phone, user_id, flash_message="❌ <b>Action cancelled.</b>")
+                return
+            if raw.lower() in ("remove", "delete", "none", "off"):
+                ok, msg = proxy_tool.set_session_proxy(phone, "")
+            else:
+                ok, msg = proxy_tool.set_session_proxy(phone, raw)
+            if ok:
+                flash = f"✅ <b>{msg}</b>"
+            else:
+                flash = f"❌ <b>{msg}</b>"
+            await show_bot_dashboard(event, phone, user_id, flash_message=flash)
             return
 
         # --- All Slots Group / Channel Actions ---

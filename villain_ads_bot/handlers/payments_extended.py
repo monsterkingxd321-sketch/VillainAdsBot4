@@ -253,14 +253,23 @@ def register_handlers(client):
             return
 
         # The price is ALWAYS per slot - the admin sets one price per slot in
-        # INR and the user simply picks how many slots they want.
-        per_slot = pricing.get_price_per_slot()
+        # INR and the user simply picks how many slots they want. A plan may
+        # override the price with its own "price_per_slot".
+        per_slot = pricing.plan_price_per_slot(plan)
         plan_days = int(plan.get("days", 30) or 30)
+        unlimited = pricing.plan_is_unlimited(plan)
+        title = "Select Slot Quantity"
+        hint = "Tap the quantity you want — the total is calculated automatically."
+        if unlimited:
+            title = "Unlimited Plan"
+            hint = ("♾ This plan has NO slot limit. Tap how many slots to activate now "
+                    "— you can add more any time, the limit never applies.")
         text = (
-            f"{ui.card('Select Slot Quantity', '', 'Choose how many userbot slots you want to activate', '💎')}\n\n"
+            f"{ui.card(title, '', 'Choose how many userbot slots you want to activate', '💎')}\n\n"
             f"{ui.kv('Price per slot', f'₹{per_slot:.2f}', '💎')}\n"
-            f"{ui.kv('Validity', f'{plan_days} days', '📅')}\n\n"
-            f"{ui.help_hint('Tap the quantity you want — the total is calculated automatically.')}"
+            f"{ui.kv('Validity', f'{plan_days} days', '📅')}\n"
+            + (f"{ui.kv('Slot limit', '♾ UNLIMITED', '♾')}\n" if unlimited else "")
+            + f"\n{ui.help_hint(hint)}"
         )
         buttons = []
         for qty in range(1, MAX_SLOT_QUANTITY + 1):
@@ -301,10 +310,12 @@ def register_handlers(client):
             
         payment_id = _new_payment_id()
         
-        # Price everything from the single per-slot price.
-        price = pricing.breakdown(qty)
+        # Price everything from the single per-slot price (the plan may
+        # define its own price per slot).
+        price = pricing.breakdown(qty, pricing.plan_price_per_slot(plan))
         amount = price["inr"]
         days = int(plan.get("days", 30) or 30)
+        is_unlimited = pricing.plan_is_unlimited(plan)
         
         req_data = models.create_payment_request(payment_id, user_id, qty)
         req_data["plan_id"] = plan_id
@@ -316,6 +327,7 @@ def register_handlers(client):
         req_data["usdt_rate"] = price["usdt_rate"]
         req_data["ton_rate"] = price["ton_rate"]
         req_data["days"] = days
+        req_data["unlimited"] = is_unlimited
         req_data["reference"] = _new_reference()
         database.save_payment_request(req_data)
         
@@ -454,8 +466,10 @@ def register_handlers(client):
         # Allocate subscription slots
         days = pay_record.get("days", 30) if pay_record else 30
         plan_name = pay_record.get("plan_name", "Slot Upgrade") if pay_record else "Slot Upgrade"
+        # An "unlimited" plan lifts the slot limit completely.
+        is_unlimited = bool(pay_record.get("unlimited", False)) if pay_record else False
         expires_at = utils.allocate_slots_subscription(
-            user_id, qty, days, plan_name, payment_id
+            user_id, qty, days, plan_name, payment_id, unlimited=is_unlimited
         )
         
         import datetime
