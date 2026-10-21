@@ -80,11 +80,27 @@ check("the order is kept", [x["host"] for x in found] == ["one.lol", "two.lol", 
 check("duplicates are removed",
       len(proxy_mirror._extract_proxies(message + message.split("\n")[1])) == 3)
 
+def _button_data(button) -> str:
+    """Reads the callback data of a button (telethon 1.44 and 1.45 differ)."""
+    for path in (("data",), ("type", "data")):
+        obj = button
+        try:
+            for attr in path:
+                obj = getattr(obj, attr)
+            if isinstance(obj, (bytes, bytearray)):
+                return obj.decode()
+            if isinstance(obj, str):
+                return obj
+        except AttributeError:
+            continue
+    return ""
+
+
 buttons = proxy_mirror.build_connect_buttons(555, 3)
 check("three connect buttons are built", len(buttons[0]) == 3, buttons)
 check("the callback data carries the message and the index",
-      buttons[0][1].data.decode() == "proxy_connect_555_2",
-      buttons[0][1].data)
+      _button_data(buttons[0][1]) == "proxy_connect_555_2",
+      _button_data(buttons[0][1]))
 
 single = proxy_mirror.build_connect_buttons(9, 1)
 check("one button for one proxy", len(single) == 1 and len(single[0]) == 1)

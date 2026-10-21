@@ -27,3 +27,5 @@ bot.lock
 *.session-journal
 cache/
 error.txt
+# Thumbnail cache (cleaned up automatically by the bot)
+cache/

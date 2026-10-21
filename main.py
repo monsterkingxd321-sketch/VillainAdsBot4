@@ -169,6 +169,40 @@ async def cleanup_loop():
             
         await asyncio.sleep(300)  # Run every 5 minutes
 
+def _token_bot_id(token: str):
+    """Returns the user id of the bot the token belongs to (None on error)."""
+    try:
+        import json
+        import urllib.request
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe", timeout=10) as r:
+            data = json.loads(r.read().decode())
+        if data.get("ok"):
+            return data["result"].get("id")
+    except Exception:
+        pass
+    return None
+
+
+def _drop_bot_session():
+    """Removes the stored bot session (file + MongoDB copy)."""
+    import os
+    for name in ("bot_session.session", "bot_session.session-journal", "bot_session.session-wal",
+                 "bot_session.session-shm"):
+        try:
+            if os.path.exists(name):
+                os.remove(name)
+        except Exception:
+            pass
+    try:
+        database._db.settings.update_one(
+            {"id": "global"},
+            {"$unset": {"bot_session_str": ""}},
+        )
+    except Exception:
+        pass
+    print("[!] The old session belonged to a different bot - it was removed.", flush=True)
+
+
 async def main():
     check_single_instance()
     
@@ -283,6 +317,36 @@ async def main():
         await bot.connect()
         me = await bot.get_me()
 
+    # 1.5 The session must belong to THIS bot. A swapped token invalidates
+    #     the old session - drop it and authorize again.
+    if me is not None:
+        expected_bot_id = _token_bot_id(config.BOT_TOKEN)
+        if expected_bot_id and getattr(me, "id", None) != expected_bot_id:
+            print(f"[!] The session belongs to bot {me.id} but the token is bot "
+                  f"{expected_bot_id}.", flush=True)
+            _drop_bot_session()
+            try:
+                await bot.disconnect()
+            except Exception:
+                pass
+            me = None
+            mongo_session_str = None
+            bot = TelegramClient(
+                "bot_session",
+                config.API_ID,
+                config.API_HASH,
+                connection=ConnectionTcpObfuscated,
+                connection_retries=5,
+                retry_delay=2,
+                timeout=10,
+                auto_reconnect=True,
+            )
+            try:
+                await asyncio.wait_for(bot.connect(), timeout=15)
+                me = await asyncio.wait_for(bot.get_me(), timeout=10)
+            except Exception as conn_err:
+                print(f" [!] Reconnect failed: {conn_err}", flush=True)
+
     if me is None:
         print("[*] No active session found. Authorizing bot token...", flush=True)
         try:
@@ -350,10 +414,13 @@ async def main():
                 await asyncio.sleep(restart_delay)
 
     # Resume userbots that were running prior to shutdown in background (one-shot startup task)
-    print("[*] Resuming active userbots in background...", flush=True)
-    t1 = asyncio.create_task(userbot_manager.start_all_running_bots())
-    background_tasks.add(t1)
-    t1.add_done_callback(background_tasks.discard)
+    if os.getenv("SKIP_AUTOSTART", "").strip().lower() in ("1", "true", "yes"):
+        print("[*] SKIP_AUTOSTART is set - the userbots are NOT resumed.", flush=True)
+    else:
+        print("[*] Resuming active userbots in background...", flush=True)
+        t1 = asyncio.create_task(userbot_manager.start_all_running_bots())
+        background_tasks.add(t1)
+        t1.add_done_callback(background_tasks.discard)
     
     # Start VPS Optimization (RAM/Space Cleanup) loop (self-healing)
     t3 = asyncio.create_task(resilient_task(cleanup_loop, "cleanup_loop"))

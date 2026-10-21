@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 import traceback
 from collections import deque
 from datetime import datetime
@@ -184,15 +185,78 @@ def report(context: str, error: BaseException = None, tb=None):
 # --------------------------------------------------------------------------
 # Flushing
 # --------------------------------------------------------------------------
+async def _resolve(client, chat_id):
+    """
+    Resolves a chat id into an entity.
+
+    A freshly created bot has an empty entity cache, so sending with a raw
+    id fails with "Could not find the input entity". Resolving it first
+    makes the reports work from the very first second.
+    """
+    try:
+        return await client.get_entity(chat_id)
+    except Exception:
+        try:
+            return await client.get_input_entity(chat_id)
+        except Exception:
+            return chat_id
+
+
+# A chat that can not be reached is skipped for a while instead of being
+# retried every 12 seconds (the console was flooded with it).
+_unreachable = {}
+
+
+def _is_unreachable(chat_id) -> bool:
+    try:
+        entry = _unreachable.get(str(chat_id))
+        if not entry:
+            return False
+        count, until = entry
+        if count >= 3 and time.time() < until:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _mark_unreachable(chat_id):
+    try:
+        key = str(chat_id)
+        count, until = _unreachable.get(key, (0, 0))
+        if time.time() >= until:
+            count = 0
+        count += 1
+        _unreachable[key] = (count, time.time() + 3600)
+        return count
+    except Exception:
+        return 0
+
+
+def _reset_unreachable(chat_id):
+    try:
+        _unreachable.pop(str(chat_id), None)
+    except Exception:
+        pass
+
+
 async def _send_to_log_group(text: str):
     client = _bot_client
     lgid = get_log_group_id()
     if not client or not lgid:
         return
+    if _is_unreachable(lgid):
+        return
     try:
-        await client.send_message(lgid, text, parse_mode="html")
+        entity = await _resolve(client, lgid)
+        await client.send_message(entity, text, parse_mode="html")
+        _reset_unreachable(lgid)
     except Exception as e:
-        print(f"[error_reporter] Could not deliver report to log group: {e}", flush=True)
+        count = _mark_unreachable(lgid)
+        if count == 1:
+            print(f"[error_reporter] The log group is not reachable ({e}). "
+                  f"Add the bot to the log group - the reports are skipped for an hour.",
+                  flush=True)
 
 
 async def _send_to_owner(text: str):
@@ -200,10 +264,18 @@ async def _send_to_owner(text: str):
     if not client:
         return
     for owner_id in get_owner_ids():
+        if _is_unreachable(owner_id):
+            continue
         try:
-            await client.send_message(owner_id, text, parse_mode="html")
+            entity = await _resolve(client, owner_id)
+            await client.send_message(entity, text, parse_mode="html")
+            _reset_unreachable(owner_id)
         except Exception as e:
-            print(f"[error_reporter] Could not deliver report to owner {owner_id}: {e}", flush=True)
+            count = _mark_unreachable(owner_id)
+            if count == 1:
+                print(f"[error_reporter] The owner {owner_id} is not reachable ({e}). "
+                      f"They have to press /start in the bot once - the reports are "
+                      f"skipped for an hour.", flush=True)
 
 
 async def _flush_once():
@@ -223,13 +295,17 @@ async def _flush_once():
         _reports_this_hour[0] = 0
         _reports_this_hour[1] = now_ts
     delivered = 0
+    to_send = []
     for item in items:
         if _reports_this_hour[0] >= MAX_REPORTS_PER_HOUR:
             dropped += 1
             continue
         _reports_this_hour[0] += 1
         delivered += 1
-        await _deliver(item)
+        to_send.append(item)
+
+    if to_send:
+        await _deliver_batch(to_send)
 
     if dropped:
         print(f"[error_reporter] Hourly report cap reached, {dropped} report(s) dropped.", flush=True)
@@ -254,6 +330,37 @@ async def _deliver(item):
         "⚠️ <i>These errors are visible to the owner only. End users receive a generic message.</i>"
     )
     full = header + "\n\n" + body
+    for chunk in _chunks(full):
+        await _send_to_log_group(chunk)
+        await _send_to_owner(chunk)
+
+
+async def _deliver_batch(items):
+    """
+    Sends the WHOLE batch as ONE message.
+
+    One message per error flooded the log group - now the owner gets a
+    single, tidy report per flush.
+    """
+    if not items:
+        return
+    blocks = []
+    for item in items:
+        detail = item["detail"]
+        if len(detail) > 700:
+            detail = detail[:700] + "\n..."
+        blocks.append(
+            f"\U0001f4cd <b>{_escape(item['context'])}</b>  <code>{item['stamp']}</code>\n"
+            f"<pre>{_escape(detail)}</pre>"
+        )
+    count = len(items)
+    header = (
+        "\U0001f6a8 <b>VILLAIN ADS BOT \u2014 ERROR REPORT</b>\n"
+        "\u2501" * 30 + "\n"
+        f"\U0001f4c9 <b>{count}</b> error(s)\n"
+        "\u26a0\ufe0f <i>Visible to the owner only. End users receive a generic message.</i>"
+    )
+    full = header + "\n\n" + "\n\n".join(blocks)
     for chunk in _chunks(full):
         await _send_to_log_group(chunk)
         await _send_to_owner(chunk)

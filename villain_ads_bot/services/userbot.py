@@ -54,6 +54,7 @@ except ImportError:
         pass
 from villain_ads_bot import config
 from villain_ads_bot.core import antispam
+from villain_ads_bot.core import session_lock
 from villain_ads_bot.data import database
 from villain_ads_bot.core import utils
 
@@ -1114,6 +1115,27 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
                 await client(UpdateProfileRequest(**update_kwargs))
                 logger.info(f"Branding applied for {user_me.id}: {list(update_kwargs.keys())}")
             except Exception as up_err:
+                err_name = type(up_err).__name__
+                # A FROZEN account can not be written to at all. Mark it so the
+                # dashboard shows the truth instead of retrying for ever.
+                if "Frozen" in err_name:
+                    logger.warning(
+                        f"Account {session_data.get('phone')} is FROZEN by Telegram - "
+                        f"the branding was skipped."
+                    )
+                    try:
+                        _sid = session_data.get("session_id") or session_data.get("phone")
+                        _sess = database.get_session(_sid) if _sid else None
+                        if _sess:
+                            _sess["status"] = "unauthorized"
+                            _sess["last_error"] = (
+                                "Account frozen by Telegram (@SpamBot restriction). "
+                                "It can not be used any more."
+                            )
+                            database.save_session(_sess)
+                    except Exception:
+                        pass
+                    return
                 logger.warning(f"Could not update branding on Telegram for {user_me.id}: {up_err}")
                 utils.report_error(f"apply_branding.update:{session_data.get('phone')}", up_err)
 
@@ -2021,6 +2043,7 @@ class UserBot:
             if sess_data:
                 sess_data["status"] = "stopped"
                 database.save_session(sess_data)
+            session_lock.release(self.session_id)
             return False
             
         # Spoof a deterministic device profile to avoid detection
@@ -2035,6 +2058,16 @@ class UserBot:
                 sess_data["api_id"] = api_id
                 sess_data["api_hash"] = api_hash
                 database.save_session(sess_data)
+        # A session may only be used by ONE process. Two instances using the
+        # same session file destroy the account with AuthKeyDuplicatedError.
+        if not session_lock.acquire(self.session_id):
+            logger.error(
+                f"Session {self.session_id} is already in use by another "
+                f"process - this account is NOT started here."
+            )
+            self.is_running = False
+            return False
+
         from telethon.network.connection import ConnectionTcpObfuscated
 
         # The proxy of this account. Telegram counts every account of an IP
@@ -2254,8 +2287,30 @@ class UserBot:
                 except Exception:
                     pass
             await self._mark_start_failed("Session start timed out")
+            session_lock.release(self.session_id)
             return False
         except Exception as e:
+            err_name = type(e).__name__
+            if "AuthKeyDuplicated" in err_name:
+                # The session is dead for good - the account has to log in again.
+                logger.error(
+                    f"Session {self.session_id} was used from two different IPs "
+                    f"at the same time and can no longer be used. The account "
+                    f"has to log in again."
+                )
+                try:
+                    _sess = database.get_session(self.session_id)
+                    if _sess:
+                        _sess["status"] = "unauthorized"
+                        _sess["last_error"] = (
+                            "AuthKeyDuplicatedError - the session was used from two "
+                            "different IPs at the same time. Log the account in again."
+                        )
+                        database.save_session(_sess)
+                except Exception:
+                    pass
+                session_lock.release(self.session_id)
+                return False
             logger.error(f"Failed to start userbot {self.session_id}: {e}")
             self.is_running = False
             if self.client:
@@ -2270,6 +2325,7 @@ class UserBot:
                 await self._mark_unauthorized_and_cleanup()
             else:
                 await self._mark_start_failed(str(e))
+            session_lock.release(self.session_id)
             return False
 
     async def _mark_start_failed(self, reason: str):
@@ -2289,6 +2345,7 @@ class UserBot:
 
     async def stop(self):
         if not self.is_running:
+            session_lock.release(self.session_id)
             return
             
         self.is_running = False
@@ -2364,6 +2421,9 @@ class UserBot:
                 await self.client.disconnect()
             except Exception as e:
                 logger.warning(f"Error disconnecting client: {e}")
+        
+        # Free the session for the next start.
+        session_lock.release(self.session_id)
                 
         # Now read session file and save to MongoDB after client is disconnected
         if sess_data:
@@ -3308,10 +3368,11 @@ class UserBot:
                 )
                 if progress_msg is not None:
                     try:
+                        from villain_ads_bot.core import ui as _ui
                         await progress_msg.edit(
                             f"\u23f8\ufe0f <b>Broadcast Paused \u2014 Anti-Spam Protection</b>\n\n"
                             f"\U0001f6d1 <b>Reason :</b> {reason}\n\n"
-                            f"{ui.help_hint('A brand new account must warm up first - this is what keeps it out of @SpamBot.')}",
+                            f"{_ui.help_hint('A brand new account must warm up first - this is what keeps it out of @SpamBot.')}",
                             parse_mode="html"
                         )
                     except Exception:

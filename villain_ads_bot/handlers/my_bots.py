@@ -370,20 +370,8 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             ("btn_set_broadcast", f"set_broadcast_{phone}")
         ])
 
-        # Row 1.1: Send the broadcast NOW (live progress)
-        rows.append([
-            ("📢 Broadcast Now", f"broadcast_now_{phone}")
-        ])
         
-        # Row 1.15: Test the message on ONE group before going live
-        rows.append([
-            ("🧪 Test Send (1 Group)", f"broadcast_test_{phone}")
-        ])
         
-        # Row 1.16: The @SpamBot status + the anti spam budget
-        rows.append([
-            ("🛡️ Spam Status & Budget", f"spam_status_{phone}")
-        ])
         
         # The proxy section is OWNER ONLY - it must not appear in the ads
         # userbot dashboard.
@@ -405,8 +393,11 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         
         # Row 1.8: Voice Chat (VC) Menu & Music Commands Guide
         rows.append([
-            ("btn_vc_menu", f"vc_menu_{phone}"),
-            ("btn_music_guide", f"music_guide_{phone}")
+            ("\U0001f399\ufe0f VC & Music", f"vc_menu_{phone}"),
+            ("\U0001f465 Group Joining", f"grp_menu_{phone}")
+        ])
+        rows.append([
+            ("\U0001f4e2 Broadcast & Spam", f"bcast_menu_{phone}")
         ])
         
         # Row 2: Auto Feature Toggles (Spam, Welcome, Tag Reply, Contact)
@@ -805,6 +796,91 @@ def register_handlers(client):
         effective_id = _admin_impersonation.get(user_id, user_id)
         await show_all_slots_dashboard(event, effective_id)
 
+
+    @client.on(events.CallbackQuery(pattern=r"^grp_menu_(.+)$"))
+    async def grp_menu_callback(event):
+        """The GROUP JOINING sub menu - one place for every group action."""
+        phone = event.pattern_match.group(1).strip()
+        bot_obj = userbot_manager.find_running_bot(phone)
+        if not bot_obj:
+            await event.answer("\u26a0\ufe0f The userbot is not running.", alert=True)
+            return
+
+        text = (
+            f"{ui.card('Group Joining', f'Account : {bot_obj.name}', 'Join and leave groups', chr(128101))}\n\n"
+            f"{ui.help_hint('Joining many groups at once is handled automatically - a flood limit is waited out and the remaining groups are joined afterwards.')}"
+            f"\n{ui.footer()}</blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("\U0001f517 Join Group", f"vc_join_grp_{phone}", style="success"),
+                utils.styled_button("\U0001f4da Join Many Groups", f"vc_join_multi_grp_{phone}", style="success"),
+            ],
+            [
+                utils.styled_button("\U0001f6d1 Leave Group", f"vc_leave_grp_{phone}", style="danger"),
+            ],
+            [
+                utils.styled_button("\U0001f519 Back To Dashboard", f"select_bot_{phone}", style="primary")
+            ],
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern=r"^bcast_menu_(.+)$"))
+    async def bcast_menu_callback(event):
+        """The BROADCAST & SPAM sub menu - one place for every broadcast tool."""
+        phone = event.pattern_match.group(1).strip()
+        sess = database.get_session(phone)
+        if not sess:
+            await event.answer("\u274c Session not found.", alert=True)
+            return
+        settings = sess.get("settings", {}) or {}
+        stats = sess.get("stats", {}) or {}
+        last = stats.get("last_broadcast") or {}
+        budget = antispam.budget_state(sess)
+        msg_count = len(utils.get_broadcast_messages(settings))
+
+        last_line = ""
+        if last:
+            last_sent = str(last.get("sent", 0))
+            last_total = str(last.get("total", 0))
+            last_text = last_sent + "/" + last_total + " groups"
+            last_line = f"{ui.kv('Last broadcast', last_text, chr(128200))}\n"
+
+        account_name = sess.get("name") or phone
+        text = (
+            f"{ui.card('Broadcast & Spam', 'Account : ' + str(account_name), 'Your advertisement and its protection', chr(128225))}\n\n"
+            f"{ui.kv('Auto broadcast', 'ON' if settings.get('auto_spam') else 'OFF', chr(128225))}\n"
+            f"{ui.kv('Messages configured', str(msg_count), chr(128172))}\n"
+            f"{ui.kv('Daily budget', str(budget.get('daily_used', 0)) + '/' + str(budget.get('daily_max', 0)), chr(128202))}\n"
+            f"{last_line}"
+            f"\n{ui.help_hint('The message really differs per group and a new account warms up first - that is what keeps it out of @SpamBot.')}"
+            f"\n{ui.footer()}</blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("\U0001f4dd Set Message", f"set_broadcast_{phone}", style="primary"),
+                utils.styled_button("\U0001f9ea Test Send", f"broadcast_test_{phone}", style="success"),
+            ],
+            [
+                utils.styled_button("\U0001f4e2 Broadcast Now", f"broadcast_now_{phone}", style="success"),
+                utils.styled_button("\U0001f6e1\ufe0f Spam Status", f"spam_status_{phone}", style="primary"),
+            ],
+            [
+                utils.styled_button("\u23f1\ufe0f Run Timer", f"set_run_timer_{phone}", style="primary"),
+                utils.styled_button("\u23f1\ufe0f Timing", f"set_interval_{phone}", style="primary"),
+            ],
+            [
+                utils.styled_button("\U0001f399\ufe0f VC & Music", f"vc_menu_{phone}", style="primary"),
+                utils.styled_button("\U0001f519 Back To Dashboard", f"select_bot_{phone}", style="primary")
+            ],
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
 
     @client.on(events.CallbackQuery(pattern=r"^vc_menu_(.+)$"))
     async def vc_menu_callback(event):

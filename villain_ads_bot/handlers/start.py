@@ -145,11 +145,11 @@ async def show_main_menu(event, user_id):
             else:
                 await event.respond(text, buttons=buttons)
     except Exception as e:
-        logger.error(f"Error rendering main menu: {e}")
+        logger.warning(f"Could not edit the main menu ({e}) - sending it as a new message.")
         try:
             await event.respond(text, buttons=buttons)
-        except Exception:
-            pass
+        except Exception as respond_err:
+            logger.error(f"Error rendering main menu: {respond_err}")
 
 def register_handlers(client):
     import asyncio
