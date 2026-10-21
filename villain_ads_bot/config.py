@@ -129,6 +129,14 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 USER_DATA_DIR = os.path.join(PROJECT_ROOT, "user_data")
 DOWNLOADS_DIR = os.path.join(PROJECT_ROOT, "downloads")
 
+# The folder has to exist from the very beginning: youtube.py only uses the
+# ABSOLUTE path when the folder is there, otherwise the download would land
+# in whatever the current working directory happens to be.
+try:
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+except Exception:
+    pass
+
 # Limit the maximum number of running userbots to prevent Out of Memory (OOM) on platforms like Railway
 MAX_RUNNING_USERBOTS = int(os.getenv("MAX_RUNNING_USERBOTS", "99999"))
 

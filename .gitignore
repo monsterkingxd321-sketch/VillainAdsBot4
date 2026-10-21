@@ -1,31 +1,43 @@
+# ── Python ────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+
+# ── Secrets ──────────────────────────────────────────────────────────────
 .env
 .env.*
+!.env.example
 
-# Telegram session files & backups - NEVER commit these
+# ── Telegram session files & backups - NEVER commit these ────────────────
 *.session
 *.session-shm
 *.session-wal
+*.session-journal
 sessions/
 personal_ads_bot/sessions/
-personal_ads_bot/zips/
-personal_ads_bot/downloads/
-personal_ads_bot/*.log
 
-# Runtime folders with private data
+# ── Runtime folders with private data ────────────────────────────────────
 downloads/
 logs/
 user_data/
 *.log
+error.txt
 
-cloudflared.exe
-node_modules/
+# ── Temp / tooling ───────────────────────────────────────────────────────
 scratch/
 scratch_env/
+node_modules/
+cloudflared.exe
 bot.lock
-*.session-journal
-cache/
-error.txt
-# Thumbnail cache (cleaned up automatically by the bot)
-cache/
+bot_session.session
+
+# ── Thumbnail cache (cleaned up automatically by the bot) ────────────────
+# The two Roboto fonts ARE tracked - they are needed for the VC poster.
+cache/*
+!cache/Roboto-Bold.ttf
+!cache/Roboto-Regular.ttf
