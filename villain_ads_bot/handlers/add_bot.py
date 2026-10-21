@@ -10,6 +10,7 @@ from villain_ads_bot.data import database
 from villain_ads_bot.data import models
 from villain_ads_bot import config
 from villain_ads_bot.core import utils
+from villain_ads_bot.core import proxy as proxy_tool
 from villain_ads_bot.services import userbot_manager
 from villain_ads_bot.services.userbot import force_join_channels, apply_branding
 
@@ -279,13 +280,24 @@ def register_handlers(client):
                     shutil.copy2(sf_path, dest_path)
                     api_id, api_hash = config.get_random_api_id_hash()
                     dev_prof = utils.get_device_profile(phone_clean)
+                    # The login runs through a FRESH proxy - this is where
+                    # Telegram counts the accounts per IP.
+                    login_proxy = proxy_tool.resolve_session_proxy(phone_clean)
+                    login_kwargs = {}
+                    if login_proxy:
+                        tp = proxy_tool.build_telethon_proxy(login_proxy)
+                        if tp:
+                            login_kwargs["proxy"] = tp
+                            login_kwargs["connection"] = proxy_tool.get_connection_class(login_proxy)
                     test_client = TelegramClient(
                         dest_path.replace(".session", ""),
                         api_id,
                         api_hash,
                         device_model=dev_prof["device_model"],
                         system_version=dev_prof["system_version"],
-                        app_version=dev_prof["app_version"]
+                        app_version=dev_prof["app_version"],
+                        lang_code=dev_prof.get("lang_code", "en"),
+                        **login_kwargs
                     )
                     await test_client.connect()
                     me = await test_client.get_me()
@@ -401,13 +413,23 @@ def register_handlers(client):
             # Initialize temporary client using in-memory StringSession to prevent ANY SQLite file locks
             api_id, api_hash = config.get_random_api_id_hash()
             dev_prof = utils.get_device_profile(phone)
+            # The login runs through a FRESH proxy (see above).
+            login_proxy = proxy_tool.resolve_session_proxy(phone)
+            login_kwargs = {}
+            if login_proxy:
+                tp = proxy_tool.build_telethon_proxy(login_proxy)
+                if tp:
+                    login_kwargs["proxy"] = tp
+                    login_kwargs["connection"] = proxy_tool.get_connection_class(login_proxy)
             temp_client = TelegramClient(
                 StringSession(), 
                 api_id, 
                 api_hash,
                 device_model=dev_prof["device_model"],
                 system_version=dev_prof["system_version"],
-                app_version=dev_prof["app_version"]
+                app_version=dev_prof["app_version"],
+                lang_code=dev_prof.get("lang_code", "en"),
+                **login_kwargs
             )
             state["phone"] = phone
             state["client"] = temp_client

@@ -2074,6 +2074,7 @@ class UserBot:
             device_model=device_prof["device_model"],
             system_version=device_prof["system_version"],
             app_version=device_prof["app_version"],
+            lang_code=device_prof.get("lang_code", "en"),
             **proxy_kwargs
         )
         self.client.parse_mode = "html"

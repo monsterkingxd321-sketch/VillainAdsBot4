@@ -11,6 +11,8 @@ from villain_ads_bot.core import pricing
 from villain_ads_bot.core import proxy as proxy_tool
 from villain_ads_bot.services import proxy_mirror
 from villain_ads_bot.services import proxy_rotation
+from villain_ads_bot.services import proxy_channel
+from villain_ads_bot.services import userbot_manager
 import time
 import os
 
@@ -177,7 +179,7 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button("💾 Unlimited Accounts", "admin_toggle_unlimited_accounts", style="primary")
         ],
         [
-            utils.styled_button("📡 Proxy Mirror (Auto Copy Channel)", "admin_proxy_mirror", style="success")
+            utils.styled_button("📡 Proxy Source Channel", "admin_proxy_channel", style="success")
         ],
         [
             utils.styled_button("💾 Backup Now", "admin_backup_now", style="success"),
@@ -2737,6 +2739,176 @@ def register_handlers(client):
         client.loop.create_task(userbot_manager.broadcast_branding_update())
         
         await show_branding_settings(event, user_id)
+
+    # ==================== PROXY CHANNEL READER ====================
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_channel$"))
+    async def admin_proxy_channel_callback(event):
+        """
+        The proxy source channel.
+
+        The owner does not need a channel of their own: one of their
+        accounts joins the proxy channel and reads the proxies from there.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can change the proxy source.", alert=True)
+            return
+
+        source = proxy_tool.get_channel()
+        reader = proxy_channel.get_reader_account()
+        pool = proxy_tool.get_pool()
+        free = proxy_rotation.get_unused_proxies()
+        sessions = database.get_sessions()
+        last = proxy_channel.get_last_scan()
+
+        reader_name = reader
+        for sess in sessions:
+            if (sess.get("session_id") or sess.get("phone")) == reader:
+                reader_name = sess.get("name") or reader
+                break
+
+        text = (
+            f"{ui.card_open('Proxy Source Channel', 'The channel the proxies are dropped in', 'One of your accounts reads it', chr(128233))}\n\n"
+            f"{ui.kv('Source channel', f'@{source}' if source else 'Not set', chr(128233))}\n"
+            f"{ui.kv('Reader account', reader_name or 'Not set', chr(128100))}\n"
+            f"{ui.kv('Proxies in the pool', str(len(pool)), chr(127752))}\n"
+            f"{ui.kv('Free proxies', str(len(free)), chr(128176))}\n"
+            f"{ui.kv('Last scan', (time.strftime('%d %b %H:%M', time.localtime(last)) if last else 'Never'), chr(128337))}\n\n"
+            f"{ui.help_hint('The reader account JOINS the channel and reads the proxies. Every other account then gets one proxy of its own (one IP per account).')}"
+            f"\n{ui.card_close()}"
+        )
+
+        buttons = [
+            [utils.styled_button("\U0001f4e4 Set Proxy Channel", "admin_set_proxy_source", style="primary")],
+            [utils.styled_button("\U0001f464 Set Reader Account", "admin_set_proxy_reader", style="primary")],
+            [utils.styled_button("\U0001f517 Join & Read Now", "admin_proxy_channel_read", style="success")],
+            [utils.styled_button("\U0001f504 Refresh Pool", "admin_proxy_pool_refresh", style="primary")],
+            [utils.styled_button("\U0001f519 Back To Admin Panel", "menu_admin", style="danger")]
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_set_proxy_reader$"))
+    async def admin_set_proxy_reader_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            return
+        sessions = database.get_sessions()
+        if not sessions:
+            await event.answer("\u26a0\ufe0f There is no account yet.", alert=True)
+            return
+        text = (
+            f"{ui.card('Reader Account', 'Who reads the proxy channel', 'The account that joins the channel', chr(128100))}\n\n"
+            f"{ui.help_hint('Tap the account that should join and read the proxy channel.')}"
+        )
+        buttons = []
+        for sess in sessions[:20]:
+            sid = sess.get("session_id") or sess.get("phone")
+            name = sess.get("name") or sid
+            running = userbot_manager.is_bot_running(sid)
+            mark = "\U0001f7e2" if running else "\U0001f534"
+            buttons.append([utils.styled_button(f"{mark} {name}", f"admin_proxy_reader_{sid}", style="primary")])
+        buttons.append([utils.styled_button("\U0001f519 Cancel", "admin_proxy_channel", style="danger")])
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_proxy_reader_(.+)$"))
+    async def admin_proxy_reader_pick_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            return
+        sid = event.pattern_match.group(1).strip()
+        ok, msg = proxy_channel.set_reader_account(sid)
+        audit("proxy.reader_account", sid, msg, user_id)
+        await event.answer(msg, alert=True)
+        await admin_proxy_channel_callback(event)
+
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_channel_read$"))
+    async def admin_proxy_channel_read_callback(event):
+        """
+        Joins the proxy channel with the reader account and reads the proxies.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can do this.", alert=True)
+            return
+
+        source = proxy_tool.get_channel()
+        if not source:
+            await event.answer("\u26a0\ufe0f Set the proxy channel first.", alert=True)
+            return
+
+        from villain_ads_bot.services import userbot_manager
+        sessions = database.get_sessions()
+        reader = proxy_channel.get_reader_account()
+        if not reader or not any((s.get("session_id") or s.get("phone")) == reader for s in sessions):
+            reader = proxy_channel.pick_reader_account(sessions)
+            if reader:
+                proxy_channel.set_reader_account(reader)
+        if not reader:
+            await event.answer("\u26a0\ufe0f There is no account that could read the channel.", alert=True)
+            return
+
+        bot_obj = userbot_manager.find_running_bot(reader)
+        if not bot_obj or not bot_obj.is_running:
+            await event.answer("\u23f3\ufe0f Starting the reader account...", alert=True)
+            await userbot_manager.start_userbot(reader)
+            await asyncio.sleep(3)
+            bot_obj = userbot_manager.find_running_bot(reader)
+        if not bot_obj or not bot_obj.client:
+            await event.answer("\u274c The reader account could not be started.", alert=True)
+            return
+
+        status = await event.respond("\U0001f517 <b>Joining the channel and reading the proxies...</b>", parse_mode="html")
+
+        joined_ok, joined_msg = await proxy_channel.join_channel(bot_obj.client, source)
+        if not joined_ok:
+            await status.edit(f"\u274c <b>Could not join the channel</b>\n\n<code>{joined_msg}</code>", parse_mode="html")
+            return
+
+        result = await proxy_channel.refresh_from_channel(bot_obj.client, source)
+        audit("proxy.channel_read", source,
+              f"found={result.get('found')} added={result.get('added')}", user_id)
+
+        if not result.get("ok"):
+            await status.edit(
+                f"\u26a0\ufe0f <b>Joined, but no proxy was found</b>\n\n"
+                f"<code>{result.get('error') or ''}</code>\n\n"
+                f"{ui.help_hint('Make sure the channel posts t.me/proxy links.')}",
+                parse_mode="html"
+            )
+            return
+
+        await status.edit(
+            f"\u2705 <b>Proxies read</b>\n\n"
+            f"\U0001f4dc <b>Found in the channel :</b> <code>{result.get('found', 0)}</code>\n"
+            f"\U0001f517 <b>New in the pool :</b> <code>{result.get('added', 0)}</code>\n"
+            f"\U0001f5c2 <b>Pool total :</b> <code>{result.get('total', 0)}</code>\n\n"
+            f"{ui.help_hint('Assign them to the accounts now - every account gets its own IP.')}",
+            parse_mode="html"
+        )
+
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_pool_refresh$"))
+    async def admin_proxy_pool_refresh_callback(event):
+        """Reads the channel again and refreshes the pool."""
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            return
+        from villain_ads_bot.services import userbot_manager
+        reader = proxy_channel.get_reader_account()
+        bot_obj = userbot_manager.find_running_bot(reader) if reader else None
+        if not bot_obj or not bot_obj.client:
+            await event.answer("\u26a0\ufe0f Start the reader account first.", alert=True)
+            return
+        result = await proxy_channel.refresh_from_channel(bot_obj.client)
+        await event.answer(
+            f"\u2705 Found {result.get('found', 0)} \u00b7 new {result.get('added', 0)} \u00b7 pool {result.get('total', 0)}",
+            alert=True
+        )
 
     # ==================== PROXY MIRROR ====================
     # ==================== /copyproxies ====================

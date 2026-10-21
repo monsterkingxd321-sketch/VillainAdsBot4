@@ -952,18 +952,20 @@ AUTHENTIC_DEVICE_PROFILES = [
     }
 ]
 
-def get_device_profile(session_id: Optional[str] = None) -> dict:
+def get_device_profile(session_id: Optional[str] = None, phone: str = None) -> dict:
     """
-    Returns an authentic, official device profile (Samsung, Pixel, Xiaomi, etc.)
-    deterministically hashed by session_id/phone.
-    This prevents Telegram anti-fraud from detecting unofficial botnets
-    and terminating all sessions across all devices.
+    Returns a UNIQUE but realistic device profile for one account.
+
+    The old implementation picked from a list of SEVEN phones - with hundreds
+    of accounts that is a textbook botnet signature ("30 accounts with the
+    same Samsung Galaxy S24 Ultra") and one of the main reasons Telegram
+    freezes the accounts.
+
+    Now the profile is derived from the account id, so it is stable for that
+    account (it never looks like a new phone) but unique across accounts.
     """
-    if not session_id:
-        return AUTHENTIC_DEVICE_PROFILES[0]
-    import hashlib
-    h = int(hashlib.md5(str(session_id).encode("utf-8")).hexdigest(), 16)
-    return AUTHENTIC_DEVICE_PROFILES[h % len(AUTHENTIC_DEVICE_PROFILES)]
+    from villain_ads_bot.core.fingerprint import get_device_profile as _fp
+    return _fp(session_id, phone)
 
 
 _handled_commands = {}
