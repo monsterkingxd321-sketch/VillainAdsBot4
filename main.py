@@ -132,19 +132,38 @@ async def cleanup_loop():
             # 1. Force Python Garbage Collection to reduce RAM usage on VPS
             gc.collect()
             
-            # 2. Disk Space Cleanup: Delete files older than 1 hour in 'downloads' and 'cache' folders
+            # 2. Disk Space Cleanup: delete old media from the downloads and
+            #    the cache folder. The cleanup RECURSES into sub folders (the
+            #    old version only looked at the top level, so the extracted
+            #    session zips were never removed) and it never deletes a file
+            #    that is currently being streamed.
             now = time.time()
-            for folder in ["downloads", "cache"]:
-                if os.path.exists(folder):
-                    for fname in os.listdir(folder):
-                        fpath = os.path.join(folder, fname)
-                        if os.path.isfile(fpath) and not fname.lower().endswith((".ttf", ".otf")):
+            from villain_ads_bot.core import utils as _core_utils
+            for folder in (config.DOWNLOADS_DIR, os.path.join(config.PROJECT_ROOT, "cache")):
+                if not os.path.isdir(folder):
+                    continue
+                for dirpath, _dirnames, filenames in os.walk(folder):
+                    for fname in filenames:
+                        fpath = os.path.join(dirpath, fname)
+                        if not os.path.isfile(fpath):
+                            continue
+                        if fname.lower().endswith((".ttf", ".otf")):
+                            continue
+                        # Never delete what is being played right now.
+                        if _core_utils.is_media_active(fpath):
+                            continue
+                        try:
                             if os.stat(fpath).st_mtime < now - 3600:
-                                try:
-                                    os.remove(fpath)
-                                    logger.info(f"Auto-cleaned old media: {fpath}")
-                                except Exception:
-                                    pass
+                                os.remove(fpath)
+                                logger.info(f"Auto-cleaned old media: {fpath}")
+                        except Exception:
+                            pass
+                    # Remove the (now empty) sub folders.
+                    try:
+                        if dirpath != folder and not os.listdir(dirpath):
+                            os.rmdir(dirpath)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"Cleanup loop error: {e}")
             

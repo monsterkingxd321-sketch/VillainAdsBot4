@@ -22,6 +22,16 @@ API_KEY = os.environ.get("MEOW_API_KEY", "YOUR_API_KEY") # 🔑 Get Key: @MeowAp
 
 DOWNLOAD_DIR = "downloads"
 
+# Resolve the download folder to an absolute path so the media always ends up
+# inside the project directory - no matter which working directory the bot
+# was started from. (The value above is kept as the fallback.)
+try:
+    from villain_ads_bot import config as _config
+    if os.path.isdir(getattr(_config, "DOWNLOADS_DIR", "")):
+        DOWNLOAD_DIR = _config.DOWNLOADS_DIR
+except Exception:
+    pass
+
 
 def time_to_seconds(time):
     stringt = str(time)

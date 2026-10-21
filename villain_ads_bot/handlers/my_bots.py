@@ -2,6 +2,7 @@ import logging
 import asyncio
 import os
 import re
+import random
 from typing import Optional, Set
 from telethon import events, Button
 from villain_ads_bot.data import database
@@ -371,6 +372,11 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # Row 1.1: Send the broadcast NOW (live progress)
         rows.append([
             ("📢 Broadcast Now", f"broadcast_now_{phone}")
+        ])
+        
+        # Row 1.15: Test the message on ONE group before going live
+        rows.append([
+            ("🧪 Test Send (1 Group)", f"broadcast_test_{phone}")
         ])
 
         # Row 1.2: Set DM Welcome Message (Full width)
@@ -959,6 +965,139 @@ def register_handlers(client):
         except Exception:
             await event.respond(text, buttons=buttons)
 
+    async def _send_broadcast_report(phone: str, stats: dict, trigger: str = "auto"):
+        """
+        Sends the broadcast result to the owner of the userbot.
+        The user always knows what happened - that is the proof of work.
+        """
+        try:
+            sess = database.get_session(phone)
+            if not sess:
+                return
+            owner_id = sess.get("user_id")
+            if not owner_id:
+                return
+
+            total = stats.get("total", 0)
+            sent = stats.get("sent", 0)
+            failed = stats.get("failed", 0)
+            skipped = stats.get("skipped", 0)
+            flood = stats.get("flood_waits", 0)
+            elapsed = stats.get("elapsed", 0)
+            remaining = max(0, total - sent - failed - skipped)
+
+            if trigger == "test":
+                title = "🧪 Test Send"
+                body = (
+                    f"{ui.kv('Test group', str(stats.get('test_group', '?')), '🗢️')}\n"
+                    f"{ui.kv('Delivered', 'YES' if stats.get('sent') else 'NO', '✅')}\n"
+                    f"{ui.kv('Time', f'{elapsed}s', '⏱️')}"
+                )
+            else:
+                title = "📢 Broadcast Report"
+                body = (
+                    f"{ui.kv('Groups reached', str(total), '👥')}\n"
+                    f"{ui.kv('Sent', str(sent), '✅')}\n"
+                    f"{ui.kv('Failed', str(failed), '❌')}\n"
+                    f"{ui.kv('Skipped', str(skipped), '⏳️')}\n"
+                    f"{ui.kv('Time taken', f'{elapsed}s', '⏱️')}"
+                )
+                if flood:
+                    body += f"\n{ui.kv('Flood waits', f'{flood}', '⏸️')}"
+                if remaining:
+                    body += f"\n{ui.kv('Not reached', str(remaining), '❓')}"
+
+            account_name = sess.get("name") or phone
+            text = (
+                f"{ui.card(title, f'Account : {account_name}', 'Here is how it went', '📢')}\n\n"
+                f"{body}\n\n"
+                f"{ui.help_hint('Open the userbot dashboard to broadcast again or change the message.')}"
+                f"\n{ui.footer()}</blockquote>"
+            )
+            await client.send_message(owner_id, text, parse_mode="html")
+        except Exception as e:
+            logger.debug(f"Could not send the broadcast report: {e}")
+
+    @client.on(events.CallbackQuery(pattern=r"^broadcast_test_(.+)$"))
+    async def broadcast_test_callback(event):
+        """
+        Sends the configured message to ONE group so the user can check the
+        formatting BEFORE the message goes out to every single group.
+        """
+        phone = event.pattern_match.group(1).strip()
+        user_id = event.sender_id
+
+        bot_obj = userbot_manager.find_running_bot(phone)
+        if not bot_obj or not bot_obj.is_running:
+            await event.answer("⚠️ The userbot must be running to test.", alert=True)
+            return
+
+        sess = database.get_session(phone)
+        settings = (sess or {}).get("settings", {}) or {}
+        messages = utils.get_broadcast_messages(settings)
+        if not messages:
+            await event.answer("⚠️ No broadcast message is set for this userbot.", alert=True)
+            return
+
+        status = await event.respond(
+            "🧪 <b>Preparing the test send...</b>\n\n<i>🔍 Collecting your groups…</i>",
+            parse_mode="html"
+        )
+        try:
+            groups = await bot_obj.get_groups(force_refresh=True)
+        except Exception:
+            groups = []
+        if not groups:
+            await status.edit(
+                "<blockquote><b>❌ No groups found</b>\n\n"
+                "⚠️ <i>Join some groups first, then try the test send again.</i></blockquote>",
+                parse_mode="html"
+            )
+            return
+
+        target = groups[0]
+        title = getattr(target, "title", None) or str(getattr(target, "id", "?"))
+        message = random.choice(messages)
+        processed = utils.parse_spintax(message)
+        processed = utils.normalize_text(processed)
+        processed = utils.make_message_unique(processed)
+
+        sent = False
+        error = None
+        try:
+            await bot_obj.client.send_message(target.input_entity, processed, parse_mode="html")
+            sent = True
+        except Exception as e:
+            error = str(e)
+            logger.warning(f"Test send failed for {phone}: {e}")
+
+        await status.edit(
+            f"<blockquote><b>🧪 Test Send {'✅' if sent else '❌'}</b>\n\n"
+            f"🗢️ <b>Test group :</b> <code>{title}</code>\n"
+            f"📤 <b>Delivered :</b> <b>{'YES' if sent else 'NO'}</b>\n\n"
+            f"{ui.help_hint('Check the message in that group. If it looks right, broadcast it to everyone.')}"
+            f"\n{ui.footer()}</blockquote>",
+            parse_mode="html"
+        )
+
+        await _send_broadcast_report(
+            phone,
+            {"total": 1, "sent": 1 if sent else 0, "failed": 0 if sent else 1,
+             "skipped": 0, "elapsed": 0, "flood_waits": 0, "test_group": title},
+            trigger="test",
+        )
+
+        if sent:
+            buttons = [[utils.styled_button("📢 Broadcast To All Groups", f"broadcast_now_{phone}", style="success")]]
+            try:
+                await event.respond(
+                    "<blockquote><b>✅ Looks good?</b>\n\n"
+                    f"{ui.help_hint('Tap below to send it to every group.')}</blockquote>",
+                    buttons=buttons, parse_mode="html"
+                )
+            except Exception:
+                pass
+
     @client.on(events.CallbackQuery(pattern=r"^broadcast_now_(.+)$"))
     async def broadcast_now_callback(event):
         """Sends one broadcast round right now with a live progress message."""
@@ -981,7 +1120,7 @@ def register_handlers(client):
             parse_mode="html"
         )
         try:
-            stats = await bot_obj.broadcast_round(progress_msg=progress)
+            stats = await bot_obj.broadcast_round(progress_msg=progress, force=True)
         finally:
             pass
 
@@ -997,6 +1136,8 @@ def register_handlers(client):
             f"⏳ <b>Remaining :</b> <code>{remaining}</code>\n"
             f"⏱️ <b>Took :</b> <code>{stats.get('elapsed', 0)}s</code>"
         )
+        # The owner also gets the report in his private chat.
+        await _send_broadcast_report(phone, stats, trigger="auto")
         if stats.get("flood_waits"):
             summary += (
                 f"\n⏸️ <b>Flood waits :</b> <code>{stats['flood_waits']}</code> "
@@ -1042,7 +1183,7 @@ def register_handlers(client):
             if not bot_obj:
                 return
             try:
-                stats = await bot_obj.broadcast_round()
+                stats = await bot_obj.broadcast_round(force=True)
             except Exception as e:
                 logger.warning(f"Broadcast failed for {s.get('phone')}: {e}")
                 return

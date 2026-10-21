@@ -428,11 +428,24 @@ def register_handlers(client):
             await event.answer("❌ Insufficient wallet balance.", alert=True)
             return
             
-        # Deduct wallet balance
-        user["wallet_balance"] = wallet_bal - cost_inr
-        database.save_user(user)
-        
-        # Save payment record
+        # 6.1 - CLAIM the payment ATOMICALLY first. Before this the status
+        # was never checked, so a double click (or two parallel handlers)
+        # charged the wallet once and granted the slots twice.
+        claimed = database.claim_payment(payment_id, method="wallet")
+        if not claimed:
+            await event.answer("⚠️ This payment was already processed.", alert=True)
+            return
+            
+        # Deduct the wallet ATOMICALLY ($gte makes a negative balance
+        # impossible even with two concurrent handlers).
+        if not database.deduct_wallet(user_id, cost_inr):
+            database.release_payment(payment_id)
+            await event.answer("❌ Could not deduct the wallet balance. Please try again.", alert=True)
+            return
+            
+        # Reload the user so the new balance is correct.
+        user = database.get_user(user_id) or user
+        pay_record = claimed if isinstance(claimed, dict) else pay_record
         if pay_record:
             pay_record["status"] = "approved"
             pay_record["method"] = "wallet"

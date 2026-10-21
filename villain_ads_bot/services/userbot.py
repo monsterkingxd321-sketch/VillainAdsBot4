@@ -46,6 +46,12 @@ try:
     from telethon.errors import SessionExpiredError
 except ImportError:
     SessionExpiredError = None
+try:
+    from telethon.errors import MessageEntityParsingError
+except ImportError:
+    class MessageEntityParsingError(Exception):
+        """Fallback when the telethon version does not know this error."""
+        pass
 from villain_ads_bot import config
 from villain_ads_bot.data import database
 from villain_ads_bot.core import utils
@@ -121,6 +127,9 @@ except Exception as e:
     VideoQuality = None
     PYTGCALLS_AVAILABLE = False
     logger.warning(f"PyTgCalls is not available: {e}")
+
+# The placeholder that ships with a new session. It is NOT a real message.
+DEFAULT_BROADCAST_MESSAGE = "Hello! This is an automated broadcast message."
 
 from villain_ads_bot.services.youtube import (
     YouTube,
@@ -1167,6 +1176,8 @@ class UserBot:
         self.watchdog_task: Optional[asyncio.Task] = None
         self.joined_vcs: Set[int] = set()
         self.tag_cooldown = {}
+        # Timestamp of the last auto reply of THIS account (global limiter).
+        self._last_reply_ts = 0.0
         self.vc_keepalive_task: Optional[asyncio.Task] = None
         self.current_vc_chat_id: Optional[int] = None
         self.current_vc_link: Optional[str] = None
@@ -1178,6 +1189,10 @@ class UserBot:
         self.settings = {}
         self.groups_cache = None
         self.groups_cache_time = 0.0
+        # Only ONE broadcast round may run per account. Without this the
+        # background loop and the manual "Broadcast Now" posted every message
+        # twice and doubled the flood pressure.
+        self._broadcast_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -1216,12 +1231,13 @@ class UserBot:
             self.settings = sess_data.get("settings", {})
             logger.info(f"Reloaded in-memory settings for userbot {self.session_id}")
             
-            # Restart the broadcast task if the bot is currently running to apply changes immediately
-            if self.is_running:
-                if self.broadcast_task:
-                    self.broadcast_task.cancel()
+            # The broadcast loop re-reads the settings on every round, so it
+            # does NOT have to be restarted. Restarting it cancelled a round
+            # that was in flight and immediately started a new one -> every
+            # group received the message TWICE.
+            if self.is_running and self.broadcast_task is None:
                 self.broadcast_task = asyncio.create_task(self.broadcast_loop())
-                logger.info(f"Restarted broadcast loop for userbot {self.session_id} to apply new settings/interval immediately.")
+                logger.info(f"Started the broadcast loop for userbot {self.session_id}.")
 
     async def _mark_unauthorized_and_cleanup(self, reason: str = "❌ Account session expired or requires re-login."):
         """
@@ -1717,10 +1733,12 @@ class UserBot:
 
     async def stop_song(self, chat_id: Optional[int] = None) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
-        if not self.is_running or not target_chat:
+        if not target_chat:
             return False, "Not in a Voice Chat."
         try:
             from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
+            # 4.3 - the cleanup ran AFTER the "is running" check, so a stopped
+            # userbot never cleared the queue, the card or the timer.
             _chat_queues.pop(target_chat, None)
             # The "Now Playing" card is removed from the chat as well, so a
             # stopped song never leaves a stale player card behind.
@@ -1734,6 +1752,10 @@ class UserBot:
             prev_timer = _track_timer_tasks.pop(target_chat, None)
             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                 prev_timer.cancel()
+
+            if not self.is_running:
+                # The userbot is already stopped - the cleanup above is done.
+                return True, "Playback stopped."
 
             pytg = await self.get_pytgcalls()
             try:
@@ -1863,6 +1885,7 @@ class UserBot:
             else:
                 stream_obj = MediaStream(file_path)
                 
+            utils.mark_media_active(file_path)
             try:
                 await self._safe_play(pytg, actual_chat, stream_obj)
                 self.joined_vcs.add(actual_chat)
@@ -2200,6 +2223,7 @@ class UserBot:
                     await self.client.disconnect()
                 except Exception:
                     pass
+            await self._mark_start_failed("Session start timed out")
             return False
         except Exception as e:
             logger.error(f"Failed to start userbot {self.session_id}: {e}")
@@ -2214,7 +2238,24 @@ class UserBot:
             if err_class in ("UserDeactivatedError", "AuthKeyUnregisteredError", "SessionRevokedError", "SessionExpiredError"):
                 logger.warning(f"Detected deactivated/revoked session {self.session_id} on startup. Performing cleanup.")
                 await self._mark_unauthorized_and_cleanup()
+            else:
+                await self._mark_start_failed(str(e))
             return False
+
+    async def _mark_start_failed(self, reason: str):
+        """
+        A failed start must not leave the status as "running" in MongoDB.
+        Otherwise the dashboard shows a phantom running account and the bot
+        retries it on every restart.
+        """
+        try:
+            sess_data = database.get_session(self.session_id)
+            if sess_data:
+                sess_data["status"] = "stopped"
+                sess_data["last_error"] = str(reason)[:300]
+                database.save_session(sess_data)
+        except Exception:
+            pass
 
     async def stop(self):
         if not self.is_running:
@@ -2232,6 +2273,36 @@ class UserBot:
         if self.vc_keepalive_task:
             self.vc_keepalive_task.cancel()
             self.vc_keepalive_task = None
+            
+            # The background tasks were never cancelled. _auto_rejoin_vc sleeps
+            # 3 seconds and then joins a voice chat - even when the userbot was
+            # stopped in the meantime.
+            for task in list(self.bg_tasks):
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+            self.bg_tasks.clear()
+
+            # 4.2 - the queue, the track timer and the "Now Playing" card were
+            # never cleaned up. The timer kept running and later discarded
+            # every queued track.
+            try:
+                from villain_ads_bot.handlers import player as _player
+                for chat_id in list(_player._chat_queues.keys()):
+                    try:
+                        await self.stop_song(chat_id)
+                    except Exception:
+                        pass
+                for chat_id, timer in list(_player._track_timer_tasks.items()):
+                    try:
+                        if timer and not timer.done():
+                            timer.cancel()
+                    except Exception:
+                        pass
+                _player._track_timer_tasks.clear()
+            except Exception:
+                pass
             
         if self.pytgcalls_client:
             try:
@@ -2391,7 +2462,7 @@ class UserBot:
                             if reply_msg and (reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document):
                                 media = reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document
                                 if media:
-                                    os.makedirs("downloads", exist_ok=True)
+                                    os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
                                     try:
                                         local_file_path = await self.client.download_media(reply_msg, file="downloads/")
                                     except Exception as dl_err:
@@ -3039,8 +3110,22 @@ class UserBot:
                     now = time.time()
                     last_reply_time = self.tag_cooldown.get(event.chat_id, 0)
 
+                    # Prune the cooldown map so it cannot grow forever.
+                    if len(self.tag_cooldown) > 500:
+                        cutoff = now - 1800
+                        self.tag_cooldown = {
+                            cid: ts for cid, ts in self.tag_cooldown.items() if ts > cutoff
+                        }
+
+                    # A GLOBAL per account limiter. Without it one mention in
+                    # 100 different groups produced 100 replies, which is
+                    # exactly the pattern that gets a userbot banned.
+                    last_global = getattr(self, "_last_reply_ts", 0.0)
+                    global_gap = float(current_settings.get("auto_reply_global_gap", 15) or 15)
+                    global_ok = (now - last_global) >= global_gap
+
                     # 3-second per-chat cooldown to prevent spambot limits while remaining responsive
-                    if now - last_reply_time >= 3.0:
+                    if now - last_reply_time >= 3.0 and global_ok:
                         DEFAULT_REPLIES = [
                             "Hello! How can I help you? 😊",
                             "Hey there! Thanks for reaching out. Please leave a message! 💬",
@@ -3059,9 +3144,23 @@ class UserBot:
                             processed_reply = utils.normalize_text(processed_reply)
                             processed_reply = utils.make_message_unique(processed_reply)
 
+                            # The cooldown MUST be written BEFORE the sleep.
+                            # Before the fix it was written afterwards, so every
+                            # mention that arrived during the 10 second sleep
+                            # also produced a reply.
+                            self.tag_cooldown[event.chat_id] = now
+                            self._last_reply_ts = now
+
                             try:
                                 # Added 10s delay as requested
                                 await asyncio.sleep(10.0)
+                                # The userbot may have been stopped meanwhile.
+                                if not self.is_running:
+                                    logger.info(
+                                        f"Auto-reply skipped in chat {event.chat_id} - "
+                                        f"the userbot was stopped."
+                                    )
+                                    continue
                                 try:
                                     await event.reply(processed_reply, parse_mode='html')
                                 except Exception:
@@ -3070,8 +3169,6 @@ class UserBot:
                                 logger.info(f"Auto-replied ({ar_mode} mode) in chat {event.chat_id} for userbot {self.session_id}")
                             except Exception as reply_err:
                                 logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
-
-                        self.tag_cooldown[event.chat_id] = now
 
                 # 4. Private message handling (Auto-Welcome)
                 if event.is_private:
@@ -3090,9 +3187,15 @@ class UserBot:
                                     for welcome_msg in messages_to_send:
                                         processed_welcome = utils.parse_spintax(welcome_msg)
                                         processed_welcome = utils.normalize_text(processed_welcome)
-                                        processed_welcome = utils.make_message_unique(processed_welcome)
                                         try:
                                             await asyncio.sleep(random.uniform(0.5, 1.5))
+                                            # The userbot may have been stopped meanwhile.
+                                            if not self.is_running:
+                                                logger.info(
+                                                    f"Welcome skipped for {sender.id} - "
+                                                    f"the userbot was stopped."
+                                                )
+                                                break
                                             try:
                                                 await event.reply(processed_welcome, parse_mode='html')
                                             except Exception:
@@ -3100,13 +3203,9 @@ class UserBot:
                                             logger.info(f"Sent welcome message to {sender.id} from userbot {self.session_id}")
                                         except Exception as e:
                                             logger.warning(f"Could not send welcome message to {sender.id}: {e}")
-                                            
-                                    if sess_data and sender.id not in welcomed_users:
-                                        welcomed_users.append(sender.id)
-                                        sess_data.setdefault("stats", {})["welcomed_users"] = welcomed_users
-                                        database.save_session(sess_data)
 
-    async def broadcast_round(self, progress_msg=None, delay: float = None) -> dict:
+    async def broadcast_round(self, progress_msg=None, delay: float = None,
+                              force: bool = False) -> dict:
         """
         Sends ONE broadcast round to every group / channel of this userbot.
 
@@ -3122,17 +3221,41 @@ class UserBot:
             "total": 0, "sent": 0, "failed": 0, "skipped": 0,
             "flood_waits": 0, "wait_total": 0, "elapsed": 0,
         }
+        # 1.3 - only one round per account at a time.
+        if self._broadcast_lock.locked():
+            logger.info(
+                f"A broadcast round is already running for {self.session_id} - skipping."
+            )
+            stats["skipped"] = -1
+            return stats
         try:
+            await asyncio.wait_for(self._broadcast_lock.acquire(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.info(f"Could not acquire the broadcast lock for {self.session_id}.")
+            stats["skipped"] = -1
+            return stats
+        try:
+            # Read the settings DIRECTLY from MongoDB. The cached document can
+            # be up to 60 seconds old, so a message change was sometimes not
+            # picked up at all.
+            settings = self.settings
+            try:
+                fresh = database.get_session_fresh(self.session_id)
+                if fresh and "settings" in fresh:
+                    settings = fresh["settings"]
+                    self.settings = fresh["settings"]
+            except Exception:
+                pass
+
             if delay is None:
-                try:
-                    delay = float(self.settings.get("inter_group_delay", 30.0) or 30.0)
-                except (TypeError, ValueError):
-                    delay = 30.0
-                delay = max(2.0, delay)
+                delay = utils.get_inter_group_delay(settings)
 
             # The message list decides the mode - the user never has to
             # remember to switch "multiple" on.
-            messages = utils.get_broadcast_messages(self.settings)
+            messages = utils.get_broadcast_messages(settings)
+            # The default placeholder is NOT a configured message.
+            messages = [m for m in messages
+                        if m and m != DEFAULT_BROADCAST_MESSAGE]
             if not messages:
                 return stats
             force_refresh = (_time.time() - self.groups_cache_time > 60) or not self.groups_cache
@@ -3145,7 +3268,9 @@ class UserBot:
             for index, g in enumerate(groups, 1):
                 if not self.is_running:
                     break
-                if not self.settings.get("auto_spam") and progress_msg is None:
+                # A manual broadcast (force) always runs, even when the
+                # automatic broadcast is switched off.
+                if not force and not settings.get("auto_spam") and progress_msg is None:
                     break
 
                 current_msg = random.choice(messages)
@@ -3166,7 +3291,52 @@ class UserBot:
                     except Exception:
                         pass
 
-                    await self.client.send_message(g.input_entity, processed_msg, parse_mode='html')
+                    # The message is sent until it really goes through. A
+                    # flood wait is waited out and the SAME group is retried
+                    # (before it was silently dropped and never counted).
+                    attempt = 0
+                    while True:
+                        attempt += 1
+                        try:
+                            await self.client.send_message(
+                                g.input_entity, processed_msg, parse_mode='html')
+                            break
+                        except MessageEntityParsingError:
+                            # A "<" or "&" in the text broke the HTML. Send it
+                            # as plain text instead of losing the message.
+                            logger.warning(
+                                f"Broadcast message has invalid HTML for {self.session_id} "
+                                f"- sending it as plain text."
+                            )
+                            await self.client.send_message(g.input_entity, processed_msg, parse_mode=None)
+                            break
+                        except (FloodWaitError, SlowModeWaitError) as wait_exc:
+                            if attempt >= 3:
+                                raise
+                            wait_time = int(getattr(wait_exc, "seconds", 0) or 0)
+                            if wait_time <= 0:
+                                await asyncio.sleep(10)
+                                continue
+                            wait_time = min(wait_time + 5, 900)
+                            stats["flood_waits"] += 1
+                            stats["wait_total"] += wait_time
+                            logger.info(
+                                f"FloodWaitError on userbot {self.session_id}: waiting {wait_time}s "
+                                f"({index}/{len(groups)} done) - retrying the same group."
+                            )
+                            if progress_msg is not None:
+                                try:
+                                    await progress_msg.edit(
+                                        f"⏸️ <b>Flood Limit Hit</b>\n\n"
+                                        f"✅ <b>Sent :</b> {stats['sent']} / {stats['total']}\n"
+                                        f"⏳️ <b>Remaining :</b> {max(0, stats['total'] - index + 1)}\n"
+                                        f"⏱️ <b>Waiting :</b> {wait_time}s\n\n"
+                                        f"<i>The remaining groups are broadcast automatically afterwards.</i>",
+                                        parse_mode="html"
+                                    )
+                                except Exception:
+                                    pass
+                            await asyncio.sleep(wait_time)
                     stats["sent"] += 1
                 except PeerFloodError:
                     # The account is restricted - stop the round but keep the
@@ -3186,32 +3356,30 @@ class UserBot:
                     stats["skipped"] = len(groups) - index + 1
                     break
                 except FloodWaitError as fwe:
-                    wait_time = int(fwe.seconds) + 5
-                    stats["flood_waits"] += 1
-                    stats["wait_total"] += wait_time
+                    # The inner retry loop already waited three times - count
+                    # the group as failed instead of losing it silently.
+                    wait_time = int(getattr(fwe, "seconds", 0) or 0)
                     logger.info(
-                        f"FloodWaitError on userbot {self.session_id}: waiting {wait_time}s "
-                        f"({index}/{len(groups)} done)"
+                        f"FloodWaitError on userbot {self.session_id} for group {index}: "
+                        f"giving up after 3 attempts (waited {wait_time}s)."
                     )
-                    if progress_msg is not None:
-                        try:
-                            await progress_msg.edit(
-                                f"⏸️ <b>Flood Limit Hit</b>\n\n"
-                                f"✅ <b>Sent :</b> {stats['sent']} / {stats['total']}\n"
-                                f"⏳ <b>Remaining :</b> {max(0, stats['total'] - index + 1)}\n"
-                                f"⏱️ <b>Waiting :</b> {wait_time}s\n\n"
-                                f"<i>The remaining groups are broadcast automatically afterwards.</i>",
-                                parse_mode="html"
-                            )
-                        except Exception:
-                            pass
-                    await asyncio.sleep(wait_time)
+                    stats["failed"] += 1
                 except SlowModeWaitError as smwe:
                     await asyncio.sleep(min(10, smwe.seconds))
+                    stats["failed"] += 1
                 except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError,
                         ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError,
                         ValueError):
                     stats["failed"] += 1
+                    # Do not retry a chat the account can never post in on
+                    # every round - drop it from the cache.
+                    try:
+                        self.groups_cache = [
+                            gg for gg in (self.groups_cache or [])
+                            if getattr(gg, "id", None) != getattr(g, "id", None)
+                        ]
+                    except Exception:
+                        pass
                 except Exception as e:
                     err_class = e.__class__.__name__
                     if err_class in ("UserDeactivatedError", "AuthKeyUnregisteredError",
@@ -3253,9 +3421,12 @@ class UserBot:
         try:
             sess_data = database.get_session(self.session_id)
             if sess_data:
-                sess_data.setdefault("stats", {})["broadcast_count"] = (
-                    sess_data["stats"].get("broadcast_count", 0) + 1
-                )
+                # Only a round that really delivered something counts as a
+                # broadcast - otherwise the counter was pure noise.
+                if stats.get("sent", 0) > 0:
+                    sess_data.setdefault("stats", {})["broadcast_count"] = (
+                        sess_data["stats"].get("broadcast_count", 0) + 1
+                    )
                 sess_data["stats"]["last_broadcast"] = {
                     "total": stats["total"], "sent": stats["sent"],
                     "failed": stats["failed"], "elapsed": stats["elapsed"],
@@ -3265,6 +3436,13 @@ class UserBot:
                 database.save_session(sess_data)
         except Exception:
             pass
+        finally:
+            # Always release the broadcast lock.
+            try:
+                if self._broadcast_lock.locked():
+                    self._broadcast_lock.release()
+            except Exception:
+                pass
 
         return stats
 
@@ -3291,10 +3469,7 @@ class UserBot:
                     await self.broadcast_round()
                     
                 # Fetch broadcast interval from in-memory settings (default 300s)
-                try:
-                    interval = int(self.settings.get("broadcast_interval", 300))
-                except:
-                    interval = 300
+                interval = utils.get_broadcast_interval(self.settings)
                     
                 # Sleep in chunks to allow graceful termination
                 for _ in range(max(1, interval)):

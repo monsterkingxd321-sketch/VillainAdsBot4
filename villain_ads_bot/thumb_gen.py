@@ -9,8 +9,12 @@ from youtubesearchpython import VideosSearch
 from villain_ads_bot import config
 
 BOT_NAME = config.BOT_NAME
-CACHE_DIR = Path("cache")
-CACHE_DIR.mkdir(exist_ok=True)
+try:
+    from villain_ads_bot import config as _config
+    CACHE_DIR = Path(_config.PROJECT_ROOT) / "cache"
+except Exception:
+    CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CANVAS_W = 1280
 CANVAS_H = 720
 
@@ -24,8 +28,19 @@ async def gen_thumb(videoid: str):
     try:
         await _ensure_fonts()
         url = f"https://www.youtube.com/watch?v={videoid}"
-        results = VideosSearch(url, limit=1)
-        res_data = results.result()
+        # The search is a BLOCKING network call. Running it directly inside
+        # the event loop froze the WHOLE bot (main bot + every userbot) for
+        # the duration of the request. It now runs in a thread.
+        def _search():
+            results = VideosSearch(url, limit=1)
+            return results.result()
+
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            res_data = await loop.run_in_executor(None, _search)
+        except Exception:
+            res_data = {}
         result_items = res_data.get("result", []) if isinstance(res_data, dict) else []
         if result_items:
             result = result_items[0]

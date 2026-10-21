@@ -237,6 +237,19 @@ async def play_next_in_queue(chat_id: int, client=None):
     """
     Dequeues and plays the next scheduled track for the given chat.
     """
+    # 4.4 - the lock makes sure that only ONE track is started per chat. Two
+    # concurrent calls (the skip command, the StreamEnded handler and the
+    # auto advance timer) popped two tracks and started two streams.
+    lock = get_chat_lock(chat_id)
+    if lock.locked():
+        logger.debug(f"A play is already running in chat {chat_id} - skipping the advance.")
+        return
+    async with lock:
+        await _play_next_in_queue_locked(chat_id, client)
+
+
+async def _play_next_in_queue_locked(chat_id: int, client=None):
+    """The actual queue advance. Must be called with the chat lock held."""
     # Cancel previous timer if still alive and not current task
     prev_timer = _track_timer_tasks.pop(chat_id, None)
     if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
@@ -287,8 +300,13 @@ async def play_next_in_queue(chat_id: int, client=None):
     )
     
     if not success or not song_info:
+        # 4.5 - the track was popped BEFORE it was played, so a failure
+        # silently lost it. Put it back at the front of the queue.
         logger.warning(f"Failed to play next queued track: {msg}, advancing...")
-        await play_next_in_queue(chat_id, client)
+        try:
+            _chat_queues.setdefault(chat_id, []).insert(0, next_item)
+        except Exception:
+            pass
         return
         
     thumb_enabled = database.get_thumbnail_setting(chat_id)
@@ -332,6 +350,16 @@ async def play_next_in_queue(chat_id: int, client=None):
         except Exception as ub_err:
             logger.warning(f"Userbot also failed to send queue np: {ub_err}")
                 
+    # 4.1 - the previous card must be removed BEFORE the session is
+    # overwritten, otherwise its message id is lost and the card stays in
+    # the chat forever.
+    try:
+        previous = _active_chat_players.get(chat_id)
+        if previous:
+            await _delete_card_by_session(previous, chat_id)
+    except Exception:
+        pass
+
     _active_chat_players[chat_id] = {
         "bot": bot_obj,
         "song_info": song_info,
@@ -399,7 +427,7 @@ def register_handlers(client):
         if reply_msg and (reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document):
             media_obj, audio_title, audio_duration = extract_media_info(reply_msg)
             if media_obj:
-                os.makedirs("downloads", exist_ok=True)
+                os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
                 try:
                     local_file_path = await client.download_media(
                         reply_msg,
@@ -543,6 +571,9 @@ def register_handlers(client):
                 )
                 return
         finally:
+            # 4.6 - the chat must only become free again once the new
+            # session is registered. Before this there was a window in
+            # which a second .play could start a second stream.
             _preparing_chats.discard(chat_id)
             
         # 5. Render Now Playing Card

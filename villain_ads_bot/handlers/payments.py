@@ -112,6 +112,14 @@ def register_handlers(client):
         import time
         
         if decision == "approve":
+            # 6.2 - claim the request ATOMICALLY. Before this two admins (or
+            # the same admin double clicking) could both pass the status
+            # check and allocate the slots twice.
+            claimed = database.claim_payment(payment_id, method=payment_req.get("method"))
+            if not claimed:
+                await event.answer("⚠️ This request has already been processed.", alert=True)
+                return
+            payment_req = claimed
             try:
                 from villain_ads_bot.data import database as _db
                 _db.log_audit(admin_id, "payment.approve", payment_id,

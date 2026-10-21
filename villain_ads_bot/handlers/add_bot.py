@@ -244,18 +244,18 @@ def register_handlers(client):
                 await clean_login_state(user_id)
                 return
             session_files = []
+            extract_dir = None
             if fname_lower.endswith(".session"):
                 session_files = [(temp_dl, fname)]
             elif fname_lower.endswith(".zip"):
                 try:
-                    extract_dir = os.path.join("downloads", f"sess_zip_{user_id}")
+                    extract_dir = os.path.join(config.DOWNLOADS_DIR, f"sess_zip_{user_id}")
                     os.makedirs(extract_dir, exist_ok=True)
                     with zipfile.ZipFile(temp_dl, "r") as zf:
                         for member in zf.namelist():
                             if member.lower().endswith(".session"):
                                 zf.extract(member, extract_dir)
                                 session_files.append((os.path.join(extract_dir, member), os.path.basename(member)))
-                    os.remove(temp_dl)
                 except Exception as zip_err:
                     utils.report_error("add_bot.zip_extraction", zip_err)
                     await prog.edit("<blockquote><b>» ❌ Zip Extraction Failed</b>\n\n⚠️ <i>The zip archive could not be extracted. The error was reported to the admin team.</i></blockquote>", parse_mode="html")
@@ -280,8 +280,8 @@ def register_handlers(client):
                     api_id, api_hash = config.get_random_api_id_hash()
                     dev_prof = utils.get_device_profile(phone_clean)
                     test_client = TelegramClient(
-                        dest_path.replace(".session", ""), 
-                        api_id, 
+                        dest_path.replace(".session", ""),
+                        api_id,
                         api_hash,
                         device_model=dev_prof["device_model"],
                         system_version=dev_prof["system_version"],
@@ -348,6 +348,19 @@ def register_handlers(client):
                             os.remove(dest_path)
                     except Exception:
                         pass
+            # 8.1 - the uploaded .session file and the extracted zip were
+            # never deleted. A live Telegram credential stayed in downloads/
+            # forever and the zip folder grew without limit.
+            try:
+                if os.path.exists(temp_dl):
+                    os.remove(temp_dl)
+            except Exception:
+                pass
+            try:
+                if extract_dir and os.path.isdir(extract_dir):
+                    shutil.rmtree(extract_dir, ignore_errors=True)
+            except Exception:
+                pass
             summary = "<blockquote><b>» 📁 Import Result</b>\n\n"
             if successes:
                 summary += "✅ " + "\n".join(f"• {s}" for s in successes) + "\n\n"

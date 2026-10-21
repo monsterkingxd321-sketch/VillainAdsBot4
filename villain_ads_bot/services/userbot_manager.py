@@ -70,7 +70,15 @@ def can_start_more_bots() -> bool:
     """
     max_running = getattr(config, "MAX_RUNNING_USERBOTS", 99999)
     active_count = len([b for b in set(_running_bots.values()) if b.is_running])
-    return True
+    try:
+        max_running = int(max_running)
+    except (TypeError, ValueError):
+        max_running = 99999
+    if max_running <= 0:
+        return True
+    # The limit was never enforced - the bot happily started hundreds of
+    # userbots and then ran out of memory.
+    return active_count < max_running
 
 async def start_userbot(session_id: str) -> bool:
     """
@@ -117,6 +125,17 @@ async def stop_userbot(session_id: str):
     elif session_id in _running_bots:
         bot = _running_bots.pop(session_id)
         await bot.stop()
+
+async def stop_bot(session_id: str):
+    """
+    Alias for stop_userbot().
+
+    `stop_bot` was called in three places but never existed - every call
+    raised an AttributeError that was swallowed, so the already running
+    userbot was NOT stopped and its session file was deleted underneath it.
+    """
+    return await stop_userbot(session_id)
+
 
 def is_bot_running(session_id: str) -> bool:
     """

@@ -56,6 +56,40 @@ def normalize_brand_suffix(suffix: str) -> str:
     return s
 
 
+# ─── ACTIVE MEDIA REGISTRY ────────────────────────────────────────────────
+# The cleanup loop must never delete a file that PyTgCalls is streaming from
+# right now. Every file that is in use is registered here.
+_active_media = set()
+
+
+def mark_media_active(path: str):
+    """Registers a media file as "in use"."""
+    if path:
+        try:
+            _active_media.add(os.path.abspath(path))
+        except Exception:
+            pass
+
+
+def unmark_media(path: str):
+    """Removes a media file from the "in use" registry."""
+    if path:
+        try:
+            _active_media.discard(os.path.abspath(path))
+        except Exception:
+            pass
+
+
+def is_media_active(path: str) -> bool:
+    """Returns True when the file is currently being streamed."""
+    if not path:
+        return False
+    try:
+        return os.path.abspath(path) in _active_media
+    except Exception:
+        return False
+
+
 # ─── MESSAGE LIST / MODE RESOLUTION ──────────────────────────────────────
 # The "multiple" mode is NEVER a separate switch the user has to remember.
 # It is ALWAYS derived from the data itself, so setting 3 messages can never

@@ -10,6 +10,17 @@ from villain_ads_bot import config
 
 logger = logging.getLogger(__name__)
 
+
+def _copy_doc(doc):
+    """Returns a copy of a Mongo document (nested dicts/lists are copied too)."""
+    if doc is None:
+        return None
+    if isinstance(doc, dict):
+        return {k: _copy_doc(v) for k, v in doc.items()}
+    if isinstance(doc, list):
+        return [_copy_doc(v) for v in doc]
+    return doc
+
 # Global database variables
 _mongo_client: Optional[MongoClient] = None
 _db = None
@@ -112,21 +123,35 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     # Fetch from MongoDB
     user = _db.users.find_one({"user_id": {"$in": [uid, str(uid)]}})
     
-    # Cache for 5 seconds
-    _user_cache[uid] = (now + 300.0, dict(user) if user else None)
-    return user
+    # Cache for 15 seconds (the comment used to say 5s while the code used
+    # 300s - a user created by another process was invisible for 5 minutes)
+    if user:
+        _user_cache[uid] = (now + 15.0, _copy_doc(user))
+    else:
+        # A missing user must not be cached for long, otherwise a freshly
+        # created user stays invisible.
+        _user_cache[uid] = (now + 3.0, None)
+    return _copy_doc(user)
 
 def save_user(user_data: Dict[str, Any]):
     global _user_cache
     uid = int(user_data["user_id"])
     user_data["user_id"] = uid
     
-    # Update cache immediately for instant bot response
-    _user_cache[uid] = (time.time() + 300.0, dict(user_data))
+    # SNAPSHOT the document. Without this the write could contain a later
+    # mutation of the same dict (half applied data).
+    snapshot = _copy_doc(user_data)
     
-    # Save to MongoDB in background
+    # Update cache immediately for instant bot response
+    _user_cache[uid] = (time.time() + 15.0, _copy_doc(snapshot))
+    
+    # Write SYNCHRONOUSLY. An asynchronous whole document write can land
+    # out of order and silently lose the newer value (money / settings).
     if _db is not None:
-        _db_executor.submit(lambda: _db.users.replace_one({"user_id": uid}, user_data, upsert=True))
+        try:
+            _db.users.replace_one({"user_id": uid}, snapshot, upsert=True)
+        except Exception as e:
+            logger.error(f"save_user({uid}) failed: {e}")
 
 def get_all_users() -> List[Dict[str, Any]]:
     return list(_db.users.find({}))
@@ -143,7 +168,7 @@ def get_sessions(user_id: Optional[int] = None, include_bytes: bool = False) -> 
     if cache_key in _cached_get_sessions:
         expiry, data = _cached_get_sessions[cache_key]
         if now < expiry:
-            return [dict(d) for d in data]
+            return [_copy_doc(d) for d in data]
 
     projection = None if include_bytes else {"session_bytes": 0}
     if user_id is not None:
@@ -152,8 +177,10 @@ def get_sessions(user_id: Optional[int] = None, include_bytes: bool = False) -> 
         query = {}
         
     results = list(_db.sessions.find(query, projection))
-    _cached_get_sessions[cache_key] = (now + 15.0, [dict(r) for r in results])  # 15s cache
-    return results
+    # Deep copy: the nested settings/stats must not be shared with the cache,
+    # otherwise a mutation is visible before it was ever saved.
+    _cached_get_sessions[cache_key] = (now + 15.0, [_copy_doc(r) for r in results])  # 15s cache
+    return [_copy_doc(r) for r in results]
 
 def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[str, Any]]:
     if not session_id:
@@ -165,7 +192,9 @@ def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[s
     if not include_bytes:
         cached = _cached_sessions.get(session_id_str)
         if cached and (time.time() - cached['time'] < 60):  # 60s cache
-            return cached['data']
+            # A COPY - the cached object must never be handed out, otherwise
+            # two code paths mutate each other's "copy" silently.
+            return _copy_doc(cached['data'])
             
     projection = None if include_bytes else {"session_bytes": 0}
     sess = _db.sessions.find_one({"session_id": session_id_str}, projection)
@@ -176,35 +205,65 @@ def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[s
         sess = _db.sessions.find_one({"$or": [{"session_id": alt}, {"phone": alt}]}, projection)
         
     if sess and not include_bytes:
-        _cached_sessions[session_id_str] = {'data': sess, 'time': time.time()}
+        _cached_sessions[session_id_str] = {'data': _copy_doc(sess), 'time': time.time()}
         if sess.get("phone"):
-            _cached_sessions[str(sess["phone"])] = {'data': sess, 'time': time.time()}
+            _cached_sessions[str(sess["phone"])] = {'data': _copy_doc(sess), 'time': time.time()}
         
-    return sess
+    return _copy_doc(sess)
+
+
+def get_session_fresh(session_id: str, include_bytes: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    Reads a session DIRECTLY from MongoDB, bypassing the cache.
+
+    Used where a stale value would be harmful (the broadcast loop reads the
+    message and the delay from here).
+    """
+    if not session_id:
+        return None
+    session_id_str = str(session_id).strip()
+    projection = None if include_bytes else {"session_bytes": 0}
+    sess = _db.sessions.find_one({"session_id": session_id_str}, projection)
+    if not sess:
+        sess = _db.sessions.find_one({"phone": session_id_str}, projection)
+    if not sess:
+        alt = session_id_str.lstrip("+") if session_id_str.startswith("+") else f"+{session_id_str}"
+        sess = _db.sessions.find_one({"$or": [{"session_id": alt}, {"phone": alt}]}, projection)
+    return _copy_doc(sess)
 
 def save_session(session_data: Dict[str, Any]):
     global _cached_get_sessions
-    _cached_get_sessions.clear()
     try:
         session_data["user_id"] = int(session_data["user_id"])
     except (TypeError, ValueError):
         # Non numeric owner ids (e.g. imported from a disk folder) are kept as-is.
         pass
-    
+
+    # SNAPSHOT - the document must not change while the write is pending.
+    snapshot = _copy_doc(session_data)
+
     # Update cache
-    sid = session_data.get("session_id")
-    phone = session_data.get("phone")
+    sid = snapshot.get("session_id")
+    phone = snapshot.get("phone")
     if sid:
-        _cached_sessions[str(sid)] = {'data': session_data, 'time': time.time()}
+        _cached_sessions[str(sid)] = {'data': _copy_doc(snapshot), 'time': time.time()}
     if phone:
-        _cached_sessions[str(phone)] = {'data': session_data, 'time': time.time()}
-        
+        _cached_sessions[str(phone)] = {'data': _copy_doc(snapshot), 'time': time.time()}
+
     if _db is not None:
-        _db_executor.submit(lambda: _db.sessions.update_one(
-            {"session_id": session_data["session_id"]},
-            {"$set": session_data},
-            upsert=True
-        ))
+        try:
+            _db.sessions.update_one(
+                {"session_id": snapshot["session_id"]},
+                {"$set": snapshot},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"save_session({snapshot.get('session_id')}) failed: {e}")
+        finally:
+            # The session list cache may only be dropped AFTER the write
+            # landed - otherwise a stale copy is read back and written again,
+            # which reverted the user's broadcast message.
+            _cached_get_sessions.clear()
 
 def delete_session(session_id: str):
     global _cached_get_sessions
@@ -382,6 +441,147 @@ def remove_admin_role(user_id: int) -> bool:
         return True
     except Exception:
         return False
+
+
+# ==================== Atomic payment helpers ====================
+def claim_payment(payment_id: str, method: str = None, extra: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+    """
+    Atomically claims a pending payment request.
+
+    Returns the payment document when THIS caller won the race, otherwise
+    None. Without this a double click (or two admins) could approve the
+    same request twice and grant the slots twice.
+    """
+    try:
+        filt = {"payment_id": payment_id, "status": "pending"}
+        update = {"$set": {"status": "approved", "method": method} if method
+                  else {"status": "approved"}}
+        if extra:
+            update["$set"].update(extra)
+        return _db.payments.find_one_and_update(filt, update, return_document=True)
+    except Exception as e:
+        logger.error(f"claim_payment({payment_id}) failed: {e}")
+        return None
+
+
+def release_payment(payment_id: str):
+    """Puts a claimed payment back into the pending state (on failure)."""
+    try:
+        _db.payments.update_one(
+            {"payment_id": payment_id},
+            {"$set": {"status": "pending"}}
+        )
+    except Exception as e:
+        logger.warning(f"release_payment({payment_id}) failed: {e}")
+
+
+def deduct_wallet(user_id: int, amount: float) -> bool:
+    """
+    Atomically deducts the wallet balance.
+
+    The $gte guard makes sure the balance can never go below zero, even
+    when two handlers run at the same time.
+    """
+    try:
+        res = _db.users.update_one(
+            {"user_id": int(user_id), "wallet_balance": {"$gte": float(amount)}},
+            {"$inc": {"wallet_balance": -float(amount)}}
+        )
+        if getattr(res, "modified_count", 0) == 1:
+            # Keep the cache in sync.
+            _user_cache.pop(int(user_id), None)
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"deduct_wallet({user_id}, {amount}) failed: {e}")
+        return False
+
+
+def credit_wallet(user_id: int, amount: float) -> bool:
+    """Atomically adds to the wallet balance."""
+    try:
+        res = _db.users.update_one(
+            {"user_id": int(user_id)},
+            {"$inc": {"wallet_balance": float(amount)}}
+        )
+        _user_cache.pop(int(user_id), None)
+        return getattr(res, "modified_count", 0) == 1
+    except Exception as e:
+        logger.error(f"credit_wallet({user_id}, {amount}) failed: {e}")
+        return False
+
+
+def redeem_coupon(code: str, user_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Atomically redeems a coupon.
+
+    The $lt guard makes sure the coupon can never be used more often than
+    max_uses, even with concurrent redemptions.
+    """
+    try:
+        filt = {
+            "code": code,
+            "is_active": True,
+            "$or": [
+                # $expr is required to compare two FIELDS of the same
+                # document (a plain $lt only compares against a constant).
+                {"$expr": {"$lt": ["$current_uses", "$max_uses"]}},
+                {"max_uses": {"$exists": False}},
+            ],
+        }
+        res = _db.coupons.find_one_and_update(
+            filt,
+            {"$inc": {"current_uses": 1}},
+            return_document=True,
+        )
+        if not res:
+            return None
+        # Disable it when it is used up.
+        if res.get("max_uses") and res.get("current_uses", 0) >= res.get("max_uses", 1):
+            _db.coupons.update_one({"code": code}, {"$set": {"is_active": False}})
+        return res
+    except Exception as e:
+        logger.error(f"redeem_coupon({code}) failed: {e}")
+        return None
+
+
+def save_payment_state(payment_id: str, state: Dict[str, Any]):
+    """Persists the in-flight payment state so a restart does not eat it."""
+    try:
+        _db.payments.update_one(
+            {"payment_id": payment_id},
+            {"$set": {"payment_state": state}}
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"save_payment_state({payment_id}) failed: {e}")
+        return False
+
+
+def get_payment_state(payment_id: str) -> Optional[Dict[str, Any]]:
+    """Returns the persisted in-flight payment state."""
+    try:
+        doc = _db.payments.find_one(
+            {"payment_id": payment_id},
+            {"payment_state": 1}
+        )
+        if doc:
+            return doc.get("payment_state")
+    except Exception:
+        pass
+    return None
+
+
+def get_pending_payment_for_user(user_id: int) -> Optional[Dict[str, Any]]:
+    """Returns the newest payment that still waits for the user's UTR."""
+    try:
+        return _db.payments.find_one(
+            {"user_id": int(user_id), "status": "pending",
+             "payment_state.action": {"$in": ["WAITING_FOR_SCREENSHOT", "WAITING_FOR_UTR"]}},
+            sort=[("timestamp", -1)],
+        )
+    except Exception:
+        return None
 
 
 # ==================== Settings CRUD Operations ====================

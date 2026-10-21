@@ -287,13 +287,21 @@ def register_handlers(client):
                     return
 
                 amount = float(coupon.get("amount_inr", 0) or 0)
-                user["wallet_balance"] = float(user.get("wallet_balance", 0.0) or 0) + amount
-                database.save_user(user)
-                coupon["current_uses"] = int(coupon.get("current_uses", 0) or 0) + 1
-                if coupon["current_uses"] >= coupon.get("max_uses", 1):
-                    coupon["is_active"] = False
-                database.save_coupon(coupon)
+                # 6.5 - redeem ATOMICALLY. The counter used to be a read-then-
+                # write, so two concurrent redemptions could both write
+                # current_uses = N+1 and the coupon was used more often
+                # than max_uses.
+                redeemed = database.redeem_coupon(coupon_code, user_id)
+                if not redeemed:
+                    await event.reply(
+                        "<blockquote><b>» 🎟️ Coupon Unavailable</b>\n\n"
+                        "⚠️ <i>This coupon has just been used up or was already redeemed by you.</i></blockquote>",
+                        parse_mode="html"
+                    )
+                    return
                 database.save_coupon_usage(coupon_code, user_id)
+                database.credit_wallet(user_id, amount)
+                user = database.get_user(user_id) or user
                 try:
                     database.log_audit(None, "coupon.redeem", coupon_code,
                                        f"user={user_id} amount={amount}")
