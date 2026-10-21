@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import time
 from telethon import events, Button
 from villain_ads_bot.data import database
 from villain_ads_bot.data import models
@@ -61,7 +62,8 @@ async def check_onboarding(client, event) -> bool:
         lang = user.get("language")
         msg = get_text("tos_text", lang)
         buttons = [
-            [styled_button(get_text("tos_accept_btn", lang), "accept_tos", style="success")]
+            [styled_button(get_text("tos_accept_btn", lang), "accept_tos", style="success"),
+             styled_button(get_text("tos_decline_btn", lang), "decline_tos", style="danger")]
         ]
         await event.respond(msg, buttons=buttons)
         return False
@@ -397,6 +399,7 @@ def register_handlers(client):
         
         if user:
             user["tos_accepted"] = True
+            user["tos_declined"] = False
             database.save_user(user)
             
         await event.answer()
@@ -405,3 +408,43 @@ def register_handlers(client):
         lang = user.get("language", "en") if user else "en"
         await event.respond(get_text("tos_accepted_msg", lang))
         await show_main_menu(event, user_id)
+
+    @client.on(events.CallbackQuery(pattern="^decline_tos$"))
+    async def decline_tos_callback(event):
+        """
+        The user declined the agreement.
+
+        The bot must not be used any further, but the user is NOT banned -
+        they can change their mind and accept it again later.
+        """
+        user_id = event.sender_id
+        user = database.get_user(user_id)
+        lang = user.get("language", "en") if user else "en"
+
+        if user:
+            user["tos_accepted"] = False
+            user["tos_declined"] = True
+            user["tos_declined_at"] = time.time()
+            database.save_user(user)
+            try:
+                database.log_audit(user_id, "user.tos_declined", str(user_id), "agreement declined")
+            except Exception:
+                pass
+
+        await event.answer(get_text("tos_declined_alert", lang), alert=True)
+
+        try:
+            await event.edit(
+                get_text("tos_declined_msg", lang),
+                parse_mode="html",
+                buttons=[[styled_button(get_text("tos_accept_btn", lang), "accept_tos", style="success")]]
+            )
+        except Exception:
+            try:
+                await event.respond(
+                    get_text("tos_declined_msg", lang),
+                    parse_mode="html",
+                    buttons=[[styled_button(get_text("tos_accept_btn", lang), "accept_tos", style="success")]]
+                )
+            except Exception:
+                pass

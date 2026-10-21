@@ -574,6 +574,29 @@ async def guard(event, client) -> bool:
             await event.respond(txt)
         return True
         
+    # 2.b Agreement Guard - a user that DECLINED the agreement may not use
+    # the bot. They can accept it again at any time.
+    if not user.get("tos_accepted") and user.get("tos_declined"):
+        lang = user.get("language", "en") or "en"
+        txt = get_text("tos_declined_msg", lang)
+        buttons = [[styled_button(get_text("tos_accept_btn", lang), "accept_tos", style="success")]]
+        try:
+            if hasattr(event, "answer"):
+                await event.answer(get_text("tos_declined_alert", lang), alert=True)
+        except Exception:
+            pass
+        try:
+            if hasattr(event, "edit"):
+                await event.edit(txt, buttons=buttons)
+            else:
+                await event.respond(txt, buttons=buttons)
+        except Exception:
+            try:
+                await event.respond(txt, buttons=buttons)
+            except Exception:
+                pass
+        return True
+        
     # 3. Force Subscribe Guard (Only enforce in Private chats)
     if event.is_private and not is_admin:
         not_joined = await check_force_sub(client, user_id)

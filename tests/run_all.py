@@ -29,6 +29,7 @@ SUITES = [
     "test_translations.py",
     "test_features.py",
     "test_audit_fixes.py",
+    "test_agreement.py",
 ]
 
 

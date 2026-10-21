@@ -1434,3 +1434,46 @@ MISSING_TRANSLATIONS = {
 for _key, _values in MISSING_TRANSLATIONS.items():
     for _lang, _text in _values.items():
         TRANSLATIONS.setdefault(_lang, {})[_key] = _text
+
+
+# ─────────────────────────────────────────────────────────────────
+# The decline button of the agreement screen
+# ─────────────────────────────────────────────────────────────────
+TOS_DECLINE_TRANSLATIONS = {
+    'tos_decline_btn': {
+        'en': '❌ Decline',
+        'hi': '❌ मना करें',
+        'ru': '❌ Отклонить',
+        'ja': '❌ 拒否する',
+        'fr': '❌ Refuser',
+        'de': '❌ Ablehnen',
+        'zh': '❌ 拒绝',
+        'ar': '❌ رفض',
+    },
+    'tos_declined_msg': {
+        'en': '<blockquote><b>» ❌ Agreement Declined</b>\n\n⚠️ <i>You have declined the Terms of Service, so the bot cannot be used.\n\nIf you change your mind you can accept the agreement again with the button below.</i></blockquote>',
+        'hi': '<blockquote><b>» ❌ समझौता अस्वीकार</b>\n\n⚠️ <i>आपने नियम और शर्तों अस्वीकार कर दिए हैं, इसलिए बॉट का उपयोग नहीं किया जा सकता।\n\nअगर आपका मन बदले तो नीचे वाले बटन से फिर से स्वीकार कर सकते हैं।</i></blockquote>',
+        'ru': '<blockquote><b>» ❌ Согласие отклонено</b>\n\n⚠️ <i>Вы отклонили Условия использования, поэтому бот недоступен.\n\nЕсли передумаете, вы можете принять согласие ещё раз кнопкой ниже.</i></blockquote>',
+        'ja': '<blockquote><b>» ❌ 規約に同意しません</b>\n\n⚠️ <i>利用規約に同意しなかったため、ボットは使用できません。\n\n気が変わったら下のボタンから再び同意できます。</i></blockquote>',
+        'fr': "<blockquote><b>» ❌ Accord refusé</b>\n\n⚠️ <i>Vous avez refusé les conditions d'utilisation, le bot ne peut pas être utilisé.\n\nSi vous changez d'avis, vous pouvez accepter à nouveau avec le bouton ci-dessous.</i></blockquote>",
+        'de': '<blockquote><b>» ❌ Vereinbarung abgelehnt</b>\n\n⚠️ <i>Du hast die Nutzungsbedingungen abgelehnt, der Bot kann nicht genutzt werden.\n\nDu kannst sie unten jederzeit wieder annehmen.</i></blockquote>',
+        'zh': '<blockquote><b>» ❌ 已拒绝协议</b>\n\n⚠️ <i>你拒绝了服务条款，因此无法使用机器人。\n\n如果改变主意，可以用下方按钮重新接受。</i></blockquote>',
+        'ar': '<blockquote><b>» ❌ تم رفض الاتفاقية</b>\n\n⚠️ <i>لقد رفضت شروط الاستخدام، لذلك لا يمكن استخدام البوت.\n\nإذا غيّرت رأيك يمكنك القبول مرة أخرى من الزر بالأسفل.</i></blockquote>',
+    },
+    'tos_declined_alert': {
+        'en': 'You declined the agreement. The bot is paused for you.',
+        'hi': 'आपने समझौता अस्वीकार कर दिया। बॉट आपके लिए रुका हुआ है।',
+        'ru': 'Вы отклонили согласие. Бот для вас приостановлен.',
+        'ja': '規約に同意しませんでした。ボットは一時停止しています。',
+        'fr': "Vous avez refusé l'accord. Le bot est en pause pour vous.",
+        'de': 'Du hast die Vereinbarung abgelehnt. Der Bot ist für dich pausiert.',
+        'zh': '你已拒绝协议。机器人已为你暂停。',
+        'ar': 'لقد رفضت الاتفاقية. تم إيقاف البوت لك.',
+    },
+}
+
+
+# ── Merge the decline strings into every language ───────────────────────
+for _key, _values in TOS_DECLINE_TRANSLATIONS.items():
+    for _lang, _text in _values.items():
+        TRANSLATIONS.setdefault(_lang, {})[_key] = _text
