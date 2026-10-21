@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import secrets
 from telethon import events
 from telethon.errors import FloodWaitError
 from villain_ads_bot.data import database
@@ -27,6 +28,64 @@ def check_admin(user_id: int) -> bool:
     global_settings = database.get_global_settings()
     admins = global_settings.get("admins", [])
     return user_id in admins or user_id in config.ORIGINAL_ADMIN_IDS
+
+
+# ── Role hierarchy ────────────────────────────────────────────────────────
+ROLE_OWNER = database.ROLE_OWNER
+ROLE_MODERATOR = database.ROLE_MODERATOR
+ROLE_SUPPORT = database.ROLE_SUPPORT
+ROLE_LEVELS = database.ROLE_LEVELS
+ROLE_LABELS = database.ROLE_LABELS
+
+
+def check_role(user_id: int, minimum: str = ROLE_SUPPORT) -> bool:
+    """
+    Returns True when the admin has AT LEAST the given role.
+
+    owner > moderator > support
+
+    The root owners from ORIGINAL_ADMIN_IDS are always owners, so nobody
+    can ever lock the bot out.
+    """
+    if not check_admin(user_id):
+        return False
+    try:
+        if int(user_id) in (config.ORIGINAL_ADMIN_IDS or set()):
+            return True
+    except (TypeError, ValueError):
+        pass
+    role = database.get_admin_role(user_id)
+    return ROLE_LEVELS.get(role, 1) >= ROLE_LEVELS.get(minimum, 1)
+
+
+def current_role(user_id: int) -> str:
+    """Returns the role name of an admin."""
+    try:
+        if int(user_id) in (config.ORIGINAL_ADMIN_IDS or set()):
+            return ROLE_OWNER
+    except (TypeError, ValueError):
+        pass
+    return database.get_admin_role(user_id)
+
+
+def _bot_username(event) -> str:
+    """Returns the bot username (for deep links)."""
+    try:
+        return event.client.me.username or "Bot"
+    except Exception:
+        try:
+            me = event.client.me
+            return getattr(me, "username", None) or "Bot"
+        except Exception:
+            return "Bot"
+
+
+def audit(action: str, target=None, details: str = "", actor_id: int = None):
+    """Writes an entry into the audit log."""
+    try:
+        database.log_audit(actor_id, action, target, details)
+    except Exception:
+        pass
 
 async def show_admin_panel(event, user_id: int):
     """
@@ -105,6 +164,17 @@ async def show_admin_panel(event, user_id: int):
         ],
         [
             utils.styled_button("🔐 API ID / API Hash Manager", "admin_api_credentials", style="primary")
+        ],
+        [
+            utils.styled_button("🎟️ Coupons", "admin_coupons", style="success"),
+            utils.styled_button("🧙 Manage Admin Roles", "admin_roles", style="primary")
+        ],
+        [
+            utils.styled_button("💾 Backup Now", "admin_backup_now", style="success"),
+            utils.styled_button("🔄 Restore Backup", "admin_restore_backup", style="primary")
+        ],
+        [
+            utils.styled_button("🧾 Audit Log", "admin_audit_log", style="primary")
         ],
         [
             utils.styled_button("📢 Broadcast", "admin_broadcast", style="primary"),
@@ -996,6 +1066,15 @@ def register_handlers(client):
         if not check_admin(user_id):
             await event.respond(utils.get_text("error_not_admin", lang))
             return
+
+        # Pricing, branding, API keys and backups are owner-only.
+        if action in ("set_price", "set_upi", "set_usdt", "set_ton",
+                      "set_usdt_rate", "set_ton_rate", "set_bu", "set_bd",
+                      "set_music_key", "set_music_url", "set_music_backup_url",
+                      "add_api_cred"):
+            if not check_role(user_id, ROLE_OWNER):
+                await event.respond("\u274c <b>Only the owner can change this setting.</b>", parse_mode="html")
+                return
             
         # Register prompt state
         _admin_action_states[user_id] = f"WAITING_FOR_{action.upper()}"
@@ -1498,6 +1577,7 @@ def register_handlers(client):
                     target_user = database.get_user(target_uid)
                     if target_user:
                         target_user["allowed_slots"] = target_user.get("allowed_slots", 0) + slots_to_gift
+                        audit("user.gift_slots", str(target_uid), f"+{slots_to_gift} slots", user_id)
                         database.save_user(target_user)
                         await event.reply(f"✅ **Successfully gifted {slots_to_gift} slots** to `{target_uid}`!")
                         try:
@@ -1618,6 +1698,152 @@ def register_handlers(client):
                     async def answer(self, *args, **kwargs):
                         pass
                 await admin_manage_plans_callback(MockEvent(user_id, event))
+                return
+
+            # ── #2  COUPON CREATION FLOW (3 steps) ──
+            elif action == "WAITING_FOR_COUPON_AMOUNT":
+                try:
+                    amount = float(val_str)
+                    if amount <= 0:
+                        raise ValueError
+                except ValueError:
+                    await event.reply("❌ <b>Invalid amount.</b>\n\n<i>Send a positive number (e.g. 50).</i>", parse_mode="html")
+                    return
+                _admin_plan_temp.setdefault(user_id, {})["coupon_amount"] = amount
+                _admin_action_states[user_id] = "WAITING_FOR_COUPON_USES"
+                await event.reply(
+                    f"🏷️ <b>Coupon : Step 2 of 3</b>\n\n"
+                    f"💰 <b>Amount :</b> ₹{amount:.2f}\n\n"
+                    f"👥 <i>How many times may this coupon be used?</i>\n"
+                    f"<i>Send a number (e.g. 10).</i>",
+                    parse_mode="html"
+                )
+                return
+
+            elif action == "WAITING_FOR_COUPON_USES":
+                try:
+                    max_uses = int(val_str)
+                    if max_uses < 1:
+                        raise ValueError
+                except ValueError:
+                    await event.reply("❌ <b>Invalid number of uses.</b>", parse_mode="html")
+                    return
+                temp = _admin_plan_temp.setdefault(user_id, {})
+                temp["coupon_max_uses"] = max_uses
+                _admin_action_states[user_id] = "WAITING_FOR_COUPON_EXPIRY"
+                await event.reply(
+                    f"🏷️ <b>Coupon : Step 3 of 3</b>\n\n"
+                    f"💰 <b>Amount :</b> ₹{temp.get('coupon_amount', 0):.2f}\n"
+                    f"👥 <b>Max uses :</b> {max_uses}\n\n"
+                    f"📅 <i>After how many days should it expire? Send 0 for never.</i>",
+                    parse_mode="html"
+                )
+                return
+
+            elif action == "WAITING_FOR_COUPON_EXPIRY":
+                try:
+                    days = int(val_str)
+                    if days < 0:
+                        raise ValueError
+                except ValueError:
+                    await event.reply("❌ <b>Invalid number of days.</b>", parse_mode="html")
+                    return
+                temp = _admin_plan_temp.setdefault(user_id, {})
+                amount = float(temp.get("coupon_amount", 0) or 0)
+                max_uses = int(temp.get("coupon_max_uses", 1) or 1)
+                code = "SLOT-" + secrets.token_hex(4).upper()
+                import time as _time
+                coupon = {
+                    "code": code,
+                    "amount_inr": amount,
+                    "max_uses": max_uses,
+                    "current_uses": 0,
+                    "is_active": True,
+                    "created_at": _time.time(),
+                    "created_by": user_id,
+                    "expires_at": (_time.time() + days * 86400) if days else None,
+                    "max_per_user": 1,
+                }
+                database.save_coupon(coupon)
+                audit("coupon.create", code, f"amount={amount} uses={max_uses} days={days}", user_id)
+                _admin_plan_temp.pop(user_id, None)
+
+                deep_link = f"https://t.me/{_bot_username(event)}?start=coupon_{code}"
+                await event.reply(
+                    f"✅ <b>Coupon created!</b>\n\n"
+                    f"🏷️ <b>Code :</b> <code>{code}</code>\n"
+                    f"💰 <b>Amount :</b> ₹{amount:.2f}\n"
+                    f"👥 <b>Max uses :</b> {max_uses}\n"
+                    f"📅 <b>Expires :</b> {'never' if not days else str(days) + ' days'}\n\n"
+                    f"🔗 <b>One-tap redeem link :</b>\n<code>{deep_link}</code>\n\n"
+                    f"💡 <i>Share this link — the user only has to tap it and the credit is added to their wallet.</i>",
+                    parse_mode="html"
+                )
+                return
+
+            # ── #11  BACKUP RESTORE (file upload) ──
+            elif action == "WAITING_FOR_BACKUP_FILE":
+                if not event.media:
+                    await event.reply("❌ <b>Please upload the backup zip file.</b>", parse_mode="html")
+                    return
+                try:
+                    data = await event.client.download_media(event.media, file=bytes)
+                except Exception as e:
+                    logger.error(f"Could not download the backup file: {e}")
+                    utils.report_error("admin_restore_download", e)
+                    await event.reply("❌ <b>Could not read the file.</b>", parse_mode="html")
+                    return
+
+                from villain_ads_bot.core import backup as _backup
+                preview = _backup.inspect_backup(data)
+                if not preview.get("ok"):
+                    await event.reply(f"❌ <b>{preview.get('error') or 'Invalid backup file.'}</b>", parse_mode="html")
+                    return
+
+                counts = preview.get("counts", {})
+                _admin_plan_temp.setdefault(user_id, {})["backup_bytes"] = data
+                _admin_action_states[user_id] = "WAITING_FOR_BACKUP_CONFIRM"
+                await event.reply(
+                    f"🔎 <b>Backup preview</b>\n\n"
+                    f"💰 <b>Created :</b> <code>{(preview.get('manifest') or {}).get('created_at', '?')}</code>\n"
+                    f"👥 <b>Users :</b> <code>{counts.get('users', 0)}</code>\n"
+                    f"📜 <b>Sessions :</b> <code>{counts.get('sessions', 0)}</code>\n"
+                    f"🎫 <b>Session files :</b> <code>{counts.get('session_files', 0)}</code>\n"
+                    f"🎟️ <b>Coupons :</b> <code>{counts.get('coupons', 0)}</code>\n"
+                    f"⚙️ <b>Settings :</b> <code>{'yes' if counts.get('has_settings') else 'no'}</code>\n\n"
+                    f"⚠️ <b>Restoring overwrites the current data.</b>\n"
+                    f"👉 <i>Send <b>CONFIRM</b> to restore, or /cancel to abort.</i>",
+                    parse_mode="html"
+                )
+                return
+
+            elif action == "WAITING_FOR_BACKUP_CONFIRM":
+                if val_str.upper() not in ("CONFIRM", "YES", "RESTORE"):
+                    await event.reply("❌ <b>Aborted.</b>\n\n<i>Send CONFIRM to restore the backup.</i>", parse_mode="html")
+                    _admin_plan_temp.pop(user_id, None)
+                    return
+                data = _admin_plan_temp.get(user_id, {}).pop("backup_bytes", None)
+                if not data:
+                    await event.reply("❌ <b>The backup expired. Please upload it again.</b>", parse_mode="html")
+                    return
+                from villain_ads_bot.core import backup as _backup
+                result = _backup.restore_backup(data)
+                audit("backup.restore", None,
+                      f"users={result.get('users')} sessions={result.get('sessions')} coupons={result.get('coupons')}",
+                      user_id)
+                if not result.get("ok"):
+                    await event.reply(f"❌ <b>Restore failed :</b> {result.get('error')}", parse_mode="html")
+                    return
+                await event.reply(
+                    f"✅ <b>Backup restored!</b>\n\n"
+                    f"👥 <b>Users :</b> <code>{result.get('users', 0)}</code>\n"
+                    f"📜 <b>Sessions :</b> <code>{result.get('sessions', 0)}</code>\n"
+                    f"🎫 <b>Coupons :</b> <code>{result.get('coupons', 0)}</code>\n"
+                    f"💽 <b>Session files written :</b> <code>{result.get('session_files', 0)}</code>\n"
+                    f"🔐 <b>Settings :</b> <code>{'restored' if result.get('settings') else 'skipped'}</code>\n\n"
+                    f"⚠️ <i>Restart the bot so every restored session is picked up.</i>",
+                    parse_mode="html"
+                )
                 return
 
             # 1. Set the global price per slot (INR) - USDT/TON are derived
@@ -2170,6 +2396,8 @@ def register_handlers(client):
             
         if success:
             database.save_global_settings(global_settings)
+            # Everything that changes the global configuration is audited.
+            audit(f"settings.{action.lower()}", None, str(global_settings.get(action.lower(), ""))[:200], user_id)
             
             # A new music gateway configuration must take effect immediately.
             if action in ("WAITING_FOR_SET_MUSIC_KEY", "WAITING_FOR_SET_MUSIC_URL",
@@ -2323,6 +2551,9 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern="^admin_branding_settings$"))
     async def admin_branding_settings_callback(event):
+        if not check_role(event.sender_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can change the branding.", alert=True)
+            return
         await show_branding_settings(event, event.sender_id)
 
     @client.on(events.CallbackQuery(pattern="^admin_load_sessions_from_disk$"))
@@ -2443,9 +2674,296 @@ def register_handlers(client):
         
         await show_branding_settings(event, user_id)
 
+    # ==================== #2  COUPON GENERATOR UI ====================
+    @client.on(events.CallbackQuery(pattern="^admin_coupons$"))
+    async def admin_coupons_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_MODERATOR):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        coupons = database.get_coupons()
+        coupons = sorted(coupons, key=lambda c: c.get("created_at", 0) or 0, reverse=True)
+
+        import time as _time
+        now = _time.time()
+
+        text = f"{ui.card_open('Coupons', 'Wallet credit codes', 'Create and manage discount codes', chr(127903))}\n\n"
+        if not coupons:
+            text += ui.help_hint("No coupon created yet. Use the button below to create one.")
+        else:
+            for c in coupons[:30]:
+                code = c.get("code", "?")
+                amount = float(c.get("amount_inr", 0) or 0)
+                used = int(c.get("current_uses", 0) or 0)
+                max_uses = int(c.get("max_uses", 0) or 0)
+                active = bool(c.get("is_active", True))
+                expires = c.get("expires_at")
+                expired = bool(expires and expires < now)
+                state = "🔴 EXPIRED" if expired else ("🟢 ON" if active else "🔴 OFF")
+                text += (
+                    f"\n{ui.kv('Code', f'<code>{code}</code>', chr(127903))}"
+                    f"\n  💰 <b>₹{amount:.2f}</b>  👥 <b>{used}/{max_uses}</b>  {state}"
+                )
+        text += f"\n\n{ui.card_close()}"
+
+        buttons = [[utils.styled_button("➕ Create Coupon", "admin_coupon_create_amount", style="success")]]
+        for c in coupons[:15]:
+            code = c.get("code", "")
+            buttons.append([
+                utils.styled_button(f"🔄 {code}", f"admin_coupon_toggle_{code}", style="primary"),
+                utils.styled_button(f"🗑 {code}", f"admin_coupon_delete_{code}", style="danger"),
+            ])
+        buttons.append([utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")])
+
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_coupon_create_amount$"))
+    async def admin_coupon_create_amount_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_MODERATOR):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_COUPON_AMOUNT"
+        prompt = (
+            f"{ui.card('Create Coupon', 'Step 1 of 3', 'How much wallet credit is this coupon worth?', chr(127903))}\n\n"
+            f"{ui.help_hint('Send the amount in INR (e.g. 50).')}"
+        )
+        buttons = [[utils.styled_button("❌ Cancel", "admin_coupons", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_coupon_toggle_(.+)$"))
+    async def admin_coupon_toggle_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_MODERATOR):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        code = event.pattern_match.group(1).strip()
+        coupon = database.get_coupon(code)
+        if not coupon:
+            await event.answer("❌ Coupon not found.", alert=True)
+            return
+        coupon["is_active"] = not coupon.get("is_active", True)
+        database.save_coupon(coupon)
+        audit("coupon.toggle", code, f"is_active={coupon['is_active']}", user_id)
+        await event.answer(f"🔄 {code} is now {'ON' if coupon['is_active'] else 'OFF'}", alert=True)
+        await admin_coupons_callback(event)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_coupon_delete_(.+)$"))
+    async def admin_coupon_delete_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can delete coupons.", alert=True)
+            return
+        code = event.pattern_match.group(1).strip()
+        coupon = database.get_coupon(code)
+        if not coupon:
+            await event.answer("❌ Coupon not found.", alert=True)
+            return
+        database.delete_coupon(code)
+        audit("coupon.delete", code, f"amount={coupon.get('amount_inr')}", user_id)
+        await event.answer(f"🗑 {code} deleted", alert=True)
+        await admin_coupons_callback(event)
+
+    # ==================== #3  AUDIT LOG ====================
+    @client.on(events.CallbackQuery(pattern="^admin_audit_log$"))
+    async def admin_audit_log_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_MODERATOR):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        entries = database.get_audit_log(limit=60)
+        total = database.count_audit_log()
+        text = f"{ui.card_open('Audit Log', 'Every admin action is recorded', f'{total} entries in total', chr(128220))}\n\n"
+        if not entries:
+            text += ui.help_hint("No action has been recorded yet.")
+        else:
+            import time as _t
+            for e in entries:
+                when = _t.strftime("%d %b %H:%M", _t.localtime(e.get("ts", 0)))
+                who = e.get("actor_id") or "system"
+                text += (
+                    f"\n{ui.kv(when, e.get('action', '?'), chr(128196))}"
+                    f"\n  👤 <code>{who}</code>"
+                    + (f" 🎯 <code>{e.get('target')}</code>" if e.get("target") else "")
+                    + (f"\n  💬 {e.get('details')}" if e.get("details") else "")
+                )
+        text += f"\n\n{ui.card_close()}"
+
+        buttons = [
+            [utils.styled_button("🗑 Purge Old Entries (90d)", "admin_purge_audit", style="danger")],
+            [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")]
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_purge_audit$"))
+    async def admin_purge_audit_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can purge the audit log.", alert=True)
+            return
+        removed = database.purge_audit_log(90)
+        audit("audit.purge", None, f"removed={removed}", user_id)
+        await event.answer(f"🗑 {removed} old entries removed", alert=True)
+        await admin_audit_log_callback(event)
+
+    # ==================== #10  ADMIN ROLES ====================
+    @client.on(events.CallbackQuery(pattern="^admin_roles$"))
+    async def admin_roles_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can manage roles.", alert=True)
+            return
+
+        global_settings = database.get_global_settings()
+        admins = list(global_settings.get("admins", []) or [])
+        for uid in config.ORIGINAL_ADMIN_IDS or set():
+            if uid not in admins:
+                admins.append(uid)
+        roles = database.get_admin_roles()
+
+        text = f"{ui.card_open('Admin Roles', 'Who may do what', 'Tap an admin to change the role', chr(128104))}\n\n"
+        for uid in admins:
+            try:
+                uid = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if uid in (config.ORIGINAL_ADMIN_IDS or set()):
+                role = ROLE_OWNER
+            else:
+                role = roles.get(str(uid), ROLE_SUPPORT)
+            label = ROLE_LABELS.get(role, role)
+            text += f"\n{ui.kv(f'ID {uid}', label, chr(128100))}"
+        text += (
+            f"\n\n{ui.help_hint('owner = everything · moderator = payments + userbot control · support = read only')}"
+            f"\n{ui.card_close()}"
+        )
+
+        buttons = []
+        for uid in admins:
+            try:
+                uid = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if uid in (config.ORIGINAL_ADMIN_IDS or set()):
+                continue
+            buttons.append([utils.styled_button(f"🏴 {uid}", f"admin_role_set_{uid}", style="primary")])
+        buttons.append([utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")])
+
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_role_set_(\d+)$"))
+    async def admin_role_set_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can manage roles.", alert=True)
+            return
+        target_id = int(event.pattern_match.group(1))
+        if target_id in (config.ORIGINAL_ADMIN_IDS or set()):
+            await event.answer("❌ The root owner can never be downgraded.", alert=True)
+            return
+
+        current = database.get_admin_role(target_id)
+        order = [ROLE_SUPPORT, ROLE_MODERATOR, ROLE_OWNER]
+        try:
+            new_role = order[(order.index(current) + 1) % len(order)]
+        except ValueError:
+            new_role = ROLE_SUPPORT
+
+        database.set_admin_role(target_id, new_role)
+        audit("admin.role_change", str(target_id), f"{current} -> {new_role}", user_id)
+        await event.answer(f"🏴 {target_id} is now {ROLE_LABELS.get(new_role, new_role)}", alert=True)
+        await admin_roles_callback(event)
+
+    # ==================== #11  BACKUP / RESTORE ====================
+    @client.on(events.CallbackQuery(pattern="^admin_backup_now$"))
+    async def admin_backup_now_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can create backups.", alert=True)
+            return
+
+        status = await event.respond("🔄 <b>Building the backup...</b>\n\n<i>Please wait…</i>", parse_mode="html")
+        try:
+            from villain_ads_bot.core import backup as _backup
+            data = _backup.build_backup(include_session_files=True)
+            filename = _backup.backup_filename()
+        except Exception as e:
+            logger.error(f"Backup failed: {e}")
+            utils.report_error("admin_backup_now", e)
+            await status.edit("❌ <b>Backup failed</b>", parse_mode="html")
+            return
+
+        global_settings = database.get_global_settings()
+        log_group_id = global_settings.get("log_group_id")
+        sent = 0
+        if log_group_id:
+            try:
+                await event.client.send_message(
+                    log_group_id,
+                    f"💾 <b>Automatic backup</b>\n<code>{filename}</code>",
+                    file=filename,
+                    attributes=None,
+                )
+                sent += 1
+            except Exception as e:
+                logger.warning(f"Could not send the backup to the log group: {e}")
+
+        try:
+            await event.client.send_file(
+                user_id, filename, caption="💾 <b>Your bot backup</b>\n<i>Keep it safe — it contains every session and setting.</i>"
+            )
+            sent += 1
+        except Exception as e:
+            logger.warning(f"Could not send the backup to the owner: {e}")
+
+        audit("backup.create", filename, f"size={len(data)} bytes, sent={sent}", user_id)
+        await status.edit(
+            f"✅ <b>Backup ready</b>\n\n"
+            f"📄 <code>{filename}</code>\n"
+            f"📦 <b>Size :</b> <code>{len(data) / 1024:.1f} KB</code>\n"
+            f"📤 <b>Delivered to :</b> <code>{sent}</code> place(s)\n\n"
+            f"🔐 <i>The session files are included. The bot session key and the GPT key are never exported.</i>",
+            parse_mode="html"
+        )
+
+    @client.on(events.CallbackQuery(pattern="^admin_restore_backup$"))
+    async def admin_restore_backup_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("❌ Only the owner can restore a backup.", alert=True)
+            return
+
+        _admin_action_states[user_id] = "WAITING_FOR_BACKUP_FILE"
+        prompt = (
+            f"{ui.card('Restore Backup', 'Step 1 of 2', 'Upload the backup zip file', chr(128190))}\n\n"
+            f"{ui.help_hint('Send the villain_backup_*.zip file. You will get a preview before anything is restored.')}"
+        )
+        buttons = [[utils.styled_button("❌ Cancel", "menu_admin", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
     @client.on(events.CallbackQuery(pattern="^admin_music_api$"))
     async def admin_music_api_callback(event):
         user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can change the music API key.", alert=True)
+            return
         if not check_admin(user_id):
             await event.answer("❌ Access denied.", alert=True)
             return
@@ -2534,6 +3052,9 @@ def register_handlers(client):
     @client.on(events.CallbackQuery(pattern="^admin_api_credentials$"))
     async def admin_api_credentials_callback(event):
         user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can manage the API credentials.", alert=True)
+            return
         if not check_admin(user_id):
             await event.answer("❌ Access denied.", alert=True)
             return
@@ -2830,6 +3351,7 @@ async def process_admin_usr_search(event, search_query: str, action: str):
             return
         target_user["is_banned"] = True
         database.save_user(target_user)
+        audit("user.ban", str(target_id), f"by admin {user_id}", user_id)
         await event.reply(f"✅ <b>User Banned successfully!</b>\nUser ID: `{target_id}`\nUsername: @{username}")
         # Re-render menu
         class MockEvent:
@@ -2844,6 +3366,7 @@ async def process_admin_usr_search(event, search_query: str, action: str):
     elif action == "unban":
         target_user["is_banned"] = False
         database.save_user(target_user)
+        audit("user.unban", str(target_id), f"by admin {user_id}", user_id)
         await event.reply(f"✅ <b>User Unbanned successfully!</b>\nUser ID: `{target_id}`\nUsername: @{username}")
         # Re-render menu
         class MockEvent:

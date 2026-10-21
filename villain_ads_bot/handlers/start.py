@@ -86,10 +86,9 @@ async def show_main_menu(event, user_id):
     from villain_ads_bot.core import ui as _ui
     used_pct = int((used / allowed) * 100) if allowed else 0
     text = (
-        f"{_ui.card('Control Panel', 'Premium UserBot Manager', 'Manage every Telegram account from one place', '✦')}\n\n"
+        f"{_ui.card(utils.get_text('premium_main_title', lang), utils.get_text('premium_main_sub', lang), utils.get_text('premium_main_hint', lang), '✦')}\n\n"
         f"{_ui.kv('Slots used', f'{used} / {allowed}', '📦')}\n"
         f"{_ui.kv('Usage', f'{_ui.progress_bar(used, allowed)}  {used_pct}%', '📈')}\n\n"
-        f"{_ui.help_hint('Add an account, open its dashboard and control broadcasts, welcome messages, VC playback and more.')}\n"
         f"{_ui.footer()}"
     )
     
@@ -174,8 +173,9 @@ def register_handlers(client):
                 
             user_id = event.sender_id
             ref_id = None
+            coupon_code = None
             
-            # Parse referral details if present
+            # Parse referral / coupon details if present
             if event.text and len(event.text.split()) > 1:
                 arg = event.text.split()[1]
                 if arg.startswith("ref_"):
@@ -183,6 +183,8 @@ def register_handlers(client):
                         ref_id = int(arg.replace("ref_", ""))
                     except ValueError:
                         pass
+                elif arg.startswith("coupon_"):
+                    coupon_code = arg.replace("coupon_", "").strip().upper()[:32]
                         
             # Get sender details safely with timeout so busy connection never hangs /start
             sender = None
@@ -238,6 +240,73 @@ def register_handlers(client):
             # Security verification checks (bans, maintenance, force subscribe)
             from villain_ads_bot.core import utils
             if await utils.guard(event, client):
+                return
+            
+            # ── Coupon deep link redemption (?start=coupon_CODE) ──
+            if coupon_code:
+                import time as _time
+                coupon = database.get_coupon(coupon_code)
+                if not coupon:
+                    await event.reply(
+                        "<blockquote><b>» 🎟️ Invalid Coupon</b>\n\n"
+                        "⚠️ <i>This coupon code does not exist. Please check the link.</i></blockquote>",
+                        parse_mode="html"
+                    )
+                    return
+                expires = coupon.get("expires_at")
+                if not coupon.get("is_active", True):
+                    await event.reply(
+                        "<blockquote><b>» 🎟️ Coupon Inactive</b>\n\n"
+                        "⚠️ <i>This coupon has been deactivated by the admin.</i></blockquote>",
+                        parse_mode="html"
+                    )
+                    return
+                if expires and expires < _time.time():
+                    coupon["is_active"] = False
+                    database.save_coupon(coupon)
+                    await event.reply(
+                        "<blockquote><b>» 🎟️ Coupon Expired</b>\n\n"
+                        "⚠️ <i>This coupon has expired.</i></blockquote>",
+                        parse_mode="html"
+                    )
+                    return
+                if coupon.get("current_uses", 0) >= coupon.get("max_uses", 1):
+                    await event.reply(
+                        "<blockquote><b>» 🎟️ Coupon Used Up</b>\n\n"
+                        "⚠️ <i>This coupon has reached its usage limit.</i></blockquote>",
+                        parse_mode="html"
+                    )
+                    return
+                per_user = int(coupon.get("max_per_user", 0) or 0)
+                if per_user and database.has_used_coupon(coupon_code, user_id):
+                    await event.reply(
+                        "<blockquote><b>» 🎟️ Already Used</b>\n\n"
+                        "⚠️ <i>You have already redeemed this coupon.</i></blockquote>",
+                        parse_mode="html"
+                    )
+                    return
+
+                amount = float(coupon.get("amount_inr", 0) or 0)
+                user["wallet_balance"] = float(user.get("wallet_balance", 0.0) or 0) + amount
+                database.save_user(user)
+                coupon["current_uses"] = int(coupon.get("current_uses", 0) or 0) + 1
+                if coupon["current_uses"] >= coupon.get("max_uses", 1):
+                    coupon["is_active"] = False
+                database.save_coupon(coupon)
+                database.save_coupon_usage(coupon_code, user_id)
+                try:
+                    database.log_audit(None, "coupon.redeem", coupon_code,
+                                       f"user={user_id} amount={amount}")
+                except Exception:
+                    pass
+                await event.reply(
+                    f"<blockquote><b>» 🎉 Coupon Redeemed!</b>\n\n"
+                    f"🎟️ <b>Code :</b> <code>{coupon_code}</code>\n"
+                    f"💰 <b>Credited :</b> <b>₹{amount:.2f}</b>\n"
+                    f"👛 <b>Wallet balance :</b> <b>₹{float(user.get('wallet_balance', 0.0) or 0):.2f}</b>\n\n"
+                    f"💡 <i>Use the wallet balance in Settings → Buy Slots.</i></blockquote>",
+                    parse_mode="html"
+                )
                 return
                 
             # Check if deep link is for managing a specific userbot e.g. /start bot_918518814006

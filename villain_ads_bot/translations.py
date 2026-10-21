@@ -1381,3 +1381,56 @@ TRANSLATIONS = {
     
     }
 }
+
+
+# ─────────────────────────────────────────────────────────────────
+# Strings that were missing in some languages (fixed by the guard test)
+# ─────────────────────────────────────────────────────────────────
+MISSING_TRANSLATIONS = {
+    'btn_toggle_auto_reply': {
+        'ru': '💬 Авто-ответ по теггу: {state}',
+        'ja': '💬 タグ自動レプライ: {state}',
+        'fr': '💬 Réponse auto aux tags : {state}',
+        'de': '💬 Auto-Antwort auf Tags: {state}',
+        'zh': '💬 标签自动回复：{state}',
+        'ar': '💬 الرد التلقائي على الوسوم: {state}',
+    },
+    'btn_set_auto_reply': {
+        'ru': '⚙️ Настройка авто-ответа',
+        'ja': '⚙️ モードフィード設定',
+        'fr': '⚙️ Définir les messages auto',
+        'de': '⚙️ Auto-Antwortnachricht setzen',
+        'zh': '⚙️ 设置自动回复消息',
+        'ar': '⚙️ ضبط رسال التلقائي',
+    },
+    'prompt_set_auto_reply': {
+        'ru': '<blockquote><b>» 💬 Настройка авто-ответа по теггу</b>\n\nВведите сообщения через запятые (комма, <code>сообщение 1, сообщение 2</code>):\n\n💡 <i>Пример :</i> <code>Привет, Как могу помочь? Смотри профиль!</code></blockquote>',
+        'ja': '<blockquote><b>» 💬 タグ自動レプライのメッセージ設定</b>\n\nメッセージをコマで分かて入力してください (<code>msg1, msg2, msg3</code>):\n\n💡 <i>例 :</i> <code>こんにちは、お手伝えでする? 👤を見てください!</code></blockquote>',
+        'fr': '<blockquote><b>» 💬 Réponses auto aux tags</b>\n\nEntrez les messages séparés par des virgules (<code>msg1, msg2, msg3</code>) :\n\n💡 <i>Exemple :</i> <code>Bonjour, comment puis-je vous aider ?</code></blockquote>',
+        'de': '<blockquote><b>» 💬 Auto-Antwort auf Tags</b>\n\nNachrichten mit Komma trennen (<code>msg1, msg2, msg3</code>):\n\n💡 <i>Beispiel :</i> <code>Hallo, wie kann ich helfen? Schau mein Profil!</code></blockquote>',
+        'zh': '<blockquote><b>» 💬 设置标签自动回复</b>\n\n请用逗号分隔消息 (<code>msg1, msg2, msg3</code>)：\n\n💡 <i>例子：</i> <code>你好，我能帮你什么？</code></blockquote>',
+        'ar': '<blockquote><b>» 💬 الرد التلقائي على الوسوم</b>\n\nأرسل الرسائل مفصولة بفاصل الفاصل (<code>msg1, msg2, msg3</code>):\n\n💡 <i>مثال :</i> <code>مرحبا، كيف أساعدك?</code></blockquote>',
+    },
+    'auto_reply_updated': {
+        'ru': '<blockquote><b>» ✅ Авто-ответ обновлён</b>\n\nСообщения авто-ответа обновлены (<b>{count}</b> сообщений)!</blockquote>',
+        'ja': '<blockquote><b>» ✅ 自動レプライ更新</b>\n\n自動レプライメッセージを更新しました (<b>{count}</b> 件)!</blockquote>',
+        'fr': '<blockquote><b>» ✅ Réponses auto mises à jour</b>\n\nMessages auto-reponse mis à jour (<b>{count}</b> messages) !</blockquote>',
+        'de': '<blockquote><b>» ✅ Auto-Antwort aktualisiert</b>\n\nAuto-Antwort-Nachrichten aktualisiert (<b>{count}</b> Nachrichten)!</blockquote>',
+        'zh': '<blockquote><b>» ✅ 自动回复已更新</b>\n\n自动回复消息已更新（<b>{count}</b> 条）！</blockquote>',
+        'ar': '<blockquote><b>» ✅ تم تحديث الرد التلقائي</b>\n\nتم تحديث رسائل الرد التلقائي (<b>{count}</b> رسائل)!</blockquote>',
+    },
+    'auto_reply_invalid': {
+        'ru': '<blockquote><b>» ❌ Неверные сообщения</b>\n\nОтправьте непустые сообщения, разделённые коммой.</blockquote>',
+        'ja': '<blockquote><b>» ❌ メッセージが無効です</b>\n\n空のないメッセージをコマで分割して送信してください。</blockquote>',
+        'fr': '<blockquote><b>» ❌ Messages invalides</b>\n\nVeuillez envoyer des messages non vides séparés par des virgules.</blockquote>',
+        'de': '<blockquote><b>» ❌ Ungültige Nachrichten</b>\n\nBitte sende nicht-leere, mit Komma getrennte Nachrichten.</blockquote>',
+        'zh': '<blockquote><b>» ❌ 消息无效</b>\n\n请发送非空的逗号分隔消息。</blockquote>',
+        'ar': '<blockquote><b>» ❌ رسائل غير صالحة</b>\n\nيرجى إرسال رسائل غير فارغة مفصولة بفاصل الفاصل.</blockquote>',
+    },
+}
+
+
+# ── Merge the missing strings into every language ─────────────────────
+for _key, _values in MISSING_TRANSLATIONS.items():
+    for _lang, _text in _values.items():
+        TRANSLATIONS.setdefault(_lang, {})[_key] = _text

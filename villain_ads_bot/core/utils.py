@@ -56,6 +56,175 @@ def normalize_brand_suffix(suffix: str) -> str:
     return s
 
 
+# ─── MESSAGE LIST / MODE RESOLUTION ──────────────────────────────────────
+# The "multiple" mode is NEVER a separate switch the user has to remember.
+# It is ALWAYS derived from the data itself, so setting 3 messages can never
+# end up broadcasting the single default message.
+
+def _clean_list(values) -> list:
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    out = []
+    for v in values:
+        if v is None:
+            continue
+        text = str(v).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def get_broadcast_messages(settings: dict) -> list:
+    """
+    Returns the list of broadcast messages that must be used.
+
+    If more than one message is configured the "multiple" mode is used
+    automatically - the mode flag is only a display helper, never the source
+    of truth.
+    """
+    settings = settings or {}
+    multiple = _clean_list(settings.get("broadcast_messages"))
+    single = _clean_list(settings.get("broadcast_msg"))
+    if len(multiple) > 1:
+        return multiple
+    if multiple and not single:
+        return multiple
+    if single:
+        return [single[0]]
+    return multiple[:1]
+
+
+def get_welcome_messages(settings: dict) -> list:
+    """Returns the welcome messages (auto multiple-mode)."""
+    settings = settings or {}
+    multiple = _clean_list(settings.get("welcome_messages"))
+    single = _clean_list(settings.get("welcome_msg"))
+    if len(multiple) > 1:
+        return multiple
+    if multiple and not single:
+        return multiple
+    if single:
+        return [single[0]]
+    return multiple[:1]
+
+
+def get_auto_reply_messages(settings: dict) -> list:
+    """Returns the tag auto-reply messages (auto multiple-mode)."""
+    settings = settings or {}
+    multiple = _clean_list(settings.get("auto_reply_messages")) or _clean_list(settings.get("tag_messages"))
+    single = _clean_list(settings.get("auto_reply_msg"))
+    if len(multiple) > 1:
+        return multiple
+    if multiple and not single:
+        return multiple
+    if single:
+        return [single[0]]
+    return multiple[:1]
+
+
+def resolve_modes(settings: dict) -> dict:
+    """
+    Keeps the *_mode flags in sync with the actual data and returns them.
+
+    The flags are only used for the UI - the runtime always derives the
+    behaviour from the message lists itself.
+    """
+    settings = settings or {}
+    settings["broadcast_mode"] = "multiple" if len(get_broadcast_messages(settings)) > 1 else "single"
+    settings["welcome_mode"] = "multiple" if len(get_welcome_messages(settings)) > 1 else "single"
+    settings["auto_reply_mode"] = "multiple" if len(get_auto_reply_messages(settings)) > 1 else "single"
+    return settings
+
+
+def format_duration(seconds) -> str:
+    """Converts seconds into a human readable duration (e.g. 1h 30m)."""
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return "0s"
+    if total < 60:
+        return f"{total}s"
+    days, rest = divmod(total, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    out = []
+    if days:
+        out.append(f"{days}d")
+    if hours:
+        out.append(f"{hours}h")
+    if minutes:
+        out.append(f"{minutes}m")
+    if secs and not out:
+        out.append(f"{secs}s")
+    return " ".join(out) if out else "0s"
+
+
+def get_broadcast_interval(settings: dict) -> int:
+    """The round repeat interval in seconds (minimum 60)."""
+    settings = settings or {}
+    try:
+        value = int(float(settings.get("broadcast_interval", 300)))
+    except (TypeError, ValueError):
+        value = 300
+    return max(60, value)
+
+
+def get_inter_group_delay(settings: dict) -> float:
+    """The delay between two groups inside one round (minimum 2s)."""
+    settings = settings or {}
+    try:
+        value = float(settings.get("inter_group_delay", 30.0) or 30.0)
+    except (TypeError, ValueError):
+        value = 30.0
+    return max(2.0, value)
+
+
+def estimate_round_duration(group_count: int, settings: dict) -> int:
+    """
+    Estimates how long ONE broadcast round takes.
+
+    This is the number the user never saw before: the real gap between two
+    broadcasts is the round duration PLUS the repeat interval.
+    """
+    delay = get_inter_group_delay(settings)
+    typing_time = 2.5
+    return int(max(0, group_count) * (delay + typing_time))
+
+
+def get_broadcast_timing(settings: dict, group_count: int = 0) -> dict:
+    """
+    Returns the complete, CORRECT broadcast timing information.
+
+        {
+            "group_delay": 30.0,          # seconds between two groups
+            "repeat_interval": 300,       # seconds to wait after a full round
+            "round_duration": 247,        # estimated seconds for one round
+            "real_period": 547,           # round_duration + repeat_interval
+            "group_delay_text": "30s",
+            "repeat_text": "5m",
+            "round_text": "4m 7s",
+            "real_period_text": "9m 7s",
+        }
+    """
+    settings = settings or {}
+    group_delay = get_inter_group_delay(settings)
+    repeat = get_broadcast_interval(settings)
+    round_duration = estimate_round_duration(group_count, settings)
+    real_period = round_duration + repeat
+    return {
+        "group_delay": group_delay,
+        "repeat_interval": repeat,
+        "round_duration": round_duration,
+        "real_period": real_period,
+        "group_delay_text": format_duration(group_delay),
+        "repeat_text": format_duration(repeat),
+        "round_text": format_duration(round_duration),
+        "real_period_text": format_duration(real_period),
+    }
+
+
 # ─── PYTGCALLS VERSION COMPATIBILITY ─────────────────────────────────────
 # PyTgCalls 2.x renamed the stream control helpers:
 #   mute_stream   -> mute
@@ -203,8 +372,17 @@ def get_text(key: str, lang: Optional[str] = "en", **kwargs) -> str:
     lang = lang or "en"
     if lang not in TRANSLATIONS:
         lang = "en"
-        
-    text = TRANSLATIONS[lang].get(key) or TRANSLATIONS["en"].get(key)
+
+    # The premium interface has its own catalogue.
+    text = None
+    try:
+        from villain_ads_bot.premium_translations import get_premium_text
+        text = get_premium_text(key, lang)
+    except Exception:
+        text = None
+
+    if text is None:
+        text = TRANSLATIONS[lang].get(key) or TRANSLATIONS["en"].get(key)
     if text is None:
         return f"[{key}]"
         

@@ -231,7 +231,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
     if flash_message:
         text += f"{flash_message}\n\n"
     text += (
-        f"{ui.card_open('Connected Userbots', 'Your active Telegram accounts')}\n"
+        f"{ui.card_open(utils.get_text('premium_bots_title', lang), utils.get_text('premium_bots_sub', lang))}\n"
     )
     buttons = [
         [
@@ -264,7 +264,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
             )
         ])
     text += (
-        f"\n\n{ui.help_hint('Select an account below to open its control panel, or tap All Slots for the bulk dashboard.')}"
+        f"\n\n{ui.help_hint(utils.get_text('premium_bots_hint', lang))}"
         f"\n{ui.card_close()}"
     )
     
@@ -544,7 +544,7 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
     desc_text = "Control every connected userbot across the entire system simultaneously." if is_sys_all else "Control all of your userbots simultaneously from this panel."
 
     text += (
-        f"{ui.card_open(header_title, desc_text)}\n\n"
+        f"{ui.card_open(utils.get_text('premium_slots_title', lang), utils.get_text('premium_slots_sub', lang))}\n\n"
         f"{ui.kv('Total linked bots', str(total_slots), '📊')}\n"
         f"{ui.kv('Active', f'🟢 {running_bots}', '⚡')}\n"
         f"{ui.kv('Stopped', f'🔴 {stopped_bots}', '⏹️')}\n\n"
@@ -825,11 +825,11 @@ def register_handlers(client):
             "• Leave Group — leave a group / channel"
         )
         text = (
-            f"{ui.card('VC + Group Control', 'Voice chat & group management', 'Every action of your userbot in one place', '🎙️')}\n\n"
+            f"{ui.card(utils.get_text('vc_menu_title', lang), 'Voice chat & group management', 'Every action of your userbot in one place', '🎙️')}\n\n"
             f"{ui.kv('VC status', vc_status, '📌')}\n\n"
-            f"{ui.section('🎙️ VC Join', sec_vc_join)}\n\n"
-            f"{ui.section('🎵 VC Playing', sec_vc_playing)}\n\n"
-            f"{ui.section('👥 Group Joining & Leaving', sec_group)}"
+            f"{ui.section('🎙️ ' + utils.get_text('vc_section_join', lang), sec_vc_join)}\n\n"
+            f"{ui.section('🎵 ' + utils.get_text('vc_section_playing', lang), sec_vc_playing)}\n\n"
+            f"{ui.section('👥 ' + utils.get_text('vc_section_group', lang), sec_group)}"
             f"\n{ui.footer()}</blockquote>"
         )
         
@@ -2608,13 +2608,23 @@ def register_handlers(client):
         welcome_status = "🟢 On" if settings.get("auto_welcome") else "🔴 Off"
         add_contact_status = "🟢 On" if settings.get("auto_add_contact") else "🔴 Off"
         reply_status = "🟢 On" if settings.get("auto_reply") else "🔴 Off"
-        interval = settings.get("broadcast_interval", 300)
-        delay = settings.get("inter_group_delay", 30)
+        # Resolve everything from the data so the panel can never lie.
+        utils.resolve_modes(settings)
         spam_mode = settings.get("broadcast_mode", "single")
         welcome_mode = settings.get("welcome_mode", "single")
-        spam_msg = settings.get("broadcast_msg", "None")
-        welcome_msg = settings.get("welcome_msg", "None")
-        welcome_msgs = ", ".join(settings.get("welcome_messages", [])) or "None"
+        reply_mode = settings.get("auto_reply_mode", "single")
+        try:
+            group_count = len(sess.get("stats", {}).get("group_count", 0) or 0)
+        except Exception:
+            group_count = 0
+        timing = utils.get_broadcast_timing(settings, group_count)
+        spam_list = utils.get_broadcast_messages(settings)
+        welcome_list = utils.get_welcome_messages(settings)
+        reply_list = utils.get_auto_reply_messages(settings)
+        spam_msg = spam_list[0] if spam_list else "None"
+        welcome_msg = welcome_list[0] if welcome_list else "None"
+        welcome_msgs = ", ".join(welcome_list) or "None"
+        spam_msgs = ", ".join(spam_list) or "None"
         run_expiry = sess.get("run_expiry")
         if run_expiry:
             import time as _t
@@ -2631,19 +2641,21 @@ def register_handlers(client):
             f"• <b>🔗 Username :</b> @{sess.get('username', 'None')}\n\n"
             f"<b>📢 Auto Broadcast Settings :</b>\n"
             f"• <b>Status :</b> {spam_status}\n"
-            f"• <b>Mode :</b> <b>{'📚 Multiple' if spam_mode == 'multiple' else '✉️ Single'}</b>\n"
-            f"• <b>Interval :</b> <b>{interval}s</b> | <b>Delay :</b> <b>{delay}s</b>\n"
-            f"• <b>Broadcast Msg :</b>\n"
-            f"  <code>{spam_msg}</code>\n\n"
+            f"• <b>Mode :</b> <b>{'📚 Multiple (' + str(len(spam_list)) + ' msgs)' if spam_mode == 'multiple' else '✉️ Single'}</b>\n"
+            f"• <b>Group delay :</b> <b>{timing['group_delay_text']}</b>\n"
+            f"• <b>Round duration :</b> <b>{timing['round_text']}</b>\n"
+            f"• <b>Repeat interval :</b> <b>{timing['repeat_text']}</b>\n"
+            f"• <b>⭐ Real period :</b> <b>{timing['real_period_text']}</b>\n"
+            f"• <b>Broadcast Msg ({len(spam_list)}) :</b>\n"
+            f"  <code>{spam_msgs}</code>\n\n"
             f"<b>👋 Auto-Welcome Settings :</b>\n"
             f"• <b>Status :</b> {welcome_status}\n"
-            f"• <b>Mode :</b> <b>{'📚 Multiple' if welcome_mode == 'multiple' else '👋 Single'}</b>\n"
-            f"• <b>Welcome Msg :</b>\n"
-            f"  <code>{welcome_msg}</code>\n"
-            f"• <b>Multiple Welcome Msgs :</b>\n"
+            f"• <b>Mode :</b> <b>{'📚 Multiple (' + str(len(welcome_list)) + ' msgs)' if welcome_mode == 'multiple' else '👋 Single'}</b>\n"
+            f"• <b>Welcome Msg ({len(welcome_list)}) :</b>\n"
             f"  <code>{welcome_msgs}</code>\n\n"
             f"<b>💬 Tag Auto-Reply Settings :</b>\n"
-            f"• <b>Status :</b> {reply_status}\n\n"
+            f"• <b>Status :</b> {reply_status}\n"
+            f"• <b>Mode :</b> <b>{'📚 Multiple (' + str(len(reply_list)) + ' msgs)' if reply_mode == 'multiple' else '💬 Single'}</b>\n\n"
             f"<b>👥 Auto-Contact Settings :</b>\n"
             f"• <b>Status :</b> {add_contact_status}\n\n"
             f"<b>⏱️ Run Timer :</b> {run_timer_txt}</blockquote>"
@@ -3009,16 +3021,27 @@ def register_handlers(client):
         current_interval = settings.get("broadcast_interval", 300)
         name = sess.get("name") or "UserBot" if sess else "UserBot"
         
+        # How many groups will this userbot reach? (for the real timing)
+        bot_obj = userbot_manager.find_running_bot(phone)
+        try:
+            bot_groups = len(await bot_obj.get_groups(force_refresh=False)) if bot_obj else 0
+        except Exception:
+            bot_groups = 0
+        timing = utils.get_broadcast_timing(settings, bot_groups)
+        
         text = (
-            f"<blockquote><b>» ⏱️ Userbot Timing & Delay Settings</b>\n\n"
-            f"👤 <b>Userbot :</b> <b>{name}</b>\n\n"
-            f"• <b>Current Group Delay :</b> <code>{current_delay}s</code>\n"
-            f"• <b>Current Loop Interval :</b> <code>{current_interval}s</code>\n\n"
-            f"⚡ <b>Best Timing :</b> <i>45s Group Delay + 300s Loop Interval (Anti-Flood Protection).</i></blockquote>"
+            f"{ui.card(utils.get_text('timing_title', lang), f'Account : {name}', 'How often your broadcast really runs', '⏱️')}\n\n"
+            f"{ui.kv(utils.get_text('timing_group_delay', lang), timing['group_delay_text'], '⏱️')}\n"
+            f"{ui.kv(utils.get_text('timing_round_duration', lang), timing['round_text'], '🔁')}\n"
+            f"{ui.kv(utils.get_text('timing_repeat_interval', lang), timing['repeat_text'], '⏸️')}\n"
+            f"{ui.kv(utils.get_text('timing_real_period', lang), timing['real_period_text'], '⭐')}\n"
+            f"{ui.kv('Groups reached', str(bot_groups), '👥')}\n\n"
+            f"{ui.help_hint('The real period = one full round (all groups) + the repeat interval. The old panel only showed the repeat interval, which is why the timing looked wrong.')}"
+            f"\n{ui.footer()}</blockquote>"
         )
         buttons = [
             [
-                utils.styled_button("⚡ Best Timing (45s Delay | 300s Loop)", f"apply_best_timing_{phone}", style="success")
+                utils.styled_button("⚡ Best Timing (45s Delay | 5m Repeat)", f"apply_best_timing_{phone}", style="success")
             ],
             [
                 utils.styled_button("⏱️ Custom Group Delay", f"set_inter_delay_{phone}", style="primary"),
@@ -3045,7 +3068,12 @@ def register_handlers(client):
             settings["broadcast_interval"] = 300
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
-            flash = "<blockquote><b>» ⚡ Best Timing Applied! (45s Group Delay + 300s Loop)</b></blockquote>"
+            flash = (
+                "<blockquote><b>» ⚡ Best Timing Applied!</b>\n\n"
+                "• <b>Group delay :</b> <b>45s</b>\n"
+                "• <b>Repeat interval :</b> <b>5m</b>\n"
+                "• <i>The real period also includes the time one full round needs.</i></blockquote>"
+            )
         else:
             flash = "<blockquote><b>» ❌ Session Not Found.</b></blockquote>"
             
@@ -3356,6 +3384,7 @@ def register_handlers(client):
             sessions = get_effective_sessions(user_id)
             for s in sessions:
                 s.setdefault("settings", {})["broadcast_msg"] = broadcast_msg
+                utils.resolve_modes(s.setdefault("settings", {}))
                 # Setting a broadcast message also ENABLES the auto broadcast,
                 # otherwise the message would never be sent.
                 s["settings"]["auto_spam"] = True
@@ -3374,6 +3403,7 @@ def register_handlers(client):
             sessions = get_effective_sessions(user_id)
             for s in sessions:
                 s.setdefault("settings", {})["welcome_msg"] = welcome_msg
+                utils.resolve_modes(s.setdefault("settings", {}))
                 # Setting a welcome message also ENABLES the auto welcome.
                 s["settings"]["auto_welcome"] = True
             for s in sessions:
@@ -3392,6 +3422,8 @@ def register_handlers(client):
             sessions = get_effective_sessions(user_id)
             for s in sessions:
                 s.setdefault("settings", {})["welcome_messages"] = msgs
+                # The mode follows the data - no manual switch needed.
+                utils.resolve_modes(s.setdefault("settings", {}))
                 # Switch the runtime into "multiple" mode, otherwise the
                 # single (default) welcome message would still be used.
                 s["settings"]["welcome_mode"] = "multiple"
@@ -3535,6 +3567,8 @@ def register_handlers(client):
                 sessions = get_effective_sessions(user_id)
                 for s in sessions:
                     s.setdefault("settings", {})["broadcast_messages"] = msgs
+                    # The mode follows the data - no manual switch needed.
+                    utils.resolve_modes(s.setdefault("settings", {}))
                     # Switch the runtime into "multiple" mode, otherwise the
                     # single (default) broadcast message would still be used.
                     s["settings"]["broadcast_mode"] = "multiple"
@@ -3581,6 +3615,8 @@ def register_handlers(client):
                 sessions = get_effective_sessions(user_id)
                 for s in sessions:
                     s.setdefault("settings", {})["auto_reply_messages"] = msgs
+                    # The mode follows the data - no manual switch needed.
+                    utils.resolve_modes(s.setdefault("settings", {}))
                     s["settings"]["auto_reply"] = True
                     s["settings"]["auto_reply_mode"] = "multiple"
                     database.save_session(s)
@@ -3872,6 +3908,7 @@ def register_handlers(client):
         # 1. Broadcast Message
         if action == "WAITING_FOR_BROADCAST":
             sess["settings"]["broadcast_msg"] = event.text
+            utils.resolve_modes(sess["settings"])
             # Setting a broadcast message also enables the auto broadcast.
             sess["settings"]["auto_spam"] = True
             database.save_session(sess)
@@ -3906,6 +3943,7 @@ def register_handlers(client):
         # 2. Welcome Message
         elif action == "WAITING_FOR_WELCOME":
             sess["settings"]["welcome_msg"] = event.text
+            utils.resolve_modes(sess["settings"])
             # Setting a welcome message also enables the auto welcome.
             sess["settings"]["auto_welcome"] = True
             database.save_session(sess)
@@ -3919,6 +3957,8 @@ def register_handlers(client):
                 await event.reply("<blockquote><b>» ❌ Input Cannot Be Empty.</b></blockquote>", parse_mode="html")
                 return
             sess["settings"]["welcome_messages"] = msgs
+            # The mode follows the data - no manual switch needed.
+            utils.resolve_modes(sess["settings"])
             # Switch the runtime into "multiple" mode.
             sess["settings"]["welcome_mode"] = "multiple"
             sess["settings"]["auto_welcome"] = True
@@ -4137,6 +4177,8 @@ def register_handlers(client):
             msgs = [m.strip() for m in raw_text.split(",") if m.strip()]
             if msgs:
                 sess.setdefault("settings", {})["broadcast_messages"] = msgs
+                # The mode follows the data - no manual switch needed.
+                utils.resolve_modes(sess.setdefault("settings", {}))
                 # Switch the runtime into "multiple" mode.
                 sess["settings"]["broadcast_mode"] = "multiple"
                 sess["settings"]["auto_spam"] = True
@@ -4174,6 +4216,8 @@ def register_handlers(client):
             msgs = [m.strip() for m in raw_msgs if m.strip()]
             if msgs:
                 sess.setdefault("settings", {})["auto_reply_messages"] = msgs
+                # The mode follows the data - no manual switch needed.
+                utils.resolve_modes(sess.setdefault("settings", {}))
                 sess["settings"]["auto_reply"] = True  # Auto-enable when messages are set
                 sess["settings"]["auto_reply_mode"] = "multiple"
                 database.save_session(sess)

@@ -32,7 +32,7 @@ async def show_settings_menu(event, user_id: int):
     lang_display = LANG_NAMES.get(lang, lang.upper())
     
     text = (
-        f"{ui.card('User Settings', 'Account, wallet and language', 'Everything about your account in one place', '⚙️')}\n\n"
+        f"{ui.card(utils.get_text('premium_settings_title', lang), utils.get_text('premium_settings_sub', lang), 'Everything about your account in one place', '⚙️')}\n\n"
         f"{ui.kv('Wallet balance', f'₹{wallet_bal:.2f}', '👛')}\n"
         f"{ui.kv('Language', lang_display, '🌐')}\n\n"
         f"{ui.help_hint('Pick an action below to manage your account.')}\n"

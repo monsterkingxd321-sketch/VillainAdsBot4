@@ -112,6 +112,13 @@ def register_handlers(client):
         import time
         
         if decision == "approve":
+            try:
+                from villain_ads_bot.data import database as _db
+                _db.log_audit(admin_id, "payment.approve", payment_id,
+                              f"user={user_id} qty={qty} amount={payment_req.get('amount')} "
+                              f"method={payment_req.get('method')} utr={payment_req.get('utr_code')}")
+            except Exception:
+                pass
             payment_req["status"] = "approved"
             payment_req["processed_by"] = admin_username
             payment_req["processed_at"] = time.time()
@@ -163,6 +170,13 @@ def register_handlers(client):
                 logger.warning(f"Failed to notify user {user_id} of payment approval: {e}")
                 
         elif decision == "reject":
+            try:
+                from villain_ads_bot.data import database as _db
+                _db.log_audit(admin_id, "payment.reject", payment_id,
+                              f"user={user_id} qty={qty} amount={payment_req.get('amount')} "
+                              f"utr={payment_req.get('utr_code')}")
+            except Exception:
+                pass
             payment_req["status"] = "rejected"
             payment_req["processed_by"] = admin_username
             payment_req["processed_at"] = time.time()

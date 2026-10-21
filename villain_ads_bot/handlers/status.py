@@ -23,7 +23,7 @@ async def render_status_dashboard(event, user_id: int):
     
     # Text formatting using blockquotes and bold
     text = (
-        f"{ui.card('System Status', 'Live overview of your automation', 'Everything your userbots did so far', '📊')}\n\n"
+        f"{ui.card(utils.get_text('premium_status_title', lang), utils.get_text('premium_status_sub', lang), 'Everything your userbots did so far', '📊')}\n\n"
         f"{ui.kv('Connected bots', str(total_sessions), '📱')}\n"
         f"{ui.kv('Managed groups', str(total_groups), '👥')}\n"
         f"{ui.kv('Contacts / users', str(total_users), '👤')}\n"

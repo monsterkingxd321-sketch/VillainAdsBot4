@@ -258,6 +258,128 @@ def get_payment_request_by_reference(reference: str) -> Optional[Dict[str, Any]]
     except Exception:
         return None
 
+# ==================== Audit Log CRUD ====================
+def log_audit(actor_id, action: str, target=None, details: str = "", meta: Dict[str, Any] = None):
+    """
+    Records an action performed by an admin.
+
+    `actor_id` may be None for system actions.
+    """
+    try:
+        doc = {
+            "ts": time.time(),
+            "actor_id": int(actor_id) if actor_id else None,
+            "actor_name": None,
+            "action": str(action),
+            "target": str(target) if target is not None else None,
+            "details": str(details or "")[:1000],
+            "meta": meta or {},
+        }
+        _db_executor.submit(lambda: _db.audit_log.insert_one(doc))
+        return doc
+    except Exception as e:
+        logger.warning(f"Could not write the audit log: {e}")
+        return None
+
+
+def get_audit_log(limit: int = 100, action: str = None, actor_id: int = None,
+                  target: str = None) -> List[Dict[str, Any]]:
+    """Returns the newest audit entries first."""
+    try:
+        query = {}
+        if action:
+            query["action"] = action
+        if actor_id:
+            query["actor_id"] = int(actor_id)
+        if target:
+            query["target"] = str(target)
+        return list(_db.audit_log.find(query).sort("ts", -1).limit(int(limit)))
+    except Exception as e:
+        logger.warning(f"Could not read the audit log: {e}")
+        return []
+
+
+def count_audit_log() -> int:
+    try:
+        return _db.audit_log.count_documents({})
+    except Exception:
+        return 0
+
+
+def purge_audit_log(days: int = 90) -> int:
+    """Deletes audit entries older than `days` days. Returns the amount removed."""
+    try:
+        cutoff = time.time() - (int(days) * 86400)
+        res = _db.audit_log.delete_many({"ts": {"$lt": cutoff}})
+        return getattr(res, "deleted_count", 0)
+    except Exception as e:
+        logger.warning(f"Could not purge the audit log: {e}")
+        return 0
+
+
+# ==================== Admin Roles ====================
+ROLE_OWNER = "owner"
+ROLE_MODERATOR = "moderator"
+ROLE_SUPPORT = "support"
+ROLE_LEVELS = {ROLE_OWNER: 3, ROLE_MODERATOR: 2, ROLE_SUPPORT: 1}
+ROLE_LABELS = {ROLE_OWNER: "👑 Owner", ROLE_MODERATOR: "🧙 Moderator", ROLE_SUPPORT: "💎 Support"}
+
+
+def get_admin_roles() -> Dict[str, str]:
+    """Returns {str(user_id): role} for every admin that has an explicit role."""
+    try:
+        settings = get_global_settings() or {}
+        roles = settings.get("admin_roles", {}) or {}
+        return {str(k): str(v) for k, v in roles.items() if v in ROLE_LEVELS}
+    except Exception:
+        return {}
+
+
+def get_admin_role(user_id: int) -> str:
+    """
+    Returns the role of an admin.
+
+    The root owners (ORIGINAL_ADMIN_IDS) are ALWAYS owners so nobody can
+    lock themselves out.
+    """
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return ROLE_SUPPORT
+    if uid in (config.ORIGINAL_ADMIN_IDS or set()):
+        return ROLE_OWNER
+    return get_admin_roles().get(str(uid), ROLE_SUPPORT)
+
+
+def set_admin_role(user_id: int, role: str) -> bool:
+    """Sets the role of an admin. Returns True on success."""
+    if role not in ROLE_LEVELS:
+        return False
+    try:
+        settings = get_global_settings() or {}
+        roles = dict(settings.get("admin_roles", {}) or {})
+        roles[str(int(user_id))] = role
+        settings["admin_roles"] = roles
+        save_global_settings(settings)
+        log_audit(None, "admin.role_set", str(user_id), f"role={role}")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not set the admin role: {e}")
+        return False
+
+
+def remove_admin_role(user_id: int) -> bool:
+    try:
+        settings = get_global_settings() or {}
+        roles = dict(settings.get("admin_roles", {}) or {})
+        roles.pop(str(int(user_id)), None)
+        settings["admin_roles"] = roles
+        save_global_settings(settings)
+        return True
+    except Exception:
+        return False
+
+
 # ==================== Settings CRUD Operations ====================
 def get_global_settings() -> Dict[str, Any]:
     global _cached_global_settings, _cached_settings_time

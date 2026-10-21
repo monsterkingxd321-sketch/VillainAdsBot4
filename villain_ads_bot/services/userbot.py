@@ -3041,34 +3041,19 @@ class UserBot:
 
                     # 3-second per-chat cooldown to prevent spambot limits while remaining responsive
                     if now - last_reply_time >= 3.0:
-                        ar_mode = current_settings.get("auto_reply_mode", "single")
-
                         DEFAULT_REPLIES = [
                             "Hello! How can I help you? 😊",
                             "Hey there! Thanks for reaching out. Please leave a message! 💬",
-                            "Hello! I am currently away, will get back to you soon. ✨"
+                            "Hello, I am currently away, will get back to you soon. ✨"
                         ]
 
-                        if ar_mode == "multiple":
-                            # Multiple / Rotational mode: rotate among the configured messages
-                            candidates = current_settings.get("auto_reply_messages", [])
-                            if not candidates:
-                                candidates = current_settings.get("tag_messages", [])
-                            if not candidates and current_settings.get("auto_reply_msg"):
-                                candidates = [current_settings.get("auto_reply_msg")]
-                            candidates = [m for m in candidates if m and str(m).strip()]
-                            if not candidates:
-                                candidates = DEFAULT_REPLIES
-                            msgs_to_send = [random.choice(candidates)]
-                        else:
-                            # Single mode: always send the single reply message
-                            single_msg = current_settings.get("auto_reply_msg")
-                            if not single_msg:
-                                multi = current_settings.get("auto_reply_messages", []) or current_settings.get("tag_messages", [])
-                                multi = [m for m in multi if m and str(m).strip()]
-                                single_msg = multi[0] if multi else DEFAULT_REPLIES[0]
-                            msgs_to_send = [single_msg]
-
+                        # The message list decides the mode - the user never
+                        # has to remember to switch "multiple" on.
+                        candidates = utils.get_auto_reply_messages(current_settings)
+                        if not candidates:
+                            candidates = DEFAULT_REPLIES
+                        ar_mode = "multiple" if len(candidates) > 1 else "single"
+                        msgs_to_send = [random.choice(candidates)]
                         for selected_reply in msgs_to_send:
                             processed_reply = utils.parse_spintax(selected_reply)
                             processed_reply = utils.normalize_text(processed_reply)
@@ -3099,24 +3084,8 @@ class UserBot:
                         if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
                             welcomed_users = sess_data.get("stats", {}).get("welcomed_users", []) if sess_data else []
                             if sender.id not in welcomed_users:
-                                w_mode = current_settings.get("welcome_mode", "single")
-                                messages_to_send = []
-                                
-                                if w_mode == "multiple":
-                                    welcome_messages = current_settings.get("welcome_messages", [])
-                                    if not welcome_messages and current_settings.get("welcome_msg"):
-                                        welcome_messages = [current_settings.get("welcome_msg")]
-                                    welcome_messages = [m for m in welcome_messages if m and str(m).strip()]
-                                    if welcome_messages:
-                                        messages_to_send = welcome_messages
-                                else:
-                                    single_msg = current_settings.get("welcome_msg")
-                                    if not single_msg:
-                                        multi = current_settings.get("welcome_messages", [])
-                                        single_msg = multi[0] if multi else None
-                                    if single_msg:
-                                        messages_to_send = [single_msg]
-                                    
+                                # The message list decides the mode.
+                                messages_to_send = utils.get_welcome_messages(current_settings)
                                 if messages_to_send:
                                     for welcome_msg in messages_to_send:
                                         processed_welcome = utils.parse_spintax(welcome_msg)
@@ -3161,17 +3130,11 @@ class UserBot:
                     delay = 30.0
                 delay = max(2.0, delay)
 
-            mode = self.settings.get("broadcast_mode", "single")
-            if mode == "multiple":
-                messages = self.settings.get("broadcast_messages", []) or []
-                if not messages:
-                    messages = [self.settings.get("broadcast_msg")]
-            else:
-                messages = [self.settings.get("broadcast_msg")]
-            messages = [m for m in messages if m]
+            # The message list decides the mode - the user never has to
+            # remember to switch "multiple" on.
+            messages = utils.get_broadcast_messages(self.settings)
             if not messages:
                 return stats
-
             force_refresh = (_time.time() - self.groups_cache_time > 60) or not self.groups_cache
             groups = await self.get_groups(force_refresh=force_refresh)
             stats["total"] = len(groups)

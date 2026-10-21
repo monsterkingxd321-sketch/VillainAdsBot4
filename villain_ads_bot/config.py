@@ -153,6 +153,7 @@ DEFAULT_GLOBAL_SETTINGS = {
     "ping_image": os.getenv("PING_IMAGE", "https://files.catbox.moe/7qgokb.jpg"),               # File ID of the ping image
     "help_image": os.getenv("HELP_IMAGE", "https://files.catbox.moe/xxpn14.jpg"),               # File ID of the help image
     "admins": list(ORIGINAL_ADMIN_IDS), # List of admins
+    "admin_roles": {},                # { "<user_id>": "owner" | "moderator" | "support" }
     "gpt_api_key": os.getenv("GPT_API_KEY", None),               # Global OpenAI API Key for GPT mode (optional)
     "maintenance_mode": os.getenv("MAINTENANCE_MODE", "False").lower() == "true",         # Maintenance guard
     "upi_id": os.getenv("UPI_ID", "raunitkumar01@fam"),          # Admin UPI ID for payments

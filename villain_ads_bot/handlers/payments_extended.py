@@ -57,19 +57,19 @@ def _validate_utr(utr: str) -> tuple:
     return True, utr
 
 
-def _payment_summary(pay_record: dict, qty: int) -> str:
+def _payment_summary(pay_record: dict, qty: int, lang: str = "en") -> str:
     """Multi currency summary of a payment (used for the user + the admin)."""
     amount = float(pay_record.get("amount", 0) or 0)
     usdt = float(pay_record.get("amount_usdt", 0) or 0)
     ton = float(pay_record.get("amount_ton", 0) or 0)
     lines = [
         ui.kv("Quantity", f"{qty} slot(s)", "📦"),
-        ui.kv("Total (INR)", f"₹{amount:.2f}", "💴"),
+        ui.kv(utils.get_text("payment_total_inr", lang), f"₹{amount:.2f}", "💴"),
     ]
     if usdt:
-        lines.append(ui.kv("Total (USDT)", f"{usdt:.2f} USDT", "🪙"))
+        lines.append(ui.kv(utils.get_text("payment_total_usdt", lang), f"{usdt:.2f} USDT", "🪙"))
     if ton:
-        lines.append(ui.kv("Total (TON)", f"{ton:.4f} TON", "💎"))
+        lines.append(ui.kv(utils.get_text("payment_total_ton", lang), f"{ton:.4f} TON", "💎"))
     return "\n".join(lines)
 
 
@@ -357,9 +357,9 @@ def register_handlers(client):
         wallet_bal = float(user.get("wallet_balance", 0.0) or 0)
         
         text = (
-            f"{ui.card('Select Payment Method', '', 'Review the amount and choose how you want to pay', '💳')}\n\n"
-            f"{_payment_summary(pay_record, qty)}\n"
-            f"{ui.kv('Wallet balance', f'₹{wallet_bal:.2f}', '👛')}\n\n"
+            f"{ui.card(utils.get_text('payment_method_title', lang), '', utils.get_text('payment_method_sub', lang), '💳')}\n\n"
+            f"{_payment_summary(pay_record, qty, lang)}\n"
+            f"{ui.kv(utils.get_text('payment_wallet', lang), f'₹{wallet_bal:.2f}', '👛')}\n\n"
             f"{ui.help_hint('UPI · USDT · TON are all accepted — the crypto amounts are exact, not approximate.')}"
         )
         
@@ -547,7 +547,7 @@ def register_handlers(client):
                            f"💳 <i>Worth : ₹{cost_inr:.2f}</i>")
             
         text = (
-            f"{ui.card('Make Payment', f'Method : <b>{method.upper()}</b>', 'Pay the exact amount and send the screenshot', '💳')}\n\n"
+            f"{ui.card('Make Payment', f'Method : <b>{method.upper()}</b>', utils.get_text('payment_screenshot_hint', lang), '💳')}\n\n"
             f"{amount_text}\n"
             f"{address_text}\n\n"
             f"{ui.kv('Reference', str(reference), '🏷')}\n"
