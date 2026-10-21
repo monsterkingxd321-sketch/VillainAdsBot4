@@ -183,6 +183,17 @@ def _token_bot_id(token: str):
     return None
 
 
+def _is_duplicate_session_error(exc) -> bool:
+    """True when the session was used from two IPs and is dead for good."""
+    if exc is None:
+        return False
+    name = type(exc).__name__
+    if "AuthKeyDuplicated" in name:
+        return True
+    text = str(exc).lower()
+    return "used under two different ip addresses" in text
+
+
 def _drop_bot_session():
     """Removes the stored bot session (file + MongoDB copy)."""
     import os
@@ -296,6 +307,17 @@ async def main():
                     bot = client
                     break
         except Exception as conn_err:
+            if _is_duplicate_session_error(conn_err):
+                # The session is dead - drop it and authorize with the token.
+                print(" [!] The session was used from two IPs and can not be used "
+                      "again. It will be replaced by a fresh authorization.", flush=True)
+                _drop_bot_session()
+                mongo_session_str = None
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                break
             print(f" [!] {desc} timed out ({type(conn_err).__name__}). Switching...", flush=True)
             try:
                 await client.disconnect()
@@ -314,8 +336,28 @@ async def main():
             timeout=10,
             auto_reconnect=True
         )
-        await bot.connect()
-        me = await bot.get_me()
+        try:
+            await bot.connect()
+            me = await bot.get_me()
+        except Exception as fallback_err:
+            if _is_duplicate_session_error(fallback_err):
+                print(" [!] The stored session is dead - authorizing again with the "
+                      "token.", flush=True)
+                _drop_bot_session()
+                bot = TelegramClient(
+                    "bot_session",
+                    config.API_ID,
+                    config.API_HASH,
+                    connection=ConnectionTcpObfuscated,
+                    connection_retries=5,
+                    retry_delay=2,
+                    timeout=10,
+                    auto_reconnect=True,
+                )
+                await bot.connect()
+                me = await bot.get_me()
+            else:
+                raise
 
     # 1.5 The session must belong to THIS bot. A swapped token invalidates
     #     the old session - drop it and authorize again.

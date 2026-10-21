@@ -145,6 +145,7 @@ DEFAULT_GLOBAL_SETTINGS = {
     "branding_name_text": os.getenv("BRANDING_NAME_TEXT", None),       # Custom name branding suffix text
     "branding_bio_text": os.getenv("BRANDING_BIO_TEXT", None),        # Custom bio branding suffix text
     "branding_lock": True,                                          # Users can never remove the branding
+    "anti_spam_protection": True,                                  # Warn the owner about a young account (never blocks)
     "api_credentials": [],                                         # API_ID / API_HASH pairs added from the admin panel
     "music_api_key": os.getenv("MEOW_API_KEY", None),               # Yuki / Meow music API key (admin managed)
     "music_api_url": os.getenv("MEOW_API_URL", "https://music.yukiapi.site"),  # Yuki / Meow music API base URL

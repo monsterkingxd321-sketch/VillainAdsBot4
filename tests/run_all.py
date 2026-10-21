@@ -34,6 +34,7 @@ SUITES = [
     "test_mtproxy.py",
     "test_antiban.py",
     "test_antispam.py",
+    "test_antispam_guard.py",
 ]
 
 

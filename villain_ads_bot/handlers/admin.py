@@ -182,6 +182,9 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button("📡 Proxy Source Channel", "admin_proxy_channel", style="success")
         ],
         [
+            utils.styled_button("🛡️ Toggle Anti-Spam Protection", "admin_toggle_antispam", style="primary")
+        ],
+        [
             utils.styled_button("💾 Backup Now", "admin_backup_now", style="success"),
             utils.styled_button("🔄 Restore Backup", "admin_restore_backup", style="primary")
         ],
@@ -2741,6 +2744,27 @@ def register_handlers(client):
         await show_branding_settings(event, user_id)
 
     # ==================== PROXY CHANNEL READER ====================
+    @client.on(events.CallbackQuery(pattern="^admin_toggle_antispam$"))
+    async def admin_toggle_antispam_callback(event):
+        """
+        Switches the anti spam advice on or off.
+
+        It NEVER blocks a broadcast - it only tells the owner what is safe
+        for a young account.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can change this.", alert=True)
+            return
+
+        global_settings = database.get_global_settings()
+        current = bool(global_settings.get("anti_spam_protection", True))
+        global_settings["anti_spam_protection"] = not current
+        database.save_global_settings(global_settings)
+        audit("antispam.toggle", None, f"anti_spam_protection={not current}", user_id)
+        state = "ON - the bot advises you" if not current else "OFF - no advice at all"
+        await event.answer(f"\U0001f6e1\ufe0f Anti-spam protection: {state}", alert=True)
+
     @client.on(events.CallbackQuery(pattern="^admin_proxy_channel$"))
     async def admin_proxy_channel_callback(event):
         """

@@ -54,6 +54,7 @@ except ImportError:
         pass
 from villain_ads_bot import config
 from villain_ads_bot.core import antispam
+from villain_ads_bot.core import antispam_guard
 from villain_ads_bot.core import session_lock
 from villain_ads_bot.data import database
 from villain_ads_bot.core import utils
@@ -3355,29 +3356,15 @@ class UserBot:
             if not groups:
                 return stats
 
-            # 3.1 The daily / hourly budget of the account. A new account
-            #     starts with a tiny budget, so it can not blast 40 groups
-            #     on its first day (that is the classic spam pattern).
+            # 3.1 The anti spam protection only WARNS - it never blocks a
+            #     broadcast. The owner pays for the slots and decides
+            #     himself how much to send.
             sess_for_budget = database.get_session(self.session_id) or {}
-            allowed, reason = antispam.can_send(sess_for_budget)
-            if not allowed:
-                stats["skipped"] = stats["total"]
-                stats["budget"] = antispam.budget_state(sess_for_budget)
-                logger.info(
-                    f"Broadcast paused for {self.session_id}: {reason}"
-                )
-                if progress_msg is not None:
-                    try:
-                        from villain_ads_bot.core import ui as _ui
-                        await progress_msg.edit(
-                            f"\u23f8\ufe0f <b>Broadcast Paused \u2014 Anti-Spam Protection</b>\n\n"
-                            f"\U0001f6d1 <b>Reason :</b> {reason}\n\n"
-                            f"{_ui.help_hint('A brand new account must warm up first - this is what keeps it out of @SpamBot.')}",
-                            parse_mode="html"
-                        )
-                    except Exception:
-                        pass
-                return stats
+            stats["budget"] = antispam.budget_state(sess_for_budget)
+            advice_text = antispam_guard.advice(sess_for_budget)
+            if advice_text:
+                stats["advice"] = advice_text
+                logger.info(f"Broadcast advice for {self.session_id}: {advice_text}")
             stats["budget"] = antispam.budget_state(sess_for_budget)
 
             started = _time.time()
@@ -3460,11 +3447,11 @@ class UserBot:
                                     pass
                             await asyncio.sleep(wait_time)
                     stats["sent"] += 1
-                    # Count it against the daily / hourly budget.
+                    # Count it (only informative - it never blocks anything).
                     try:
                         _sess = database.get_session(self.session_id)
                         if _sess:
-                            _stats = antispam.record_send(_sess)
+                            _stats = antispam_guard.record(_sess)
                             _sess.setdefault("stats", {}).update(_stats)
                             database.save_session(_sess)
                     except Exception:

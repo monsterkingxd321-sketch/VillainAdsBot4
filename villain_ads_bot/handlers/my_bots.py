@@ -9,6 +9,7 @@ from villain_ads_bot.data import database
 from villain_ads_bot.data import models
 from villain_ads_bot.core import utils
 from villain_ads_bot.core import antispam
+from villain_ads_bot.core import antispam_guard
 from villain_ads_bot.core import ui
 from villain_ads_bot.core import joiner
 from villain_ads_bot import config
@@ -854,7 +855,7 @@ def register_handlers(client):
             f"{ui.card('Broadcast & Spam', 'Account : ' + str(account_name), 'Your advertisement and its protection', chr(128225))}\n\n"
             f"{ui.kv('Auto broadcast', 'ON' if settings.get('auto_spam') else 'OFF', chr(128225))}\n"
             f"{ui.kv('Messages configured', str(msg_count), chr(128172))}\n"
-            f"{ui.kv('Daily budget', str(budget.get('daily_used', 0)) + '/' + str(budget.get('daily_max', 0)), chr(128202))}\n"
+            f"{ui.kv('Account health', antispam_guard.health_text(sess), chr(128202))}\n"
             f"{last_line}"
             f"\n{ui.help_hint('The message really differs per group and a new account warms up first - that is what keeps it out of @SpamBot.')}"
             f"\n{ui.footer()}</blockquote>"
@@ -1227,16 +1228,11 @@ def register_handlers(client):
             body = "\u2705 <b>No @SpamBot restriction</b>\n\n<i>The account can send messages normally.</i>"
 
         budget_line = (
-            f"\U0001f4ca <b>Anti-Spam Budget</b>\n"
+            f"\U0001f4ca <b>Account Health</b>\n"
             f"\U0001f4c8 <b>Account age :</b> <code>{budget.get('age_days', 0)} day(s)</code>\n"
-            f"\u2705 <b>Today :</b> <code>{budget.get('daily_used', 0)}/{budget.get('daily_max', 0)}</code>\n"
-            f"\u23f1\ufe0f <b>This hour :</b> <code>{budget.get('hourly_used', 0)}/{budget.get('hourly_max', 0)}</code>\n"
+            f"\u2705 <b>Messages sent today :</b> <code>{budget.get('daily_used', 0)}</code>\n"
+            f"\U0001f4a1 <i>{antispam_guard.health_text(sess)}</i>\n"
         )
-        if budget.get("warming_up"):
-            budget_line += (
-                f"\u23f3\ufe0f <i>The account is still warming up - the budget grows every day. "
-                f"That is what keeps it out of @SpamBot.</i>\n"
-            )
 
         try:
             await status_msg.edit(
