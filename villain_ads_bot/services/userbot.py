@@ -732,10 +732,31 @@ async def get_group_call_info(client: TelegramClient, link_or_id: str):
 
 
 
+def _flood_wait_seconds(exc) -> int:
+    """
+    Returns the number of seconds of a flood wait exception (0 if it is not
+    a flood wait). Used to let the caller wait instead of silently failing.
+    """
+    for attr in ("seconds", "timeout"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    text = str(exc).lower()
+    if "floodwait" in text or "flood wait" in text or "wait of" in text:
+        import re
+        match = re.search(r"wait of (\d+) second", text)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
 async def join_channel_single(client: TelegramClient, ch: str) -> bool:
     """
     Attempts to join a single channel or group by invite link or username.
     Returns True if successfully joined, already in it, or join request was sent.
+
+    A flood limit is NOT swallowed here - it is re-raised so the caller can
+    wait for the required time and continue automatically.
     """
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.functions.messages import ImportChatInviteRequest
@@ -790,6 +811,9 @@ async def join_channel_single(client: TelegramClient, ch: str) -> bool:
         logger.info(f"Successfully joined channel/group: {ch_clean}")
         return True
     except Exception as e:
+        # ── Flood limit: let the caller handle the wait ──
+        if _flood_wait_seconds(e):
+            raise
         err_msg = str(e).lower()
         if "already" in err_msg or "already participant" in err_msg or "user_already_participant" in err_msg:
             logger.debug(f"Already participant of: {ch_clean}")
@@ -863,7 +887,22 @@ async def force_join_channels(client: TelegramClient, channels: list, session_id
     # Join pending channels sequentially with safe delays between joins (bypasses anti-spam)
     joined_now = []
     for ch_clean in pending:
-        success = await join_channel_single(client, ch_clean)
+        try:
+            success = await join_channel_single(client, ch_clean)
+        except Exception as join_exc:
+            # A flood limit must not abort the whole auto-join list.
+            seconds = _flood_wait_seconds(join_exc)
+            if not seconds:
+                logger.warning(f"Auto-join failed for {ch_clean}: {join_exc}")
+                continue
+            seconds = min(seconds, 900)
+            logger.warning(f"Flood wait of {seconds}s during auto-join - waiting.")
+            await asyncio.sleep(seconds)
+            try:
+                success = await join_channel_single(client, ch_clean)
+            except Exception as retry_exc:
+                logger.warning(f"Auto-join failed for {ch_clean}: {retry_exc}")
+                success = False
         if success:
             joined_now.append(ch_clean)
         # Sleep 3-5 seconds between channel joins to prevent anti-spam triggers

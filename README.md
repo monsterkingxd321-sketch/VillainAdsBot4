@@ -36,6 +36,8 @@ A powerful Telegram Manager Bot and Userbot that handles advertisements, automat
     │   ├── utils.py            #       Buttons, guards, text tools, pytgcalls compat
     │   ├── error_reporter.py   #       Log-group + owner error reporting
     │   ├── pricing.py          #       INR ⇄ USDT / TON conversion
+    │   ├── music.py            #       Music gateway credentials (key / url)
+    │   ├── joiner.py           #       Bulk joining with flood-limit control
     │   └── ui.py               #       Premium UI card builders
     │
     ├── data/                   #    💾 Persistence layer
@@ -176,6 +178,12 @@ python3 main.py
 | **Load every account from the session files** | Admin Panel → 📂 Load Accounts From Session Files |
 | **Log in every account from disk** | → 🔑 Login All Accounts From Disk |
 | Check the **VPS usage** | Admin Panel → 🖥️ Vps Usage |
+| **Broadcast right now** (live progress) | Userbot dashboard → 📢 Broadcast Now |
+
+> ℹ️ `villain_ads_bot/services/youtube.py` is kept **exactly** as the music API
+> owner publishes it. The runtime configuration (API key / gateway) is pushed
+> into it from `villain_ads_bot/core/music.py` — the module itself is never
+> modified.
 
 ---
 
