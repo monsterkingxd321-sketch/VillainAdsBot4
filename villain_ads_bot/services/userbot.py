@@ -53,6 +53,7 @@ except ImportError:
         """Fallback when the telethon version does not know this error."""
         pass
 from villain_ads_bot import config
+from villain_ads_bot.core import antispam
 from villain_ads_bot.data import database
 from villain_ads_bot.core import utils
 
@@ -3169,9 +3170,9 @@ class UserBot:
                         ar_mode = "multiple" if len(candidates) > 1 else "single"
                         msgs_to_send = [random.choice(candidates)]
                         for selected_reply in msgs_to_send:
-                            processed_reply = utils.parse_spintax(selected_reply)
+                            processed_reply = antispam.vary_message(
+                                selected_reply, group_id=event.chat_id, tag=False)
                             processed_reply = utils.normalize_text(processed_reply)
-                            processed_reply = utils.make_message_unique(processed_reply)
 
                             # The cooldown MUST be written BEFORE the sleep.
                             # Before the fix it was written afterwards, so every
@@ -3214,7 +3215,8 @@ class UserBot:
                                 messages_to_send = utils.get_welcome_messages(current_settings)
                                 if messages_to_send:
                                     for welcome_msg in messages_to_send:
-                                        processed_welcome = utils.parse_spintax(welcome_msg)
+                                        processed_welcome = antispam.vary_message(
+                                            welcome_msg, group_id=None, tag=False)
                                         processed_welcome = utils.normalize_text(processed_welcome)
                                         try:
                                             await asyncio.sleep(random.uniform(0.5, 1.5))
@@ -3293,6 +3295,30 @@ class UserBot:
             if not groups:
                 return stats
 
+            # 3.1 The daily / hourly budget of the account. A new account
+            #     starts with a tiny budget, so it can not blast 40 groups
+            #     on its first day (that is the classic spam pattern).
+            sess_for_budget = database.get_session(self.session_id) or {}
+            allowed, reason = antispam.can_send(sess_for_budget)
+            if not allowed:
+                stats["skipped"] = stats["total"]
+                stats["budget"] = antispam.budget_state(sess_for_budget)
+                logger.info(
+                    f"Broadcast paused for {self.session_id}: {reason}"
+                )
+                if progress_msg is not None:
+                    try:
+                        await progress_msg.edit(
+                            f"\u23f8\ufe0f <b>Broadcast Paused \u2014 Anti-Spam Protection</b>\n\n"
+                            f"\U0001f6d1 <b>Reason :</b> {reason}\n\n"
+                            f"{ui.help_hint('A brand new account must warm up first - this is what keeps it out of @SpamBot.')}",
+                            parse_mode="html"
+                        )
+                    except Exception:
+                        pass
+                return stats
+            stats["budget"] = antispam.budget_state(sess_for_budget)
+
             started = _time.time()
             for index, g in enumerate(groups, 1):
                 if not self.is_running:
@@ -3303,9 +3329,15 @@ class UserBot:
                     break
 
                 current_msg = random.choice(messages)
-                processed_msg = utils.parse_spintax(current_msg)
+                # The message must REALLY differ between the groups. The old
+                # zero width suffix is exactly what @SpamBot detects.
+                processed_msg = antispam.vary_message(
+                    current_msg,
+                    group_id=getattr(g, "id", None),
+                    tag=bool(settings.get("unique_group_tag", True)),
+                    emoji=bool(settings.get("rotate_emoji", True)),
+                )
                 processed_msg = utils.normalize_text(processed_msg)
-                processed_msg = utils.make_message_unique(processed_msg)
 
                 try:
                     try:
@@ -3367,6 +3399,15 @@ class UserBot:
                                     pass
                             await asyncio.sleep(wait_time)
                     stats["sent"] += 1
+                    # Count it against the daily / hourly budget.
+                    try:
+                        _sess = database.get_session(self.session_id)
+                        if _sess:
+                            _stats = antispam.record_send(_sess)
+                            _sess.setdefault("stats", {}).update(_stats)
+                            database.save_session(_sess)
+                    except Exception:
+                        pass
                 except PeerFloodError:
                     # The account is restricted - stop the round but keep the
                     # setting so the owner can decide.

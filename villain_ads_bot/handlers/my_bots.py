@@ -8,6 +8,7 @@ from telethon import events, Button
 from villain_ads_bot.data import database
 from villain_ads_bot.data import models
 from villain_ads_bot.core import utils
+from villain_ads_bot.core import antispam
 from villain_ads_bot.core import ui
 from villain_ads_bot.core import joiner
 from villain_ads_bot import config
@@ -377,6 +378,11 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # Row 1.15: Test the message on ONE group before going live
         rows.append([
             ("🧪 Test Send (1 Group)", f"broadcast_test_{phone}")
+        ])
+        
+        # Row 1.16: The @SpamBot status + the anti spam budget
+        rows.append([
+            ("🛡️ Spam Status & Budget", f"spam_status_{phone}")
         ])
         
         # The proxy section is OWNER ONLY - it must not appear in the ads
@@ -1100,6 +1106,71 @@ def register_handlers(client):
                 )
             except Exception:
                 pass
+
+    @client.on(events.CallbackQuery(pattern=r"^spam_status_(.+)$"))
+    async def spam_status_callback(event):
+        """
+        Shows the @SpamBot restriction of the account and the anti spam
+        budget (daily / hourly messages that are still allowed).
+        """
+        phone = event.pattern_match.group(1).strip()
+        user_id = event.sender_id
+
+        sess = database.get_session(phone)
+        if not sess or not is_session_owner_or_admin(sess, event.sender_id):
+            await event.answer("\u274c Session not found.", alert=True)
+            return
+
+        budget = antispam.budget_state(sess)
+        status_msg = await event.respond(
+            "\U0001f9ea <b>Checking @SpamBot...</b>\n\n<i>This can take a moment.</i>",
+            parse_mode="html"
+        )
+
+        bot_obj = userbot_manager.find_running_bot(phone)
+        if not bot_obj or not bot_obj.client:
+            await status_msg.edit(
+                "<blockquote><b>\u274c The account is not running</b>\n\n"
+                "<i>Start it first so the status can be checked.</i></blockquote>",
+                parse_mode="html"
+            )
+            return
+
+        result = await antispam.check_spam_status(bot_obj.client, force=True)
+
+        if result.get("error"):
+            body = f"\u274c <b>Could not reach @SpamBot</b>\n\n<code>{str(result.get('error'))[:200]}</code>"
+        elif result.get("limited"):
+            severity = "PERMANENT" if result.get("severity") == "permanent" else "TEMPORARY"
+            body = (
+                f"\U0001f6a8 <b>THIS ACCOUNT IS LIMITED BY @SpamBot</b>\n\n"
+                f"\u26a0\ufe0f <b>Severity :</b> <code>{severity}</code>\n"
+                + (f"\U0001f550 <b>Until :</b> <code>{result.get('until') or 'unknown'}</code>\n" if result.get("until") else "")
+            )
+        else:
+            body = "\u2705 <b>No @SpamBot restriction</b>\n\n<i>The account can send messages normally.</i>"
+
+        budget_line = (
+            f"\U0001f4ca <b>Anti-Spam Budget</b>\n"
+            f"\U0001f4c8 <b>Account age :</b> <code>{budget.get('age_days', 0)} day(s)</code>\n"
+            f"\u2705 <b>Today :</b> <code>{budget.get('daily_used', 0)}/{budget.get('daily_max', 0)}</code>\n"
+            f"\u23f1\ufe0f <b>This hour :</b> <code>{budget.get('hourly_used', 0)}/{budget.get('hourly_max', 0)}</code>\n"
+        )
+        if budget.get("warming_up"):
+            budget_line += (
+                f"\u23f3\ufe0f <i>The account is still warming up - the budget grows every day. "
+                f"That is what keeps it out of @SpamBot.</i>\n"
+            )
+
+        try:
+            await status_msg.edit(
+                f"{ui.card('Spam Status', sess.get('name') or phone, 'Your @SpamBot restriction and budget', chr(128225))}\n\n"
+                f"{body}\n\n{budget_line}"
+                f"\n{ui.footer()}</blockquote>",
+                parse_mode="html"
+            )
+        except Exception:
+            pass
 
     @client.on(events.CallbackQuery(pattern=r"^broadcast_now_(.+)$"))
     async def broadcast_now_callback(event):

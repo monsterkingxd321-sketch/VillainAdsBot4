@@ -33,6 +33,7 @@ SUITES = [
     "test_proxy.py",
     "test_mtproxy.py",
     "test_antiban.py",
+    "test_antispam.py",
 ]
 
 
