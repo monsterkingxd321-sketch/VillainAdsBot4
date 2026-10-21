@@ -2039,17 +2039,22 @@ class UserBot:
         # The proxy of this account. Telegram counts every account of an IP
         # address together, so without a proxy only a handful of accounts can
         # be active at the same time.
+        #
+        # IMPORTANT: the proxy is read ONCE, when the account starts. The IP
+        # of a running account never changes on its own - Telegram revokes the
+        # session (AUTH_KEY_DUPLICATED) when the same auth key suddenly shows
+        # up from a different IP. Rotating is a deliberate admin action that
+        # disconnects the account first.
         proxy_kwargs = {}
         try:
             from villain_ads_bot.core import proxy as _proxy
-            account_proxy = (sess_data or {}).get("proxy") if sess_data else None
-            if not account_proxy:
-                # Auto assign a proxy from the admin pool (round robin).
-                account_proxy = _proxy.assign_round_robin(self.session_id)
+            account_proxy = _proxy.resolve_session_proxy(self.session_id)
             if account_proxy:
                 telethon_proxy = _proxy.build_telethon_proxy(account_proxy)
                 if telethon_proxy:
                     proxy_kwargs["proxy"] = telethon_proxy
+                    connection_class = _proxy.get_connection_class(account_proxy)
+                    proxy_kwargs["connection"] = connection_class
                     logger.info(
                         f"Userbot {self.session_id} will connect through "
                         f"{_proxy.redact(account_proxy)}"
@@ -2061,7 +2066,7 @@ class UserBot:
             session_file, 
             api_id, 
             api_hash,
-            connection=ConnectionTcpObfuscated,
+            connection=proxy_kwargs.pop("connection", ConnectionTcpObfuscated),
             connection_retries=6,
             retry_delay=1,
             timeout=15,

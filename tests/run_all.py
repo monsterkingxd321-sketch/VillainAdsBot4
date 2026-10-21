@@ -31,6 +31,7 @@ SUITES = [
     "test_audit_fixes.py",
     "test_agreement.py",
     "test_proxy.py",
+    "test_mtproxy.py",
 ]
 
 

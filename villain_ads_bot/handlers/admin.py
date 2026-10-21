@@ -9,6 +9,8 @@ from villain_ads_bot.core import utils
 from villain_ads_bot.core import ui
 from villain_ads_bot.core import pricing
 from villain_ads_bot.core import proxy as proxy_tool
+from villain_ads_bot.services import proxy_mirror
+from villain_ads_bot.services import proxy_rotation
 import time
 import os
 
@@ -173,6 +175,9 @@ async def show_admin_panel(event, user_id: int):
         [
             utils.styled_button("🌐 Proxy Manager (Unlimited Accounts)", "admin_proxies", style="success"),
             utils.styled_button("💾 Unlimited Accounts", "admin_toggle_unlimited_accounts", style="primary")
+        ],
+        [
+            utils.styled_button("📡 Proxy Mirror (Auto Copy Channel)", "admin_proxy_mirror", style="success")
         ],
         [
             utils.styled_button("💾 Backup Now", "admin_backup_now", style="success"),
@@ -1866,6 +1871,22 @@ def register_handlers(client):
                 )
                 return
 
+            # ── The source channel of the proxies ──
+            elif action == "WAITING_FOR_PROXY_SOURCE":
+                ok, msg = proxy_tool.set_channel(val_str)
+                audit("proxy.source_channel", None, msg, user_id)
+                await event.reply(msg, parse_mode="html")
+                await admin_proxy_mirror_callback(event)
+                return
+
+            # ── The mirror channel (the owner's own channel) ──
+            elif action == "WAITING_FOR_PROXY_MIRROR":
+                ok, msg = proxy_mirror.set_mirror_channel(val_str)
+                audit("proxy.mirror_channel", None, msg, user_id)
+                await event.reply(msg, parse_mode="html")
+                await admin_proxy_mirror_callback(event)
+                return
+
             # ── Add a proxy to the pool ──
             elif action == "WAITING_FOR_PROXY":
                 raw = val_str.strip()
@@ -2717,6 +2738,125 @@ def register_handlers(client):
         
         await show_branding_settings(event, user_id)
 
+    # ==================== PROXY MIRROR ====================
+    # ==================== /copyproxies ====================
+    @client.on(events.NewMessage(pattern=r"^/copyproxies"))
+    async def copy_proxies_cmd(event):
+        """
+        Copies the fresh proxies of the drop channel into the owner's own
+        channel, with working "Connect N" buttons.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.reply("\u274c Only the owner can do this.")
+            return
+
+        status = await event.reply("\U0001f504 <b>Copying the proxies...</b>", parse_mode="html")
+        try:
+            result = await proxy_mirror.mirror_once(client)
+        except Exception as e:
+            result = {"ok": False, "mirrored": 0, "proxies": 0, "error": str(e)}
+
+        if not result.get("ok"):
+            await status.edit(f"\u274c <b>Could not copy</b>\n\n<code>{result.get('error')}</code>", parse_mode="html")
+            return
+        await status.edit(
+            f"\u2705 <b>Proxy copy done</b>\n\n"
+            f"\U0001f4dc <b>Messages copied :</b> <code>{result.get('mirrored', 0)}</code>\n"
+            f"\U0001f517 <b>Proxies :</b> <code>{result.get('proxies', 0)}</code>\n\n"
+            f"{ui.help_hint('The Connect buttons in your channel now work with this bot.')}",
+            parse_mode="html"
+        )
+
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_mirror$"))
+    async def admin_proxy_mirror_callback(event):
+        """
+        Mirrors the proxy drop channel into the owner's own channel, with
+        our own "Connect N" buttons - so a click reaches THIS bot.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can use the mirror.", alert=True)
+            return
+
+        source = proxy_tool.get_channel()
+        mirror = proxy_mirror.get_mirror_channel()
+        pool = proxy_tool.get_pool()
+
+        text = (
+            f"{ui.card_open('Proxy Mirror', 'Auto copy the drop channel', 'Your channel gets fresh proxies with working Connect buttons', chr(128225))}\n\n"
+            f"{ui.kv('Source channel (drops)', f'@{source}' if source else 'Not set', chr(128233))}\n"
+            f"{ui.kv('Your mirror channel', f'@{mirror}' if mirror else 'Not set', chr(127968))}\n"
+            f"{ui.kv('Proxies in the pool', str(len(pool)), chr(127752))}\n\n"
+            f"{ui.help_hint('Set the source channel, then set your own channel. The bot copies the messages and rebuilds the Connect buttons.')}"
+            f"\n{ui.card_close()}"
+        )
+
+        buttons = [
+            [utils.styled_button("\U0001f4e4 Set Source Channel", "admin_set_proxy_source", style="primary")],
+            [utils.styled_button("\U0001f4e1 Set My Mirror Channel", "admin_set_proxy_mirror", style="primary")],
+            [utils.styled_button("\U0001f504 Copy Now", "admin_proxy_mirror_now", style="success")],
+            [utils.styled_button("\U0001f519 Back To Admin Panel", "menu_admin", style="primary")]
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_set_proxy_source$"))
+    async def admin_set_proxy_source_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_PROXY_SOURCE"
+        prompt = (
+            f"{ui.card('Source Channel', 'Where the proxies are dropped', 'The bot must be able to read it', chr(128233))}\n\n"
+            f"{ui.help_hint('Send the channel username or link (e.g. @proxygram or https://t.me/proxygram).')}"
+        )
+        buttons = [[utils.styled_button("\U0001f519 Cancel", "admin_proxy_mirror", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_set_proxy_mirror$"))
+    async def admin_set_proxy_mirror_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_PROXY_MIRROR"
+        prompt = (
+            f"{ui.card('Your Mirror Channel', 'Where the proxies are copied to', 'The bot must be an ADMIN of that channel', chr(127968))}\n\n"
+            f"{ui.help_hint('Send your channel username or link (e.g. @myproxies).')}"
+        )
+        buttons = [[utils.styled_button("\U0001f519 Cancel", "admin_proxy_mirror", style="danger")]]
+        try:
+            await event.edit(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_mirror_now$"))
+    async def admin_proxy_mirror_now_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can use the mirror.", alert=True)
+            return
+        status = await event.respond("\U0001f504 <b>Copying the proxies...</b>", parse_mode="html")
+        try:
+            result = await proxy_mirror.mirror_once(client)
+        except Exception as e:
+            result = {"ok": False, "mirrored": 0, "proxies": 0, "error": str(e)}
+        if not result.get("ok"):
+            await status.edit(f"\u274c <b>Could not copy</b>\n\n<code>{result.get('error')}</code>", parse_mode="html")
+            return
+        await status.edit(
+            f"\u2705 <b>Proxy mirror done</b>\n\n"
+            f"\U0001f4dc <b>Messages copied :</b> <code>{result.get('mirrored', 0)}</code>\n"
+            f"\U0001f517 <b>Proxies found :</b> <code>{result.get('proxies', 0)}</code>\n"
+            f"\U0001f510 <i>They are also in the pool now - assign them to the accounts.</i>",
+            parse_mode="html"
+        )
+
     # ==================== PROXY MANAGER ====================
     @client.on(events.CallbackQuery(pattern="^admin_proxies$"))
     async def admin_proxies_callback(event):
@@ -2746,7 +2886,10 @@ def register_handlers(client):
         accounts = len(database.get_sessions())
         text += (
             f"\n\n{ui.kv('Accounts in the system', str(accounts), chr(128100))}"
-            f"\n{ui.help_hint('Every account gets its own proxy, so Telegram never counts them together.')}"
+            f"\n{ui.kv('Free (unused) proxies', str(len(proxy_rotation.get_unused_proxies())), chr(128176))}"
+            f"\n{ui.help_hint('Every account gets its OWN proxy, so Telegram never counts them together.')}"
+            f"\n{ui.help_hint(chr(9888) + ' Never rotate the IP of a running account on its own - the session would be revoked (AUTH_KEY_DUPLICATED).')}"
+            f"\n{ui.help_hint('The rotation button disconnects the account first, waits and only then connects with the new IP.')}"
             f"\n{ui.card_close()}"
         )
 
@@ -2758,6 +2901,7 @@ def register_handlers(client):
             ])
         if pool:
             buttons.append([utils.styled_button("\U0001f504 Assign Proxies To All Accounts", "admin_proxy_assign_all", style="success")])
+            buttons.append([utils.styled_button("\U0001f504 Rotate Proxies (Safe)", "admin_proxy_rotate", style="success")])
         buttons.append([utils.styled_button("\U0001f519 Back To Admin Panel", "menu_admin", style="primary")])
 
         try:
@@ -2808,6 +2952,141 @@ def register_handlers(client):
         audit("proxy.set_default", str(index), msg, user_id)
         await event.answer(msg, alert=True)
         await admin_proxies_callback(event)
+
+    @client.on(events.CallbackQuery(pattern="^admin_proxy_rotate$"))
+    async def admin_proxy_rotate_callback(event):
+        """
+        Rotates the proxies SAFELY: every account is disconnected first, the
+        new proxy is written and only then the account starts again.
+        """
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER):
+            await event.answer("\u274c Only the owner can do this.", alert=True)
+            return
+
+        sessions = database.get_sessions()
+        if not sessions:
+            await event.answer("\u26a0\ufe0f There is no account.", alert=True)
+            return
+
+        await event.answer("\u23f3\ufe0f Rotating - the accounts are restarted one by one.", alert=True)
+        status = await event.respond(
+            "\U0001f504 <b>Rotating the proxies...</b>\n\n"
+            "<i>Every account is disconnected first, then connected with its new IP. "
+            "That gap is what keeps Telegram from revoking the session.</i>",
+            parse_mode="html"
+        )
+
+        ids = [s.get("session_id") or s.get("phone") for s in sessions]
+        ids = [i for i in ids if i]
+        result = await proxy_rotation.rotate_account_proxies(ids, restart=True)
+
+        audit("proxy.rotate", None,
+              f"rotated={result.get('rotated')} failed={result.get('failed')}", user_id)
+
+        lines = []
+        for line in (result.get("details") or [])[:40]:
+            lines.append(f"\u2022 {line}")
+        summary = (
+            f"\u2705 <b>Rotation done</b>\n\n"
+            f"\U0001f504 <b>Rotated :</b> <code>{result.get('rotated', 0)}</code>\n"
+            f"\u274c <b>Failed :</b> <code>{result.get('failed', 0)}</code>\n"
+        )
+        if lines:
+            summary += "\n<pre>" + "\n".join(lines) + "</pre>"
+        try:
+            await status.edit(summary, parse_mode="html")
+        except Exception:
+            pass
+
+    @client.on(events.CallbackQuery(pattern=r"^proxy_connect_(\d+)_(\d+)$"))
+    async def proxy_connect_callback(event):
+        """
+        The "Connect N" button of a mirrored proxy message.
+
+        The proxy of that message is extracted and offered to the user - with
+        the option to move one of their accounts onto it.
+        """
+        message_id = int(event.pattern_match.group(1))
+        index = int(event.pattern_match.group(2))
+        user_id = event.sender_id
+
+        mirror = proxy_mirror.get_mirror_channel()
+        proxy, error = await proxy_mirror.resolve_connect(client, mirror, message_id, index)
+        if not proxy:
+            await event.answer(f"\u274c {error or 'No proxy found.'}", alert=True)
+            return
+
+        buttons = []
+        sessions = database.get_sessions(user_id)
+        for sess in sessions[:8]:
+            phone = sess.get("phone") or sess.get("session_id")
+            name = sess.get("name") or phone
+            buttons.append([
+                utils.styled_button(f"\U0001f680 Use For {name}", f"proxy_apply_{phone}_{message_id}_{index}", style="success")
+            ])
+        buttons.append([utils.styled_button("\U0001f517 Open In Telegram", url=proxy.get("raw", ""), style="primary")])
+
+        server = f"{proxy.get('host')}:{proxy.get('port')}"
+        await event.answer("\u2705 Proxy found!", alert=True)
+        await event.respond(
+            f"{ui.card('Proxy Ready', f'Connect {index}', 'Use it for one of your accounts', chr(128225))}\n\n"
+            f"{ui.kv('Proxy', proxy_tool.redact(proxy), chr(127752))}\n"
+            f"{ui.kv('Server', server, chr(128225))}\n\n"
+            f"{ui.help_hint('Pick an account below - it is disconnected and then connected with this IP.')}",
+            buttons=buttons, parse_mode="html"
+        )
+
+    @client.on(events.CallbackQuery(pattern=r"^proxy_apply_(.+)_(\d+)_(\d+)$"))
+    async def proxy_apply_callback(event):
+        """Moves one account onto the proxy of the mirrored message."""
+        raw = event.pattern_match.group(1)
+        message_id = int(event.pattern_match.group(2))
+        index = int(event.pattern_match.group(3))
+        user_id = event.sender_id
+
+        parts = raw.rsplit("_", 2)
+        phone = parts[0] if len(parts) == 3 else raw
+
+        mirror = proxy_mirror.get_mirror_channel()
+        proxy, error = await proxy_mirror.resolve_connect(client, mirror, message_id, index)
+        if not proxy:
+            await event.answer(f"\u274c {error or 'No proxy found.'}", alert=True)
+            return
+
+        sess = database.get_session(phone)
+        if not sess:
+            await event.answer("\u274c Account not found.", alert=True)
+            return
+        if str(sess.get("user_id")) != str(user_id) and not check_admin(user_id):
+            await event.answer("\u274c This is not your account.", alert=True)
+            return
+
+        # Disconnect first - the old IP must be closed before the new one is
+        # used, otherwise Telegram revokes the session (AUTH_KEY_DUPLICATED).
+        was_running = userbot_manager.is_bot_running(phone)
+        if was_running:
+            await userbot_manager.stop_userbot(phone)
+            await asyncio.sleep(proxy_rotation.RECONNECT_DELAY)
+
+        sess["proxy"] = proxy
+        sess["proxy_auto"] = False
+        database.save_session(sess)
+
+        if was_running:
+            await userbot_manager.start_userbot(phone)
+
+        await event.answer("\u2705 Done - the account is on the new IP.", alert=True)
+        try:
+            await event.edit(
+                f"\u2705 <b>Proxy applied</b>\n\n"
+                f"{ui.kv('Account', sess.get('name') or phone, chr(128100))}\n"
+                f"{ui.kv('Proxy', proxy_tool.redact(proxy), chr(127752))}\n\n"
+                f"{ui.help_hint('The account was disconnected first and then connected with the new IP.')}",
+                parse_mode="html"
+            )
+        except Exception:
+            pass
 
     @client.on(events.CallbackQuery(pattern="^admin_proxy_assign_all$"))
     async def admin_proxy_assign_all_callback(event):

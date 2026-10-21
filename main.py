@@ -360,6 +360,16 @@ async def main():
     background_tasks.add(t3)
     t3.add_done_callback(background_tasks.discard)
     
+    # Auto mirror the proxy drop channel into the owner's own channel.
+    # The drop channel posts every 30 minutes, so every 10 minutes is enough.
+    try:
+        from villain_ads_bot.services import proxy_mirror
+        t4 = asyncio.create_task(proxy_mirror.auto_mirror_loop(bot, interval=600))
+        background_tasks.add(t4)
+        t4.add_done_callback(background_tasks.discard)
+    except Exception as mirror_err:
+        logger.warning(f"Could not start the proxy mirror: {mirror_err}")
+    
     try:
         # Keep the bot running and auto-reconnect if it disconnects
         while True:
