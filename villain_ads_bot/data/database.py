@@ -6,7 +6,7 @@ from pymongo import MongoClient
 from concurrent.futures import ThreadPoolExecutor
 
 _db_executor = ThreadPoolExecutor(max_workers=5)
-import config
+from villain_ads_bot import config
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +185,11 @@ def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[s
 def save_session(session_data: Dict[str, Any]):
     global _cached_get_sessions
     _cached_get_sessions.clear()
-    session_data["user_id"] = int(session_data["user_id"])
+    try:
+        session_data["user_id"] = int(session_data["user_id"])
+    except (TypeError, ValueError):
+        # Non numeric owner ids (e.g. imported from a disk folder) are kept as-is.
+        pass
     
     # Update cache
     sid = session_data.get("session_id")
@@ -233,8 +237,26 @@ def get_payment_request(payment_id: str) -> Optional[Dict[str, Any]]:
     return _db.payments.find_one({"payment_id": payment_id})
 
 def save_payment_request(payment_data: Dict[str, Any]):
-    payment_data["user_id"] = int(payment_data["user_id"])
-    _db.payments.replace_one({"payment_id": payment_data["payment_id"]}, payment_data, upsert=True)
+    try:
+        payment_data["user_id"] = int(payment_data["user_id"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        _db.payments.replace_one({"payment_id": payment_data["payment_id"]}, payment_data, upsert=True)
+    except Exception as e:
+        # A duplicate key (unique index) must never crash the payment flow.
+        logger.warning(f"save_payment_request failed for {payment_data.get('payment_id')}: {e}")
+        raise
+
+
+def get_payment_request_by_reference(reference: str) -> Optional[Dict[str, Any]]:
+    """Finds a payment request by its human friendly reference."""
+    if not reference:
+        return None
+    try:
+        return _db.payments.find_one({"reference": reference})
+    except Exception:
+        return None
 
 # ==================== Settings CRUD Operations ====================
 def get_global_settings() -> Dict[str, Any]:
@@ -272,20 +294,36 @@ def get_global_settings() -> Dict[str, Any]:
         # Override with current environment values at runtime so Railway environment changes take priority
         import os
         
+        # The payment wallets are ADMIN managed: the environment value is only
+        # used while the panel value is still empty or a placeholder, so the
+        # admin panel can actually set a real address.
+        for env_key, settings_key in [
+            ("UPI_ID", "upi_id"),
+            ("USDT_BEP20_ADDRESS", "usdt_bep20_address"),
+            ("TON_ADDRESS", "ton_address"),
+        ]:
+            env_val = os.getenv(env_key) or os.getenv(env_key.lower())
+            current = str(settings.get(settings_key) or "").strip()
+            placeholder_chars = {"0", "x", "U", "Q"}
+            is_placeholder = (not current) or (
+                bool(current) and set(current) <= placeholder_chars
+            )
+            if env_val and env_val.strip() and is_placeholder:
+                settings[settings_key] = env_val.strip()
+                
         # String/URL overrides (exclude images so admin panel removals/sets persist in MongoDB)
         for env_key, settings_key in [
             ("SUPPORT_CHANNEL", "support_channel"),
             ("SUPPORT_GROUP", "support_group"),
-            ("UPI_ID", "upi_id"),
-            ("USDT_BEP20_ADDRESS", "usdt_bep20_address"),
-            ("TON_ADDRESS", "ton_address"),
             ("GPT_API_KEY", "gpt_api_key"),
             ("BRANDING_USERNAME", "branding_username"),
             ("BRANDING_NAME_TEXT", "branding_name_text"),
             ("BRANDING_BIO_TEXT", "branding_bio_text"),
         ]:
             env_val = os.getenv(env_key) or os.getenv(env_key.lower())
-            if env_val is not None:
+            # IMPORTANT: an EMPTY env var must NOT override the value that was
+            # saved from the admin panel (otherwise branding could never be set).
+            if env_val is not None and env_val.strip():
                 settings[settings_key] = env_val.strip()
 
         # Numeric overrides
@@ -417,8 +455,15 @@ def count_referred_users(user_id: int) -> int:
 def get_payment_request_by_utr_and_status(utr: str, status: str = "pending") -> Optional[Dict[str, Any]]:
     """
     Looks up a payment request by UTR and status directly using index.
+
+    Used to make sure the same transaction reference is never used twice.
     """
-    return _db.payments.find_one({"utr_code": utr, "status": status})
+    if not utr:
+        return None
+    try:
+        return _db.payments.find_one({"utr_code": utr, "status": status})
+    except Exception:
+        return None
 
 # ==================== Chat & Thumbnail Settings CRUD ====================
 _thumbnail_settings_cache: Dict[int, bool] = {}

@@ -1,9 +1,11 @@
 import logging
 from telethon import events
-import database
-import models
-import utils
-import config
+from villain_ads_bot.data import database
+from villain_ads_bot.data import models
+from villain_ads_bot.core import utils
+from villain_ads_bot.core import ui
+from villain_ads_bot.core import pricing
+from villain_ads_bot import config
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +32,11 @@ async def show_settings_menu(event, user_id: int):
     lang_display = LANG_NAMES.get(lang, lang.upper())
     
     text = (
-        f"<blockquote><b>» ⚙️ User Settings</b>\n\n"
-        f"👛 <b>Wallet Balance :</b> <code>₹{wallet_bal:.2f}</code>\n"
-        f"🌐 <b>Current Language :</b> <code>{lang_display}</code>\n\n"
-        f"⚡ <i>Select an action below to manage your account :</i></blockquote>"
+        f"{ui.card('User Settings', 'Account, wallet and language', 'Everything about your account in one place', '⚙️')}\n\n"
+        f"{ui.kv('Wallet balance', f'₹{wallet_bal:.2f}', '👛')}\n"
+        f"{ui.kv('Language', lang_display, '🌐')}\n\n"
+        f"{ui.help_hint('Pick an action below to manage your account.')}\n"
+        f"{ui.footer()}"
     )
     buttons = [
         [
@@ -68,14 +71,13 @@ async def show_purchase_menu(event, user_id: int):
     
     global_settings = database.get_global_settings()
     plans = global_settings.get("subscription_plans", [])
+    per_slot = pricing.get_price_per_slot()
     
     if not plans:
         buttons = [[utils.styled_button("🔙 Back", "menu_settings", style="primary")]]
         text = (
-            f"> ❌ <b>NO PLANS AVAILABLE</b>\n"
-            f"> ━━━━━━━━━━━━━━━━━━━━\n"
-            f"> No subscription plans are currently configured by administrators.\n"
-            f"> ━━━━━━━━━━━━━━━━━━━━"
+            f"{ui.card('No Plans Available', '', 'The admin has not configured any plan yet', '💎')}\n\n"
+            f"{ui.help_hint('Please try again later.')}"
         )
         try:
             msg = event.message if hasattr(event, 'message') else event
@@ -89,24 +91,18 @@ async def show_purchase_menu(event, user_id: int):
         return
         
     text = (
-        f"<blockquote><b>» 💳 Purchase Slot Upgrades</b>\n\n"
-        f"> ━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Current Allowed Slots :</b> <code>{allowed}</code>\n"
-        f"⚡ <i>Select a subscription plan below to upgrade:</i></blockquote>"
-        f"> ━━━━━━━━━━━━━━━━━━━━"
+        f"{ui.card('Purchase Slot Upgrades', '', 'Activate more userbot accounts on your plan', '💎')}\n\n"
+        f"{ui.kv('Current slots', str(allowed), '📦')}\n"
+        f"{ui.kv('Price per slot', f'₹{per_slot:.2f}', '💎')}\n\n"
+        f"{ui.help_hint('Pick a plan — you choose the number of slots on the next screen.')}"
     )
     
     buttons = []
     for plan in plans:
-        plan_id = plan["id"]
-        name = plan["button_name"]
-        price = plan["price"]
-        days = plan["days"]
-        slots = plan.get("slots")
-        if slots:
-            btn_label = f"✨ {name} ({slots} Slots - ₹{price:.0f} / {days} days)"
-        else:
-            btn_label = f"✨ {name} (₹{price:.0f} / {days} days)"
+        plan_id = plan.get("id", "plan")
+        name = plan.get("button_name", "Slot Upgrade")
+        days = int(plan.get("days", 30) or 30)
+        btn_label = f"💎 {name}  •  {days} days  •  ₹{per_slot:.2f}/slot"
         buttons.append([
             utils.styled_button(btn_label, f"buy_plan_{plan_id}", style="primary")
         ])

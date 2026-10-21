@@ -46,9 +46,9 @@ try:
     from telethon.errors import SessionExpiredError
 except ImportError:
     SessionExpiredError = None
-import config
-import database
-import utils
+from villain_ads_bot import config
+from villain_ads_bot.data import database
+from villain_ads_bot.core import utils
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,11 @@ try:
 except ImportError:
     MessageEntityType = None
     Message = None
-from youtubesearchpython import VideosSearch, Playlist
+try:
+    from youtubesearchpython import VideosSearch, Playlist
+except ImportError:  # pragma: no cover - optional legacy search backend
+    VideosSearch = None
+    Playlist = None
 import aiohttp
 try:
     from pytgcalls import PyTgCalls
@@ -117,9 +121,8 @@ except Exception as e:
     VideoQuality = None
     PYTGCALLS_AVAILABLE = False
     logger.warning(f"PyTgCalls is not available: {e}")
-import config
 
-from youtube import (
+from villain_ads_bot.services.youtube import (
     YouTube,
     YouTubeAPI,
     download_song,
@@ -244,7 +247,7 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
         # Try to generate a styled thumbnail using gen_thumb (if PIL/aiofiles are available)
         if vidid:
             try:
-                from thumb_gen import gen_thumb
+                from villain_ads_bot.thumb_gen import gen_thumb
                 styled = await gen_thumb(vidid)
                 if styled and (str(styled).startswith("http") or (os.path.exists(str(styled)) and os.path.getsize(str(styled)) > 1000)):
                     final_thumb = styled
@@ -259,6 +262,12 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
             logger.info(f"Using cached file: {cached_file}")
             return cached_file, title, duration_sec, final_thumb
 
+        # The youtube module caches as "<video_id>.mp3" / "<video_id>.mp4"
+        plain_cached = os.path.join(DOWNLOAD_DIR, f"{vidid}.{ext}")
+        if os.path.exists(plain_cached) and os.path.getsize(plain_cached) > 10000:
+            logger.info(f"Using cached file: {plain_cached}")
+            return plain_cached, title, duration_sec, final_thumb
+
         # Also check any file starting with vidid_prefix
         for fname in os.listdir(DOWNLOAD_DIR):
             if fname.startswith(f"{vidid}_{prefix}") and not fname.endswith(".jpg"):
@@ -267,14 +276,12 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                     logger.info(f"Using cached file matching prefix: {full_p}")
                     return full_p, title, duration_sec, final_thumb
 
-        # 3. Primary Fast Direct Stream via Yuki API
+        # 3. Primary Fast Direct Stream via Yuki API (with gateway failover)
         logger.info(f"Downloading {download_type} directly via Yuki API for: {title} ({vidid})...")
         downloaded_file = None
         try:
-            if download_type == "audio":
-                downloaded_file = await download_song(youtube_url)
-            else:
-                downloaded_file = await download_video(youtube_url)
+            from villain_ads_bot.core import music as _music
+            downloaded_file = await _music.download_with_failover(download_type, youtube_url)
         except Exception as api_err:
             logger.warning(f"Yuki API primary download error: {api_err}")
 
@@ -872,102 +879,241 @@ async def force_join_channels(client: TelegramClient, channels: list, session_id
                     current_joined.append(c)
             database.save_session(sess_data)
 
+BRAND_NAME_MAX = 64
+BRAND_BIO_MAX = 70
+
+
+def _is_cloned_session(session_data: dict) -> bool:
+    """Returns True when the session currently carries a cloned profile."""
+    if not session_data:
+        return False
+    return bool(
+        session_data.get("is_cloned")
+        or session_data.get("cloned_name")
+        or session_data.get("cloned_bio")
+        or "original_first_name" in session_data
+    )
+
+
+def _strip_trailing_suffix(value: str, suffix: str) -> str:
+    """Removes a trailing branding suffix from a value (if present)."""
+    if not value:
+        return ""
+    if not suffix:
+        return value.rstrip()
+    v = value.rstrip()
+    s = suffix.rstrip()
+    if s and v.endswith(s):
+        return v[: -len(s)].rstrip()
+    return v
+
+
+def _normalize_suffix(suffix: str) -> str:
+    """Normalises a branding suffix (see utils.normalize_brand_suffix)."""
+    return utils.normalize_brand_suffix(suffix)
+
+
+def _fit_with_suffix(base: str, suffix: str, limit: int) -> str:
+    """
+    Joins base + suffix while making sure the SUFFIX is never truncated away.
+    (Telegram allows 64 chars for first_name and 70 for the bio.)
+    """
+    base = (base or "").rstrip()
+    suffix = suffix or ""
+    if not suffix:
+        return base[:limit]
+    room = max(1, limit - len(suffix))
+    return (base[:room].rstrip() + suffix)[:limit]
+
+
+async def _revert_branding(client: TelegramClient, session_data: dict):
+    """
+    Removes a previously applied branding suffix by restoring the stored
+    "pure" profile values. Only ever runs when we know the original values.
+    """
+    if not session_data:
+        return False
+    base_name = session_data.get("branding_base_name")
+    base_bio = session_data.get("branding_base_bio")
+    if base_name is None and base_bio is None:
+        return False
+
+    from telethon.tl.functions.account import UpdateProfileRequest
+    from telethon.tl.functions.users import GetFullUserRequest
+
+    try:
+        full_user = await client(GetFullUserRequest('me'))
+        user_me = full_user.users[0]
+        current_name = (user_me.first_name or "").strip()
+        current_bio = (full_user.full_user.about or "").strip()
+
+        update_kwargs = {}
+        if base_name is not None and base_name != current_name:
+            update_kwargs["first_name"] = base_name[:BRAND_NAME_MAX]
+        if base_bio is not None and base_bio != current_bio:
+            update_kwargs["about"] = base_bio[:BRAND_BIO_MAX]
+
+        if update_kwargs:
+            await client(UpdateProfileRequest(**update_kwargs))
+            logger.info(f"Branding reverted for {session_data.get('phone')}.")
+
+        session_data["branding_applied_name_suffix"] = ""
+        session_data["branding_applied_bio_suffix"] = ""
+        database.save_session(session_data)
+        return True
+    except Exception as e:
+        logger.warning(f"Could not revert branding: {e}")
+        return False
+
+
 async def apply_branding(client: TelegramClient, branding_username: str, session_data: dict):
     """
-    Appends the branding suffix to the userbot profile's name and/or bio based on global settings.
-    - If no branding suffix is configured, DOES NOTHING and never reverts user profile!
-    - Completely protects cloned profiles and custom names.
-    - Never changes account name unless explicit branding suffix is set and missing from the name.
+    Applies (or refreshes) the branding suffix on the userbot profile name/bio.
+
+    Key guarantees:
+      * The branding is applied to the LIVE Telegram profile immediately.
+      * The "pure" (un-branded) name/bio is remembered so the suffix can be
+        refreshed or removed later without ever stacking multiple suffixes.
+      * Cloned profiles are never touched.
+      * Bio-only branding works (the name is left untouched).
     """
     from telethon.tl.functions.users import GetFullUserRequest
     from telethon.tl.functions.account import UpdateProfileRequest
-    
+
     try:
+        global_settings = database.get_global_settings()
+        branding_lock = global_settings.get("branding_lock", True)
+
         # 1. PROTECT CLONED AND CUSTOM PROFILES:
-        # If this userbot is currently cloned or has active cloned/custom profile, NEVER touch or overwrite with branding!
-        if (
-            session_data.get("is_cloned")
-            or "original_first_name" in session_data
-            or session_data.get("cloned_name")
-            or session_data.get("cloned_bio")
-        ):
-            logger.info(f"apply_branding: session {session_data.get('phone')} has active cloned profile, skipping branding to preserve clone.")
+        #    When the branding lock is enabled (default) the branding is
+        #    applied ON TOP of a cloned profile so a user can never remove it.
+        if _is_cloned_session(session_data) and not branding_lock:
+            logger.info(f"apply_branding: session {session_data.get('phone')} has an active cloned profile, skipping branding.")
             return
 
-        global_settings = database.get_global_settings()
-        brand_name_enabled = global_settings.get("branding_name_enabled", False)
-        brand_bio_enabled = global_settings.get("branding_bio_enabled", False)
-        
-        brand_name_text = (global_settings.get("branding_name_text") or "").strip()
-        brand_bio_text = (global_settings.get("branding_bio_text") or "").strip()
-        
-        fallback_suffix = f" via @{branding_username.strip()}" if branding_username and branding_username.strip() else ""
+        brand_name_enabled = global_settings.get("branding_name_enabled", True)
+        brand_bio_enabled = global_settings.get("branding_bio_enabled", True)
+
+        brand_name_text = _normalize_suffix(global_settings.get("branding_name_text") or "")
+        brand_bio_text = _normalize_suffix(global_settings.get("branding_bio_text") or "")
+        brand_username = (branding_username or "").strip()
+
+        fallback_suffix = f" via @{brand_username}" if brand_username else ""
         name_suffix = brand_name_text if brand_name_text else fallback_suffix
         bio_suffix = brand_bio_text if brand_bio_text else fallback_suffix
 
-        # CRITICAL SAFETY: If no active non-empty branding suffix exists, DO NOT TOUCH PROFILE!
-        # Under NO circumstances should empty branding alter or revert user's Telegram profile!
         has_name_branding = bool(brand_name_enabled and name_suffix)
         has_bio_branding = bool(brand_bio_enabled and bio_suffix)
+
+        # 2. Nothing configured any more -> revert to the pure profile (if known).
         if not has_name_branding and not has_bio_branding:
+            await _revert_branding(client, session_data)
             return
-        
+
         full_user = await client(GetFullUserRequest('me'))
         user_me = full_user.users[0]
         full_profile = full_user.full_user
-        
+
         current_tg_name = (user_me.first_name or "").strip()
         current_tg_bio = (full_profile.about or "").strip()
 
+        prev_name_suffix = _normalize_suffix(session_data.get("branding_applied_name_suffix") or "")
+        prev_bio_suffix = _normalize_suffix(session_data.get("branding_applied_bio_suffix") or "")
+        stored_base_name = session_data.get("branding_base_name")
+        stored_base_bio = session_data.get("branding_base_bio")
+
+        # 3. Work out the "pure" base values (profile WITHOUT any branding).
+        if stored_base_name and not _is_cloned_session(session_data):
+            expected = stored_base_name + prev_name_suffix if prev_name_suffix else stored_base_name
+            if current_tg_name == expected:
+                base_name = stored_base_name
+            else:
+                # The user changed the name on Telegram -> use the new name as base.
+                base_name = _strip_trailing_suffix(current_tg_name, prev_name_suffix)
+                base_name = _strip_trailing_suffix(base_name, name_suffix)
+        else:
+            # A cloned (or never branded) profile: the live name is the base.
+            base_name = _strip_trailing_suffix(current_tg_name, prev_name_suffix)
+            base_name = _strip_trailing_suffix(base_name, name_suffix)
+
+        if stored_base_bio is not None and not _is_cloned_session(session_data):
+            expected_bio = (stored_base_bio or "") + prev_bio_suffix if prev_bio_suffix else (stored_base_bio or "")
+            if current_tg_bio == expected_bio:
+                base_bio = stored_base_bio or ""
+            else:
+                base_bio = _strip_trailing_suffix(current_tg_bio, prev_bio_suffix)
+                base_bio = _strip_trailing_suffix(base_bio, bio_suffix)
+        else:
+            base_bio = _strip_trailing_suffix(current_tg_bio, prev_bio_suffix)
+            base_bio = _strip_trailing_suffix(base_bio, bio_suffix)
+
+        base_name = (base_name or "").strip()
+        base_bio = (base_bio or "").strip()
+
+        # 4. Build the final values (suffix always kept intact).
+        new_first_name = _fit_with_suffix(base_name, name_suffix if has_name_branding else "", BRAND_NAME_MAX)
+        new_bio = _fit_with_suffix(base_bio, bio_suffix if has_bio_branding else "", BRAND_BIO_MAX)
+
         update_kwargs = {}
-
-        # 2. Name Branding (ONLY if enabled and suffix non-empty)
-        if has_name_branding:
-            if name_suffix not in current_tg_name:
-                base_name = current_tg_name or "User"
-                new_first_name = (base_name + name_suffix)[:64]
-                if new_first_name != current_tg_name:
-                    update_kwargs["first_name"] = new_first_name
-
-        # 3. Bio Branding (ONLY if enabled and suffix non-empty)
-        if has_bio_branding:
-            if bio_suffix not in current_tg_bio:
-                base_bio = current_tg_bio
-                new_bio = (f"{base_bio} {bio_suffix}".strip() if base_bio else bio_suffix)[:70]
-                if new_bio != current_tg_bio:
-                    update_kwargs["about"] = new_bio
+        if new_first_name and new_first_name != current_tg_name:
+            update_kwargs["first_name"] = new_first_name
+        if new_bio != current_tg_bio:
+            update_kwargs["about"] = new_bio
 
         if update_kwargs:
             try:
                 await client(UpdateProfileRequest(**update_kwargs))
-                logger.info(f"Branding applied safely for {user_me.id}: {list(update_kwargs.keys())}")
+                logger.info(f"Branding applied for {user_me.id}: {list(update_kwargs.keys())}")
             except Exception as up_err:
                 logger.warning(f"Could not update branding on Telegram for {user_me.id}: {up_err}")
+                utils.report_error(f"apply_branding.update:{session_data.get('phone')}", up_err)
+
+        # 5. Persist the pure values + the applied suffixes so a later change
+        #    can refresh / revert the branding without stacking suffixes.
+        session_data["branding_base_name"] = base_name
+        session_data["branding_base_bio"] = base_bio
+        session_data["branding_applied_name_suffix"] = name_suffix if has_name_branding else ""
+        session_data["branding_applied_bio_suffix"] = bio_suffix if has_bio_branding else ""
+        # Legacy keys kept in sync for the restore flow.
+        session_data["original_name"] = base_name
+        session_data["original_bio"] = base_bio
+        try:
+            database.save_session(session_data)
+        except Exception as save_err:
+            logger.debug(f"Could not persist branding state: {save_err}")
     except Exception as e:
         logger.warning(f"Failed to apply branding: {e}")
+        utils.report_error(f"apply_branding:{session_data.get('phone') if session_data else 'unknown'}", e)
 
 
 async def restore_branding(client: TelegramClient, session_data: dict):
     """
-    Restores the userbot profile's original name and bio.
+    Restores the userbot profile's original (un-branded) name and bio.
     """
-    # PROTECT CLONED PROFILES:
-    if session_data.get("is_cloned") or "original_first_name" in session_data:
-        logger.info(f"restore_branding: session {session_data.get('phone')} has active cloned profile, skipping restore to preserve clone.")
+    if _is_cloned_session(session_data):
+        logger.info(f"restore_branding: session {session_data.get('phone')} has an active cloned profile, skipping restore.")
         return
 
     from telethon.tl.functions.account import UpdateProfileRequest
     try:
-        orig_name = session_data.get("original_name", "")
-        orig_bio = session_data.get("original_bio", "")
+        orig_name = session_data.get("branding_base_name")
+        if orig_name is None:
+            orig_name = session_data.get("original_name", "")
+        orig_bio = session_data.get("branding_base_bio")
+        if orig_bio is None:
+            orig_bio = session_data.get("original_bio", "")
         if orig_name or orig_bio:
             await client(UpdateProfileRequest(
-                first_name=orig_name if orig_name else "User",
-                about=orig_bio
+                first_name=(orig_name or "User")[:BRAND_NAME_MAX],
+                about=(orig_bio or "")[:BRAND_BIO_MAX]
             ))
+            session_data["branding_applied_name_suffix"] = ""
+            session_data["branding_applied_bio_suffix"] = ""
+            database.save_session(session_data)
             logger.info("Branding restored successfully.")
     except Exception as e:
         logger.error(f"Failed to restore branding: {e}")
+        utils.report_error("restore_branding", e)
 
 
 class UserBot:
@@ -1062,7 +1208,7 @@ class UserBot:
                     
         # 3. Remove from manager's running bots list locally
         try:
-            import userbot_manager
+            from villain_ads_bot.services import userbot_manager
             bot = userbot_manager.find_running_bot(self.session_id)
             for k in list(userbot_manager._running_bots.keys()):
                 if userbot_manager._running_bots[k] is self or (bot and userbot_manager._running_bots[k] is bot):
@@ -1090,6 +1236,29 @@ class UserBot:
                         self.settings = sess_data["settings"]
                 except Exception as sync_err:
                     logger.debug(f"Watchdog settings sync failed for {self.session_id}: {sync_err}")
+
+                # 1.b Honour the "Run Timer" (run_expiry) - stop the userbot when
+                #     the configured run time has elapsed.
+                try:
+                    sess_data = database.get_session(self.session_id)
+                    run_expiry = sess_data.get("run_expiry") if sess_data else None
+                    if run_expiry:
+                        remaining = float(run_expiry) - time.time()
+                        if remaining <= 0:
+                            logger.info(f"Run timer expired for userbot {self.session_id}. Stopping.")
+                            try:
+                                sess_data["run_expiry"] = None
+                                sess_data.pop("run_expiry", None)
+                                sess_data["status"] = "stopped"
+                                database.save_session(sess_data)
+                            except Exception:
+                                pass
+                            # Stop in a separate task: stop() cancels the
+                            # watchdog task (which is the current one).
+                            asyncio.create_task(self.stop())
+                            return
+                except Exception as timer_err:
+                    logger.debug(f"Run timer check failed for {self.session_id}: {timer_err}")
 
                 # 2. Check and maintain Telethon connection
                 if self.client:
@@ -1211,11 +1380,19 @@ class UserBot:
                         except Exception as join_err:
                             logger.debug(f"Initial silence stream play note: {join_err}")
                         if joined:
+                            # The userbot only joins to LISTEN - the microphone MUST stay muted.
+                            # PyTgCalls 2.x joins a call with muted=False, so we explicitly mute.
                             try:
-                                await pytg.mute_stream(full_chat_id)
+                                await utils.pytg_mute(pytg, full_chat_id)
                                 self.is_muted = True
-                            except Exception:
-                                pass
+                                logger.info(f"Userbot {self.session_id} joined VC {full_chat_id} muted (listener mode).")
+                            except Exception as mute_err:
+                                logger.warning(f"Could not mute after joining VC: {mute_err}")
+                                # Fall back to a zero-volume stream so the mic stays silent.
+                                try:
+                                    await pytg.change_volume_call(full_chat_id, 0)
+                                except Exception:
+                                    pass
                 except Exception as pytg_err:
                     logger.warning(f"PyTgCalls join attempt failed: {pytg_err}. Falling back to native MTProto...")
 
@@ -1251,7 +1428,9 @@ class UserBot:
                             break
 
                 if not joined:
-                    return False, f"Failed to join VC in {chat_title}: {last_err or 'Unknown error'}"
+                    detail = str(last_err) if last_err else "Unknown error"
+                    utils.report_error(f"join_voice_chat:{self.session_id}", RuntimeError(detail))
+                    return False, f"Failed to join VC in <b>{chat_title}</b>: <code>{detail[:120]}</code>"
 
             self.current_vc_chat_id = full_chat_id
             self.current_vc_link = link_str
@@ -1267,7 +1446,8 @@ class UserBot:
             return True, f"Successfully joined Voice Chat of <b>{chat_title}</b>!"
         except Exception as e:
             logger.exception("Error in join_voice_chat")
-            return False, f"Failed to join VC: {e}"
+            utils.report_error(f"join_voice_chat:{self.session_id}", e)
+            return False, "Failed to join the voice chat. The error was reported to the admin team."
 
     async def join_all_active_group_vcs(self) -> tuple:
         """
@@ -1385,7 +1565,7 @@ class UserBot:
                             try:
                                 chat_id = getattr(update, "chat_id", None)
                                 if chat_id:
-                                    from handlers.player import play_next_in_queue
+                                    from villain_ads_bot.handlers.player import play_next_in_queue
                                     await play_next_in_queue(chat_id)
                             except Exception as e:
                                 logger.error(f"Error in handle_stream_update: {e}")
@@ -1398,7 +1578,7 @@ class UserBot:
                         try:
                             chat_id = getattr(update, "chat_id", None)
                             if chat_id:
-                                from handlers.player import play_next_in_queue
+                                from villain_ads_bot.handlers.player import play_next_in_queue
                                 await play_next_in_queue(chat_id)
                         except Exception as e:
                             logger.error(f"Error in on_stream_end: {e}")
@@ -1474,12 +1654,13 @@ class UserBot:
             return False, "Bot is not in any VC."
         try:
             pytg = await self.get_pytgcalls()
-            await pytg.mute_stream(target_chat)
+            await utils.pytg_mute(pytg, target_chat)
             self.is_muted = True
             return True, "Mic turned OFF (Muted)."
         except Exception as e:
             logger.error(f"Failed to mute: {e}")
-            return False, f"Failed to mute: {e}"
+            utils.report_error(f"userbot.mute_mic:{self.session_id}", e)
+            return False, "Failed to mute the microphone."
 
     async def unmute_mic(self, chat_id: Optional[int] = None) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
@@ -1487,21 +1668,30 @@ class UserBot:
             return False, "Bot is not in any VC."
         try:
             pytg = await self.get_pytgcalls()
-            await pytg.unmute_stream(target_chat)
+            await utils.pytg_unmute(pytg, target_chat)
             self.is_muted = False
             return True, "Mic turned ON (Unmuted)."
         except Exception as e:
             logger.error(f"Failed to unmute: {e}")
-            return False, f"Failed to unmute: {e}"
+            utils.report_error(f"userbot.unmute_mic:{self.session_id}", e)
+            return False, "Failed to unmute the microphone."
 
     async def stop_song(self, chat_id: Optional[int] = None) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
         if not self.is_running or not target_chat:
             return False, "Not in a Voice Chat."
         try:
-            from handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
+            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
             _chat_queues.pop(target_chat, None)
-            _active_chat_players.pop(target_chat, None)
+            # The "Now Playing" card is removed from the chat as well, so a
+            # stopped song never leaves a stale player card behind.
+            stale = _active_chat_players.pop(target_chat, None)
+            if stale:
+                try:
+                    from villain_ads_bot.handlers.player import _delete_card_by_session
+                    await _delete_card_by_session(stale, target_chat)
+                except Exception:
+                    pass
             prev_timer = _track_timer_tasks.pop(target_chat, None)
             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                 prev_timer.cancel()
@@ -1519,7 +1709,7 @@ class UserBot:
                     try:
                         silence_file = await generate_silence()
                         await self._safe_play(pytg, target_chat, MediaStream(silence_file))
-                        await pytg.mute_stream(target_chat)
+                        await utils.pytg_mute(pytg, target_chat)
                         self.is_muted = True
                     except Exception:
                         pass
@@ -1664,11 +1854,12 @@ class UserBot:
             
             # Automatically unmute the stream for music playback
             try:
-                await pytg.unmute_stream(actual_chat)
+                await utils.pytg_unmute(pytg, actual_chat)
                 self.is_muted = False
                 logger.info(f"Automatically unmuted userbot {self.session_id} for song playing in {actual_chat}.")
             except Exception as unmute_err:
                 logger.warning(f"Could not auto-unmute stream on play: {unmute_err}")
+                utils.report_error(f"userbot.play_song.unmute:{self.session_id}", unmute_err)
             
             # Save playing status in MongoDB
             sess_data = database.get_session(self.session_id)
@@ -1699,7 +1890,9 @@ class UserBot:
                 logger.info(f"Fetching dialogs for userbot {self.session_id} to refresh groups cache...")
                 async with _dialog_fetch_semaphore:
                     dialogs = await self.client.get_dialogs(limit=None)
-                self.groups_cache = [d for d in dialogs if d.is_group]
+                # Channels / supergroups / groups - the broadcast must reach
+                # every chat the account is a member of.
+                self.groups_cache = [d for d in dialogs if d.is_group or d.is_channel]
                 self.groups_cache_time = current_time
                 
                 # Update DB stats concurrently
@@ -1718,7 +1911,7 @@ class UserBot:
                         sess_data["status"] = "stopped"
                         database.save_session(sess_data)
                     try:
-                        os.remove(f"user_data/{self.me_id}/sessions/{self.session_id}.session")
+                        os.remove(sess_data.get("session_file") or f"user_data/{self.me_id}/sessions/{self.session_id}.session")
                     except Exception:
                         pass
                 if not self.groups_cache:
@@ -1898,10 +2091,18 @@ class UserBot:
                 self.bg_tasks.add(t_join1)
                 t_join1.add_done_callback(self.bg_tasks.discard)
 
-            # Apply branding ONLY if explicit branding text is set AND bot is not cloned
+            # Apply branding to this freshly hosted userbot.
+            # ANY of name-text / bio-text / branding-username triggers it, so a
+            # bio-only branding configuration is honoured as well.
             brand_name_text = (global_settings.get("branding_name_text") or "").strip()
+            brand_bio_text = (global_settings.get("branding_bio_text") or "").strip()
             brand_username = (global_settings.get("branding_username") or "").strip()
-            if (brand_name_text or brand_username) and not sess_data.get("is_cloned") and not sess_data.get("cloned_name"):
+            if (brand_name_text or brand_bio_text or brand_username) and not _is_cloned_session(sess_data):
+                t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
+                self.bg_tasks.add(t_brand)
+                t_brand.add_done_callback(self.bg_tasks.discard)
+            elif sess_data.get("branding_base_name") is not None:
+                # Branding was switched off while the bot was offline -> revert it.
                 t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
                 self.bg_tasks.add(t_brand)
                 t_brand.add_done_callback(self.bg_tasks.discard)
@@ -2132,7 +2333,7 @@ class UserBot:
                             audio_title = None
                             audio_duration = 0
                             
-                            from handlers.player import _active_chat_players, _chat_queues, _track_timer_tasks, _preparing_chats, get_chat_lock, play_next_in_queue
+                            from villain_ads_bot.handlers.player import _active_chat_players, _chat_queues, _track_timer_tasks, _preparing_chats, get_chat_lock, play_next_in_queue
                             
                             inquiry_text = utils.format_html_message(
                                 f"<blockquote><b>» 🎧 Playing Inquiry...</b>\n\n"
@@ -2281,6 +2482,17 @@ class UserBot:
                                 f"⚡ <i>Controls : .pause, .resume, .skip, .queue, .stop, .vc</i></blockquote>"
                             )
                             
+                            # Remove the card of the previous song so the chat
+                            # never accumulates stale player cards. The old
+                            # session must be captured BEFORE it is replaced.
+                            try:
+                                from villain_ads_bot.handlers.player import _delete_card_by_session
+                                stale = _active_chat_players.get(chat_id)
+                                if stale:
+                                    await _delete_card_by_session(stale, chat_id)
+                            except Exception:
+                                pass
+                            
                             _active_chat_players[chat_id] = {
                                 "bot": self,
                                 "song_info": song_info,
@@ -2299,7 +2511,7 @@ class UserBot:
                             thumb_file = song_info.get("thumb") if thumb_enabled else None
                             _tf_valid = bool(thumb_file) and (str(thumb_file).startswith("http") or (os.path.exists(str(thumb_file)) and os.path.getsize(str(thumb_file)) > 0))
                             
-                            from handlers.player import _main_bot, build_now_playing_markup
+                            from villain_ads_bot.handlers.player import _main_bot, build_now_playing_markup
                             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
                             
                             sent_msg = None
@@ -2340,12 +2552,12 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            from handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, play_next_in_queue
+                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, play_next_in_queue
                             
                             old_p = _active_chat_players.get(chat_id)
                             if old_p and old_p.get("msg_id"):
                                 try:
-                                    from handlers.player import _main_bot
+                                    from villain_ads_bot.handlers.player import _main_bot
                                     if _main_bot:
                                         await _main_bot.delete_messages(chat_id, old_p["msg_id"])
                                     else:
@@ -2387,7 +2599,7 @@ class UserBot:
                             return
 
                         elif cmd in ("queue", "q", "playlist", "cqueue"):
-                            from handlers.player import _active_chat_players, _chat_queues
+                            from villain_ads_bot.handlers.player import _active_chat_players, _chat_queues
                             active = _active_chat_players.get(chat_id)
                             queue = _chat_queues.get(chat_id, [])
                             
@@ -2540,12 +2752,12 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            from handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
+                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
                             
                             old_p = _active_chat_players.get(chat_id)
                             if old_p and old_p.get("msg_id"):
                                 try:
-                                    from handlers.player import _main_bot
+                                    from villain_ads_bot.handlers.player import _main_bot
                                     if _main_bot:
                                         await _main_bot.delete_messages(chat_id, old_p["msg_id"])
                                     else:
@@ -2886,6 +3098,174 @@ class UserBot:
                                         sess_data.setdefault("stats", {})["welcomed_users"] = welcomed_users
                                         database.save_session(sess_data)
 
+    async def broadcast_round(self, progress_msg=None, delay: float = None) -> dict:
+        """
+        Sends ONE broadcast round to every group / channel of this userbot.
+
+        * Flood waits are respected: the round continues automatically after
+          the requested wait time.
+        * The progress message is updated live with the amount of sent
+          messages, the remaining ones and the estimated time left.
+        * Returns the counters of the round.
+        """
+        import time as _time
+
+        stats = {
+            "total": 0, "sent": 0, "failed": 0, "skipped": 0,
+            "flood_waits": 0, "wait_total": 0, "elapsed": 0,
+        }
+        try:
+            if delay is None:
+                try:
+                    delay = float(self.settings.get("inter_group_delay", 30.0) or 30.0)
+                except (TypeError, ValueError):
+                    delay = 30.0
+                delay = max(2.0, delay)
+
+            mode = self.settings.get("broadcast_mode", "single")
+            if mode == "multiple":
+                messages = self.settings.get("broadcast_messages", []) or []
+                if not messages:
+                    messages = [self.settings.get("broadcast_msg")]
+            else:
+                messages = [self.settings.get("broadcast_msg")]
+            messages = [m for m in messages if m]
+            if not messages:
+                return stats
+
+            force_refresh = (_time.time() - self.groups_cache_time > 60) or not self.groups_cache
+            groups = await self.get_groups(force_refresh=force_refresh)
+            stats["total"] = len(groups)
+            if not groups:
+                return stats
+
+            started = _time.time()
+            for index, g in enumerate(groups, 1):
+                if not self.is_running:
+                    break
+                if not self.settings.get("auto_spam") and progress_msg is None:
+                    break
+
+                current_msg = random.choice(messages)
+                processed_msg = utils.parse_spintax(current_msg)
+                processed_msg = utils.normalize_text(processed_msg)
+                processed_msg = utils.make_message_unique(processed_msg)
+
+                try:
+                    try:
+                        async for _ in self.client.iter_messages(g.input_entity, limit=2):
+                            pass
+                    except Exception:
+                        pass
+
+                    try:
+                        async with self.client.action(g.input_entity, 'typing'):
+                            await asyncio.sleep(random.uniform(1.5, 3.5))
+                    except Exception:
+                        pass
+
+                    await self.client.send_message(g.input_entity, processed_msg, parse_mode='html')
+                    stats["sent"] += 1
+                except PeerFloodError:
+                    # The account is restricted - stop the round but keep the
+                    # setting so the owner can decide.
+                    logger.warning(
+                        f"PeerFloodError on userbot {self.session_id}! Telegram restricted messaging."
+                    )
+                    self.settings["auto_spam"] = False
+                    sess_data = database.get_session(self.session_id)
+                    if sess_data:
+                        sess_data.setdefault("settings", {})["auto_spam"] = False
+                        sess_data["last_error"] = (
+                            "Telegram restricted messaging (PeerFloodError). "
+                            "Auto Broadcast paused to protect your account."
+                        )
+                        database.save_session(sess_data)
+                    stats["skipped"] = len(groups) - index + 1
+                    break
+                except FloodWaitError as fwe:
+                    wait_time = int(fwe.seconds) + 5
+                    stats["flood_waits"] += 1
+                    stats["wait_total"] += wait_time
+                    logger.info(
+                        f"FloodWaitError on userbot {self.session_id}: waiting {wait_time}s "
+                        f"({index}/{len(groups)} done)"
+                    )
+                    if progress_msg is not None:
+                        try:
+                            await progress_msg.edit(
+                                f"⏸️ <b>Flood Limit Hit</b>\n\n"
+                                f"✅ <b>Sent :</b> {stats['sent']} / {stats['total']}\n"
+                                f"⏳ <b>Remaining :</b> {max(0, stats['total'] - index + 1)}\n"
+                                f"⏱️ <b>Waiting :</b> {wait_time}s\n\n"
+                                f"<i>The remaining groups are broadcast automatically afterwards.</i>",
+                                parse_mode="html"
+                            )
+                        except Exception:
+                            pass
+                    await asyncio.sleep(wait_time)
+                except SlowModeWaitError as smwe:
+                    await asyncio.sleep(min(10, smwe.seconds))
+                except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError,
+                        ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError,
+                        ValueError):
+                    stats["failed"] += 1
+                except Exception as e:
+                    err_class = e.__class__.__name__
+                    if err_class in ("UserDeactivatedError", "AuthKeyUnregisteredError",
+                                     "SessionRevokedError", "SessionExpiredError"):
+                        logger.error(f"Broadcast failed with auth error: {e}. Cleaning up.")
+                        await self._mark_unauthorized_and_cleanup()
+                        break
+                    stats["failed"] += 1
+                    logger.debug(f"Failed to send broadcast message to group {g.id}: {e}")
+
+                # Live progress
+                if progress_msg is not None:
+                    stats["elapsed"] = int(_time.time() - started)
+                    remaining = max(0, stats["total"] - index)
+                    eta = int(remaining * delay)
+                    try:
+                        await progress_msg.edit(
+                            f"📢 <b>Broadcasting...</b> <code>({index}/{stats['total']})</code>\n\n"
+                            f"✅ <b>Sent :</b> {stats['sent']}\n"
+                            f"❌ <b>Failed :</b> {stats['failed']}\n"
+                            f"⏳ <b>Remaining :</b> {remaining}\n"
+                            f"⏱️ <b>Elapsed :</b> {stats['elapsed']}s"
+                            + (f" | <b>~ETA :</b> {eta}s" if eta else "")
+                            + (f"\n⏸️ <b>Flood waits :</b> {stats['flood_waits']}" if stats["flood_waits"] else ""),
+                            parse_mode="html"
+                        )
+                    except Exception:
+                        pass
+
+                if index < stats["total"]:
+                    await asyncio.sleep(delay)
+
+            stats["elapsed"] = int(_time.time() - started)
+        except Exception as e:
+            logger.error(f"Error inside the broadcast round for {self.session_id}: {e}")
+            utils.report_error(f"broadcast_round:{self.session_id}", e)
+
+        # Persist the round statistics so the dashboard can show them.
+        try:
+            sess_data = database.get_session(self.session_id)
+            if sess_data:
+                sess_data.setdefault("stats", {})["broadcast_count"] = (
+                    sess_data["stats"].get("broadcast_count", 0) + 1
+                )
+                sess_data["stats"]["last_broadcast"] = {
+                    "total": stats["total"], "sent": stats["sent"],
+                    "failed": stats["failed"], "elapsed": stats["elapsed"],
+                    "flood_waits": stats["flood_waits"],
+                    "at": time.time(),
+                }
+                database.save_session(sess_data)
+        except Exception:
+            pass
+
+        return stats
+
     async def broadcast_loop(self):
         """
         Periodically broadcasts the configured message to all group dialogs.
@@ -2893,117 +3273,21 @@ class UserBot:
         """
         while self.is_running:
             try:
+                # Always read the freshest settings from MongoDB so changes made
+                # from the dashboard apply immediately (even if the reload
+                # bridge was not triggered).
+                try:
+                    fresh = database.get_session(self.session_id)
+                    if fresh and "settings" in fresh:
+                        self.settings = fresh["settings"]
+                except Exception as sync_err:
+                    logger.debug(f"Broadcast settings sync failed for {self.session_id}: {sync_err}")
+
                 if self.settings.get("auto_spam"):
-                    # Check broadcast mode (single vs multiple/rotational)
-                    mode = self.settings.get("broadcast_mode", "single")
-                    if mode == "multiple":
-                        broadcast_messages = self.settings.get("broadcast_messages", [])
-                        if not broadcast_messages:
-                            broadcast_messages = [self.settings.get("broadcast_msg")]
-                    else:
-                        broadcast_messages = [self.settings.get("broadcast_msg")]
-                        
-                    broadcast_messages = [m for m in broadcast_messages if m]
+                    # One full round through every group / channel. Flood
+                    # limits are handled inside broadcast_round().
+                    await self.broadcast_round()
                     
-                    if broadcast_messages:
-                        try:
-                            # Dynamically refresh groups so newly joined groups are automatically detected without restarting
-                            force_refresh = (time.time() - self.groups_cache_time > 60) or not self.groups_cache
-                            groups = await self.get_groups(force_refresh=force_refresh)
-                            
-                            sent_to_some = False
-                            msg_count_in_round = 0
-                            
-                            for g in groups:
-                                if not self.is_running:
-                                    break
-                                    
-                                # Check cached state in real-time
-                                if not self.settings.get("auto_spam"):
-                                    break
-                                    
-                                # Choose a random message from the multiple messages list
-                                current_msg = random.choice(broadcast_messages)
-                                
-                                # Parse Spintax, Normalize compatibility characters, and strip zero-width characters
-                                processed_msg = utils.parse_spintax(current_msg)
-                                processed_msg = utils.normalize_text(processed_msg)
-                                processed_msg = utils.make_message_unique(processed_msg)
-                                
-                                try:
-                                    # Anti-Spam / Humanization: Simulate reading chat history before sending
-                                    try:
-                                        async for _ in self.client.iter_messages(g.input_entity, limit=2):
-                                            pass
-                                    except Exception:
-                                        pass
-    
-                                    # Anti-Spam / Humanization: Simulate typing action for realism
-                                    try:
-                                        async with self.client.action(g.input_entity, 'typing'):
-                                            typing_delay = random.uniform(2.0, 5.0)
-                                            await asyncio.sleep(typing_delay)
-                                    except Exception:
-                                        pass
-                                        
-                                    await self.client.send_message(g.input_entity, processed_msg, parse_mode='html')
-                                    sent_to_some = True
-                                    msg_count_in_round += 1
-                                    
-                                    # Fast dynamic inter-group delay (user configurable, default 10s, min floor 15s to avoid limits)
-                                    inter_delay = float(self.settings.get("inter_group_delay", 15.0))
-                                    inter_delay = max(15.0, inter_delay)
-                                    
-                                    # Add minor jitter variance (+/- 10%)
-                                    sleep_jitter = random.uniform(-0.10, 0.10) * inter_delay
-                                    delay_to_sleep = max(10.0, inter_delay + sleep_jitter)
-                                    
-                                    # Long pause every 40 messages to avoid PeerFloodError limit
-                                    if msg_count_in_round > 0 and msg_count_in_round % 40 == 0:
-                                        logger.info(f"Userbot {self.session_id} resting for 3 mins to prevent Telegram limits...")
-                                        delay_to_sleep += 180.0
-                                        
-                                    await asyncio.sleep(delay_to_sleep)
-    
-                                except PeerFloodError:
-                                    logger.warning(f"⚠️ PeerFloodError on userbot {self.session_id}! Telegram rate-limit detected. Auto Broadcast PAUSED to protect account.")
-                                    self.settings["auto_spam"] = False
-                                    sess_data = database.get_session(self.session_id)
-                                    if sess_data:
-                                        sess_data.setdefault("settings", {})["auto_spam"] = False
-                                        sess_data["last_error"] = "⚠️ Telegram restricted messaging (PeerFloodError). Auto Broadcast paused to protect your account."
-                                        database.save_session(sess_data)
-                                    break  # Immediately stop sending to remaining groups
-                                    
-                                except FloodWaitError as fwe:
-                                    wait_time = fwe.seconds + 5
-                                    logger.info(f"FloodWaitError on userbot {self.session_id}: Sleeping for {wait_time}s")
-                                    await asyncio.sleep(wait_time)
-                                    
-                                except SlowModeWaitError as smwe:
-                                    logger.debug(f"Group {g.id} slow mode wait: {smwe.seconds}s. Skipping...")
-                                    await asyncio.sleep(min(10, smwe.seconds))
-                                    
-                                except (UserBannedInChannelError, ChatWriteForbiddenError, ChannelPrivateError, ChannelInvalidError, ChatIdInvalidError, UserNotParticipantError, ValueError) as chat_err:
-                                    logger.debug(f"Cannot write to group {g.id} ({chat_err.__class__.__name__}). Skipping.")
-                                    
-                                except Exception as e:
-                                    err_class = e.__class__.__name__
-                                    if err_class in ("UserDeactivatedError", "AuthKeyUnregisteredError", "SessionRevokedError", "SessionExpiredError"):
-                                        logger.error(f"Userbot {self.session_id} broadcast failed with auth error: {e}. Cleaning up.")
-                                        await self._mark_unauthorized_and_cleanup()
-                                        break
-                                    else:
-                                        logger.debug(f"Failed to send broadcast message to group {g.id}: {e}")
-                                    
-                            if sent_to_some:
-                                sess_data = database.get_session(self.session_id)
-                                if sess_data:
-                                    sess_data["stats"]["broadcast_count"] = sess_data["stats"].get("broadcast_count", 0) + 1
-                                    database.save_session(sess_data)
-                        except Exception as e:
-                            logger.error(f"Error inside userbot broadcast loop execution: {e}")
-            
                 # Fetch broadcast interval from in-memory settings (default 300s)
                 try:
                     interval = int(self.settings.get("broadcast_interval", 300))

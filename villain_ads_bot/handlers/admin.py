@@ -1,8 +1,12 @@
 import logging
+import asyncio
 from telethon import events
-import database
-import config
-import utils
+from telethon.errors import FloodWaitError
+from villain_ads_bot.data import database
+from villain_ads_bot import config
+from villain_ads_bot.core import utils
+from villain_ads_bot.core import ui
+from villain_ads_bot.core import pricing
 import time
 import os
 
@@ -38,7 +42,16 @@ async def show_admin_panel(event, user_id: int):
     global_settings = database.get_global_settings()
     maint_text = "🔴 Disable Maintenance" if global_settings.get("maintenance_mode", False) else "🟢 Enable Maintenance"
     
-    text = utils.get_text("admin_title", lang)
+    from villain_ads_bot.core import pricing as _pricing
+    text = (
+        f"{ui.card_open('Admin Control Panel', 'Owner tools')}\n\n"
+        f"{ui.kv('Slot price', f'₹{_pricing.get_price_per_slot():.2f}', '💸')}\n"
+        f"{ui.kv('USDT rate', f'₹{_pricing.get_usdt_rate():.2f}', '🪙')}\n"
+        f"{ui.kv('TON rate', f'₹{_pricing.get_ton_rate():.2f}', '💎')}\n"
+        f"{ui.kv('API credentials', str(len(global_settings.get('api_credentials', []) or [])), '🔐')}\n"
+        f"{ui.kv('Maintenance', 'ON' if global_settings.get('maintenance_mode', False) else 'OFF', '🛠️')}\n\n"
+        f"{ui.card_close()}"
+    )
     buttons = [
         [
             utils.styled_button(utils.get_text("btn_manage_plans", lang), "admin_manage_plans", style="primary"),
@@ -79,11 +92,19 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button("🎮 Access Userbot By Id", "admin_usr_ctrl_start", style="success")
         ],
         [
-            utils.styled_button("📤 Export All Sessions", "admin_export_all_sessions", style="success")
+            utils.styled_button("📤 Export All Sessions", "admin_export_all_sessions", style="success"),
+            utils.styled_button("📂 Load Accounts From Session Files", "admin_load_sessions_from_disk", style="success")
         ],
         [
-            utils.styled_button("🎁 Gift Slots", "admin_gift_slots", style="success"),
+            utils.styled_button("🎨 Gift Slots", "admin_gift_slots", style="success"),
             utils.styled_button("📊 Set Commission", "admin_set_comm", style="primary")
+        ],
+        [
+            utils.styled_button("💸 Set Price Per Slot (INR)", "admin_set_price", style="primary"),
+            utils.styled_button("🎵 Music API Key", "admin_music_api", style="primary")
+        ],
+        [
+            utils.styled_button("🔐 API ID / API Hash Manager", "admin_api_credentials", style="primary")
         ],
         [
             utils.styled_button("📢 Broadcast", "admin_broadcast", style="primary"),
@@ -103,6 +124,26 @@ async def show_admin_panel(event, user_id: int):
     except Exception:
         await event.respond(text, buttons=buttons)
 
+async def _test_music_api() -> tuple:
+    """Performs a tiny health check against the configured music gateway."""
+    try:
+        import aiohttp
+        from villain_ads_bot.core import music as _music
+
+        url, key, _backup = _music.apply_configured_credentials()
+        if not key:
+            return False, "No music API key is configured"
+        test_url = f"{url}/info/dQw4w9WgXcQ?key={key}"
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(test_url, timeout=timeout) as resp:
+                if resp.status == 200:
+                    return True, f"Music API is ONLINE ({url})"
+                return False, f"Music API returned HTTP {resp.status}"
+    except Exception as e:
+        return False, f"Music API test failed: {e}"
+
+
 def register_handlers(client):
     
     # ------------------ Navigation ------------------
@@ -110,7 +151,7 @@ def register_handlers(client):
     async def admin_cmd(event):
         if not event.is_private:
             return
-        import utils
+        from villain_ads_bot.core import utils
         if await utils.guard(event, client):
             return
         await show_admin_panel(event, event.sender_id)
@@ -158,9 +199,32 @@ def register_handlers(client):
             minutes, seconds = divmod(remainder, 60)
             uptime_str = f"{days}d {hours}h {minutes}m {seconds}s" if days else f"{hours}h {minutes}m {seconds}s"
             
-            # 1. CPU Usage (sample over 0.3 seconds)
-            cpu_pct = psutil.cpu_percent(interval=0.3)
+            # 1. CPU Usage (short sample so the very first reading is correct)
+            try:
+                cpu_pct = psutil.cpu_percent(interval=0.2)
+            except Exception:
+                cpu_pct = 0.0
+            
+            # Effective CPU cores (respects a container / cgroup CPU quota)
             cpu_cores = psutil.cpu_count(logical=True) or 1
+            quota_cores = None
+            try:
+                if os.path.exists("/sys/fs/cgroup/cpu.max"):
+                    with open("/sys/fs/cgroup/cpu.max", "r") as f:
+                        parts = f.read().split()
+                    if len(parts) == 2 and parts[0] != "max":
+                        quota_cores = max(1.0, int(parts[0]) / int(parts[1]))
+                elif os.path.exists("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") and os.path.exists("/sys/fs/cgroup/cpu/cpu.cfs_period_us"):
+                    with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r") as f:
+                        quota = int(f.read().strip())
+                    with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r") as f:
+                        period = int(f.read().strip())
+                    if quota > 0 and period > 0:
+                        quota_cores = max(1.0, quota / period)
+            except Exception:
+                quota_cores = None
+            if quota_cores:
+                cpu_cores = max(1, int(round(quota_cores)))
             
             # 2. RAM Usage (Container cgroup aware)
             cgroup_mem_limit = None
@@ -177,6 +241,20 @@ def register_handlers(client):
                         val = f.read().strip()
                         if val.isdigit():
                             cgroup_mem_usage = int(val)
+                    # memory.current also counts the page cache -> read the real
+                    # (anonymous) memory usage from memory.stat when possible.
+                    anon = None
+                    if os.path.exists("/sys/fs/cgroup/memory.stat"):
+                        try:
+                            with open("/sys/fs/cgroup/memory.stat", "r") as f:
+                                for line in f:
+                                    if line.startswith("anon "):
+                                        anon = int(line.split()[1])
+                                        break
+                        except Exception:
+                            anon = None
+                    if anon is not None:
+                        cgroup_mem_usage = anon
                 except Exception:
                     pass
                     
@@ -192,6 +270,19 @@ def register_handlers(client):
                             val = f.read().strip()
                             if val.isdigit():
                                 cgroup_mem_usage = int(val)
+                    # v1: exclude the page cache as well
+                    if os.path.exists("/sys/fs/cgroup/memory/memory.stat"):
+                        try:
+                            rss = None
+                            with open("/sys/fs/cgroup/memory/memory.stat", "r") as f:
+                                for line in f:
+                                    if line.startswith("rss "):
+                                        rss = int(line.split()[1])
+                                        break
+                            if rss is not None:
+                                cgroup_mem_usage = rss
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -203,8 +294,10 @@ def register_handlers(client):
                 ram_pct = round((used_ram_mb / total_ram_mb) * 100, 1) if total_ram_mb else sys_mem.percent
             else:
                 total_ram_mb = sys_mem.total // (1024 ** 2)
-                used_ram_mb = sys_mem.used // (1024 ** 2)
-                ram_pct = sys_mem.percent
+                # Use a consistent numerator/denominator pair so the percentage
+                # always matches the displayed MB values.
+                used_ram_mb = sys_mem.total // (1024 ** 2) - sys_mem.available // (1024 ** 2)
+                ram_pct = round((sys_mem.total - sys_mem.available) / sys_mem.total * 100, 1) if sys_mem.total else sys_mem.percent
 
             # Bot Process RAM
             proc_mem_bytes = 0
@@ -220,8 +313,9 @@ def register_handlers(client):
                 pass
             proc_ram_mb = round(proc_mem_bytes / (1024 ** 2), 1)
 
-            # 3. Disk Usage
-            disk_path = "C:\\" if os.name == 'nt' else '/'
+            # 3. Disk Usage - measure the disk the bot actually lives on
+            disk_path = os.path.dirname(os.path.abspath(__file__))
+            disk_path = os.path.dirname(disk_path) if os.path.basename(disk_path) == "handlers" else disk_path
             try:
                 disk = psutil.disk_usage(disk_path)
                 disk_pct = disk.percent
@@ -230,13 +324,17 @@ def register_handlers(client):
             except Exception:
                 disk_pct, disk_used_gb, disk_total_gb = 0, 0, 0
 
-            # Downloads folder size
+            # Downloads folder size (resolved relative to the bot root)
             dl_mb = 0
-            if os.path.exists("downloads"):
+            downloads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+            if os.path.exists(downloads_dir):
                 try:
-                    for root, dirs, files in os.walk("downloads"):
+                    for root, dirs, files in os.walk(downloads_dir):
                         for f in files:
-                            dl_mb += os.path.getsize(os.path.join(root, f))
+                            try:
+                                dl_mb += os.path.getsize(os.path.join(root, f))
+                            except Exception:
+                                pass
                     dl_mb = round(dl_mb / (1024 ** 2), 1)
                 except Exception:
                     pass
@@ -250,7 +348,7 @@ def register_handlers(client):
                 sent_mb, recv_mb = 0, 0
 
             # 5. Running UserBots & System Threads
-            import userbot_manager
+            from villain_ads_bot.services import userbot_manager
             running_bots = len(getattr(userbot_manager, "_running_bots", {}))
             threads_count = threading.active_count()
 
@@ -264,7 +362,8 @@ def register_handlers(client):
                 f"📁 <b>Downloads Cache :</b> <code>{dl_mb} MB</code>\n"
                 f"📡 <b>Network I/O :</b> <code>⬆️ {sent_mb}MB | ⬇️ {recv_mb}MB</code>\n"
                 f"🤖 <b>Active Userbots :</b> <code>{running_bots} Running</code>\n"
-                f"🧵 <b>System Threads :</b> <code>{threads_count} Active</code></blockquote>"
+                f"🧵 <b>System Threads :</b> <code>{threads_count} Active</code>\n"
+                f"📂 <b>Disk Path :</b> <code>{disk_path}</code></blockquote>"
             )
             
             buttons = [
@@ -275,7 +374,8 @@ def register_handlers(client):
             await event.edit(text, buttons=buttons, parse_mode="html")
         except Exception as e:
             logger.error(f"VPS Usage error: {e}")
-            await event.answer(f"Failed to fetch VPS stats: {e}", alert=True)
+            utils.report_error("admin.vps_usage", e)
+            await event.answer("Failed to fetch VPS stats. The error was reported to the log group.", alert=True)
 
     @client.on(events.CallbackQuery(pattern="^admin_sys_vc_menu$"))
     async def admin_sys_vc_menu_callback(event):
@@ -379,7 +479,7 @@ def register_handlers(client):
         total = len(all_sessions)
         progress_msg = await event.reply(f"⏳ <b>Disconnecting {total} bots from Voice Chats...</b>")
         
-        import userbot_manager
+        from villain_ads_bot.services import userbot_manager
         success_count = 0
         for s in all_sessions:
             phone_num = s["phone"]
@@ -429,7 +529,7 @@ def register_handlers(client):
             from telethon.errors import SessionExpiredError
         except ImportError:
             SessionExpiredError = None
-        import userbot_manager
+        from villain_ads_bot.services import userbot_manager
         import glob
         import asyncio
 
@@ -603,7 +703,7 @@ def register_handlers(client):
         user_id = event.sender_id
         if not check_admin(user_id):
             return
-        from handlers.my_bots import show_all_slots_dashboard, set_admin_impersonation
+        from villain_ads_bot.handlers.my_bots import show_all_slots_dashboard, set_admin_impersonation
         set_admin_impersonation(user_id, "__ALL__")
         await show_all_slots_dashboard(event, user_id, flash_message="<blockquote><b>» 👑 Owner Panel:</b> Controlling All Userbots In System!</blockquote>", fetch_all=True)
 
@@ -886,7 +986,7 @@ def register_handlers(client):
         except Exception:
             await event.respond(prompt_text, buttons=buttons)
 
-    @client.on(events.CallbackQuery(pattern=r"^admin_(set_(price|fj|lg|bu|bd|imgs|upi|usdt|ton|usdt_rate|ton_rate|ub_joins|comm)|join_all_sessions|add_admin|rem_admin)$"))
+    @client.on(events.CallbackQuery(pattern=r"^admin_(set_(price|fj|lg|bu|bd|imgs|upi|usdt|ton|usdt_rate|ton_rate|ub_joins|comm|music_key|music_url|music_backup_url)|join_all_sessions|add_admin|rem_admin|add_api_cred)$"))
     async def admin_setting_callback(event):
         action = event.pattern_match.group(1)
         user_id = event.sender_id
@@ -916,7 +1016,10 @@ def register_handlers(client):
             "set_ub_joins": "prompt_set_ub_joins",
             "set_comm": "prompt_set_comm",
             "add_admin": "prompt_add_admin",
-            "rem_admin": "prompt_rem_admin"
+            "rem_admin": "prompt_rem_admin",
+            "set_price": "prompt_set_price",
+            "set_music_key": "prompt_set_music_key",
+            "add_api_cred": "prompt_add_api_cred"
         }
         
         prompt_key = prompt_keys.get(action, "error_generic")
@@ -937,7 +1040,29 @@ def register_handlers(client):
         elif action == "join_all_sessions":
             prompt_text = "<blockquote><b>» 👥 Join All Sessions</b>\n\nSend The Invite Link/Username Of The Group Or Channel That All Logged-In Accounts Should Join :</blockquote>"
         elif action == "set_comm":
-            prompt_text = "<blockquote><b>» 📊 Send The New Referral Commission Rate</b> (0.01 - 0.99 for 1%-99%):</blockquote>"
+            prompt_text = "<blockquote><b>📊 Send The New Referral Commission Rate</b> (0.01 - 0.99 for 1%-99%):</blockquote>"
+        elif action == "set_price":
+            prompt_text = (
+                f"{ui.card('Set Price Per Slot', '', 'The single source of truth for every slot price', '💸')}\n\n"
+                f"{ui.kv('Current price', f'₹{pricing.get_price_per_slot():.2f}', '💸')}\n"
+                f"{ui.kv('USDT rate', f'₹{pricing.get_usdt_rate():.2f} / USDT', '🪙')}\n"
+                f"{ui.kv('TON rate', f'₹{pricing.get_ton_rate():.2f} / TON', '💎')}\n\n"
+                f"{ui.help_hint('Send the new price of ONE slot in INR (e.g. 25).')}\n"
+                f"{ui.help_hint('USDT and TON amounts are calculated automatically from the rates above.')}"
+            )
+        elif action == "set_music_key":
+            prompt_text = (
+                f"{ui.card('Set Music API Key', '', 'Yuki / Meow music gateway credentials', '🎵')}\n\n"
+                f"{ui.help_hint('Send the new API key (or the word none to clear it).')}\n"
+                f"{ui.help_hint('Example : yuki_8641adadf64870f3065dd502c8ee30f1')}"
+            )
+        elif action == "add_api_cred":
+            prompt_text = (
+                f"{ui.card('Add API Credentials', '', 'Add an extra Telegram API_ID / API_HASH pair', '🔐')}\n\n"
+                f"{ui.help_hint('Send them in the format:')}\n"
+                f"<code>12345678:0123456789abcdef0123456789abcdef</code>\n\n"
+                f"{ui.help_hint('The pair is used round-robin so your accounts never hit a flood-wait.')}"
+            )
         else:
             prompt_text = utils.get_text(prompt_key, lang)
             
@@ -1055,7 +1180,7 @@ def register_handlers(client):
             await event.respond(prompt_text, buttons=buttons)
 
     async def _execute_global_ub_broadcast(client, prog_msg, target, target_title, broadcast_msg, active_sessions):
-        import userbot_manager
+        from villain_ads_bot.services import userbot_manager
         from telethon.errors import (
             FloodWaitError, ChatWriteForbiddenError, UserBannedInChannelError,
             ChatAdminRequiredError, ChannelPrivateError, SlowModeWaitError
@@ -1495,9 +1620,50 @@ def register_handlers(client):
                 await admin_manage_plans_callback(MockEvent(user_id, event))
                 return
 
-            # 1. Set global Price per extra ID
+            # 1. Set the global price per slot (INR) - USDT/TON are derived
             elif action == "WAITING_FOR_SET_PRICE":
-                global_settings["price_per_id"] = float(val_str)
+                new_price = float(val_str)
+                if new_price <= 0:
+                    raise ValueError
+                global_settings["price_per_id"] = new_price
+                global_settings["price_per_slot"] = new_price
+                success = True
+
+            # 1.b Set the music (Yuki / Meow) API key
+            elif action == "WAITING_FOR_SET_MUSIC_KEY":
+                if val_str.lower() == "none":
+                    global_settings["music_api_key"] = None
+                else:
+                    global_settings["music_api_key"] = val_str.strip()
+                success = True
+
+            # 1.c Add a new API_ID / API_HASH pair
+            elif action == "WAITING_FOR_ADD_API_CRED":
+                raw = val_str.replace(" ", "")
+                if ":" not in raw:
+                    raise ValueError
+                api_id_part, api_hash_part = raw.split(":", 1)
+                if not api_id_part.isdigit() or len(api_hash_part) < 16:
+                    raise ValueError
+                creds = list(global_settings.get("api_credentials", []) or [])
+                creds = [c for c in creds if str(c.get("api_id")) != api_id_part]
+                creds.append({"api_id": int(api_id_part), "api_hash": api_hash_part})
+                global_settings["api_credentials"] = creds
+                success = True
+
+            # 1.d Set the primary / backup music gateway urls
+            elif action == "WAITING_FOR_SET_MUSIC_URL":
+                url = val_str.strip().rstrip("/")
+                if not url.startswith("http"):
+                    raise ValueError
+                global_settings["music_api_url"] = url
+                success = True
+
+            elif action == "WAITING_FOR_SET_MUSIC_BACKUP_URL":
+                url = val_str.strip().rstrip("/")
+                if not url.startswith("http"):
+                    raise ValueError
+                global_settings["music_backup_api_url"] = url
                 success = True
                 
             # 2. Set Force Join channels
@@ -1542,6 +1708,14 @@ def register_handlers(client):
                     global_settings["branding_bio_text"] = None
                 else:
                     global_settings["branding_bio_text"] = val_str
+                success = True
+                
+            # Set branding username (from the branding screen)
+            elif action == "WAITING_FOR_BRAND_USERNAME_TXT":
+                if val_str.lower() == "none":
+                    global_settings["branding_username"] = None
+                else:
+                    global_settings["branding_username"] = val_str.replace("@", "").strip()
                 success = True
                 
             # 6. Set Individual Images
@@ -1642,8 +1816,8 @@ def register_handlers(client):
                 
                 progress_msg = await event.reply(f"⏳ <b>Executing '{action_name}' on all {total} bots...</b>\nPlease wait, this may take a while as offline bots will be temporarily started.")
                 
-                from userbot import join_channel_single, leave_channel_single
-                import userbot_manager
+                from villain_ads_bot.services.userbot import join_channel_single, leave_channel_single
+                from villain_ads_bot.services import userbot_manager
                 
                 async def _sys_action_one_db_account(s):
                     phone_num = s["phone"]
@@ -1655,7 +1829,21 @@ def register_handlers(client):
                         return False
                         
                     if action == "WAITING_FOR_SYS_JOIN_GRP":
-                        ok = await join_channel_single(bot_obj.client, link)
+                        try:
+                            ok = await join_channel_single(bot_obj.client, link)
+                        except Exception as join_exc:
+                            # A flood limit on one account must not break the
+                            # whole system action - the account waits and retries.
+                            seconds = getattr(join_exc, "seconds", 0) or 0
+                            if seconds:
+                                seconds = min(int(seconds), 900)
+                                logger.warning(
+                                    f"Flood wait of {seconds}s on {phone_num} - waiting."
+                                )
+                                await asyncio.sleep(seconds)
+                                ok = await join_channel_single(bot_obj.client, link)
+                            else:
+                                raise
                         if ok:
                             bot_obj.groups_cache_time = 0
                         return ok
@@ -1983,12 +2171,21 @@ def register_handlers(client):
         if success:
             database.save_global_settings(global_settings)
             
-            if action in ("WAITING_FOR_SET_BU", "WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT"):
-                import userbot_manager
+            # A new music gateway configuration must take effect immediately.
+            if action in ("WAITING_FOR_SET_MUSIC_KEY", "WAITING_FOR_SET_MUSIC_URL",
+                          "WAITING_FOR_SET_MUSIC_BACKUP_URL"):
+                try:
+                    from villain_ads_bot.core import music as _music
+                    _music.apply_configured_credentials()
+                except Exception as m_err:
+                    logger.warning(f"Could not apply the music credentials: {m_err}")
+                    
+            if action in ("WAITING_FOR_SET_BU", "WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT", "WAITING_FOR_BRAND_USERNAME_TXT"):
+                from villain_ads_bot.services import userbot_manager
                 client.loop.create_task(userbot_manager.broadcast_branding_update())
                 
             await event.reply(utils.get_text("admin_updated", lang))
-            if action in ("WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT"):
+            if action in ("WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT", "WAITING_FOR_BRAND_USERNAME_TXT"):
                 await show_branding_settings(event, user_id)
                 return
             if action in ("WAITING_FOR_SET_START_IMG", "WAITING_FOR_SET_PING_IMG", "WAITING_FOR_SET_HELP_IMG", "WAITING_FOR_SET_IMGS"):
@@ -2084,7 +2281,7 @@ def register_handlers(client):
         if not check_admin(user_id):
             return
         
-        from handlers.my_bots import show_all_slots_dashboard, set_admin_impersonation
+        from villain_ads_bot.handlers.my_bots import show_all_slots_dashboard, set_admin_impersonation
         set_admin_impersonation(user_id, target_uid)
         await show_all_slots_dashboard(event, target_uid, flash_message=f"👑 <b>Admin Access</b>: Controlling UserBots for User `{target_uid}`")
 
@@ -2128,6 +2325,85 @@ def register_handlers(client):
     async def admin_branding_settings_callback(event):
         await show_branding_settings(event, event.sender_id)
 
+    @client.on(events.CallbackQuery(pattern="^admin_load_sessions_from_disk$"))
+    async def admin_load_sessions_from_disk_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        await event.answer("📂 Scanning session files...", alert=True)
+        from villain_ads_bot.services import userbot_manager
+        try:
+            files = userbot_manager.list_session_files()
+            imported, skipped, records = userbot_manager.import_sessions_from_disk()
+            known = database.get_sessions()
+            lines = [
+                "<blockquote><b>» 📂 Session Files On Disk</b>\n",
+                f"📁 <b>Files Found :</b> <code>{len(files)}</code>\n",
+                f"🆕 <b>Newly Registered :</b> <code>{imported}</code>\n",
+                f"♻️ <b>Already Known :</b> <code>{skipped}</code>\n",
+                f"🗄️ <b>Total Accounts In DB :</b> <code>{len(known)}</code>\n",
+            ]
+            if files:
+                lines.append("\n<b>Accounts :</b>")
+                for f in files[:60]:
+                    owner = f.get("owner_id")
+                    dc = f.get("dc_id")
+                    key = "✅" if f.get("has_auth_key") else "⚠️"
+                    lines.append(f"\n{key} <code>{f['session_id']}</code> <i>(owner {owner} | DC {dc})</i>")
+                if len(files) > 60:
+                    lines.append(f"\n<i>…and {len(files) - 60} more</i>")
+            lines.append("\n\n💡 <i>Use <b>🚀 Apply Branding</b> / <b>Start</b> to log these accounts in.</i></blockquote>")
+
+            buttons = [
+                [utils.styled_button("🔑 Login All Accounts From Disk", "admin_login_sessions_from_disk", style="success")],
+                [utils.styled_button("🔄 Refresh", "admin_load_sessions_from_disk", style="primary")],
+                [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="danger")]
+            ]
+            await event.edit("\n".join(lines), buttons=buttons, parse_mode="html")
+        except Exception as e:
+            logger.error(f"Load sessions from disk failed: {e}")
+            utils.report_error("admin_load_sessions_from_disk", e)
+            await event.answer("❌ Failed to scan the session files.", alert=True)
+
+    @client.on(events.CallbackQuery(pattern="^admin_login_sessions_from_disk$"))
+    async def admin_login_sessions_from_disk_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        status_msg = await event.edit("<blockquote><b>» 🔑 Logging In All Accounts From Session Files...</b>\n\n<i>Please wait, this can take a moment.</i></blockquote>", parse_mode="html")
+        from villain_ads_bot.services import userbot_manager
+        try:
+            result = await userbot_manager.login_all_sessions_from_disk()
+            lines = [
+                "<blockquote><b>» 🔑 Session Login Results</b>\n",
+                f"🆕 <b>Newly Registered :</b> <code>{result['imported']}</code>\n",
+                f"♻️ <b>Already Known :</b> <code>{result['already_known']}</code>\n",
+                f"✅ <b>Logged In (Running) :</b> <code>{result['started']}</code>\n",
+                f"❌ <b>Failed :</b> <code>{result['failed']}</code>\n",
+                f"📁 <b>Total Session Files :</b> <code>{result['total']}</code>\n",
+            ]
+            if result.get("details"):
+                lines.append("\n<b>Details :</b>")
+                for sid, note in result["details"][:60]:
+                    lines.append(f"\n• <code>{sid}</code> — <i>{note}</i>")
+            lines.append("</blockquote>")
+            buttons = [
+                [utils.styled_button("🔄 Refresh", "admin_load_sessions_from_disk", style="primary")],
+                [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="danger")]
+            ]
+            await event.edit("\n".join(lines), buttons=buttons, parse_mode="html")
+        except Exception as e:
+            logger.error(f"Login all sessions from disk failed: {e}")
+            utils.report_error("admin_login_sessions_from_disk", e)
+            try:
+                await status_msg.edit("<blockquote><b>» ❌ Login Failed</b>\n\n⚠️ <i>The error was reported to the admin team.</i></blockquote>", parse_mode="html")
+            except Exception:
+                pass
+
     @client.on(events.CallbackQuery(pattern=r"^admin_tgl_pay_(upi|usdt|ton)$"))
     async def admin_tgl_pay_opt_callback(event):
         user_id = event.sender_id
@@ -2162,10 +2438,171 @@ def register_handlers(client):
         global_settings[key] = not global_settings.get(key, True)
         database.save_global_settings(global_settings)
         
-        import userbot_manager
+        from villain_ads_bot.services import userbot_manager
         client.loop.create_task(userbot_manager.broadcast_branding_update())
         
         await show_branding_settings(event, user_id)
+
+    @client.on(events.CallbackQuery(pattern="^admin_music_api$"))
+    async def admin_music_api_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        global_settings = database.get_global_settings()
+        from villain_ads_bot.core import music as _music
+        url, key, backup = _music.get_configured_credentials()
+        masked = _music.mask_key(key)
+
+        text = (
+            f"{ui.card('Music API Settings', '', 'Yuki / Meow music gateway', '🎵')}\n\n"
+            f"{ui.kv('API key', str(masked), '🔑')}\n"
+            f"{ui.kv('Primary URL', str(url), '🌐')}\n"
+            f"{ui.kv('Backup URL', str(backup), '🔗')}\n\n"
+            f"{ui.help_hint('The key is used for streaming, search, lyrics and track info.')}"
+        )
+        buttons = [
+            [utils.styled_button("🔑 Set API Key", "admin_set_music_key", style="primary")],
+            [utils.styled_button("🔗 Set Primary URL", "admin_set_music_url", style="primary")],
+            [utils.styled_button("🔗 Set Backup URL", "admin_set_music_backup_url", style="primary")],
+            [utils.styled_button("✅ Test Connection", "admin_test_music_api", style="success")],
+            [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="danger")]
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_set_music_key$"))
+    async def admin_set_music_key_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_SET_MUSIC_KEY"
+        prompt_text = (
+            f"{ui.card('Set Music API Key', '', 'Paste the new key', '🎵')}\n\n"
+            f"{ui.help_hint('Send the API key or the word none to clear it.')}"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "admin_music_api", style="danger")]]
+        try:
+            await event.edit(prompt_text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt_text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_test_music_api$"))
+    async def admin_test_music_api_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+        await event.answer("🧪 Testing the music gateway...", alert=True)
+        ok, detail = await _test_music_api()
+        await event.answer(("✅ " if ok else "❌ ") + detail[:180], alert=True)
+
+    @client.on(events.CallbackQuery(pattern="^admin_set_music_url$"))
+    async def admin_set_music_url_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_SET_MUSIC_URL"
+        prompt_text = (
+            f"{ui.card('Set Primary Music URL', '', 'The main Yuki / Meow gateway', '🎵')}\n\n"
+            f"{ui.help_hint('Send the base url, e.g. https://music.yukiapi.site')}"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "admin_music_api", style="danger")]]
+        try:
+            await event.edit(prompt_text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt_text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_set_music_backup_url$"))
+    async def admin_set_music_backup_url_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_SET_MUSIC_BACKUP_URL"
+        prompt_text = (
+            f"{ui.card('Set Backup Music URL', '', 'The failover Yuki / Meow gateway', '🎵')}\n\n"
+            f"{ui.help_hint('Send the base url, e.g. https://play.yukiapi.site')}"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "admin_music_api", style="danger")]]
+        try:
+            await event.edit(prompt_text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt_text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_api_credentials$"))
+    async def admin_api_credentials_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        global_settings = database.get_global_settings()
+        creds = global_settings.get("api_credentials", []) or []
+        env_pairs = config.get_all_api_pairs()
+
+        lines = []
+        if creds:
+            for idx, cred in enumerate(creds):
+                lines.append(
+                    f"🔐 <code>{cred.get('api_id')}</code> • "
+                    f"<code>{str(cred.get('api_hash'))[:6]}{'•' * 26}</code>"
+                )
+        if not lines:
+            lines.append("📄 <i>No panel managed credentials yet.</i>")
+
+        text = (
+            f"{ui.card('API Credentials', '', 'Multiple API_ID / API_HASH pairs avoid flood-waits', '🔐')}\n\n"
+            f"{ui.kv('Panel managed', str(len(creds)), '🔐')}\n"
+            f"{ui.kv('Total available', str(len(env_pairs)), '✅')}\n\n"
+            + "\n".join(lines)
+            + "\n\n"
+            f"{ui.help_hint('Credentials are picked deterministically per account so a session always keeps the same API id.')}"
+        )
+        buttons = [
+            [utils.styled_button("🔐 Add API ID / Hash", "admin_add_api_cred", style="success")]
+        ]
+        if creds:
+            buttons.append([utils.styled_button("🗑 Remove Last Credential", "admin_remove_api_cred", style="danger")])
+        buttons.append([utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="danger")])
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_add_api_cred$"))
+    async def admin_add_api_cred_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_ADD_API_CRED"
+        prompt_text = (
+            f"{ui.card('Add API Credentials', '', 'Send API_ID:API_HASH in one line', '🔐')}\n\n"
+            f"<code>12345678:0123456789abcdef0123456789abcdef</code>\n\n"
+            f"{ui.help_hint('Send the word cancel to abort.')}"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "admin_api_credentials", style="danger")]]
+        try:
+            await event.edit(prompt_text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt_text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_remove_api_cred$"))
+    async def admin_remove_api_cred_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+        global_settings = database.get_global_settings()
+        creds = list(global_settings.get("api_credentials", []) or [])
+        if creds:
+            removed = creds.pop()
+            global_settings["api_credentials"] = creds
+            database.save_global_settings(global_settings)
+            await event.answer(f"🗑 Removed API ID {removed.get('api_id')}", alert=True)
+        else:
+            await event.answer("ℹ️ Nothing to remove.", alert=True)
+        await admin_api_credentials_callback(event)
 
     @client.on(events.CallbackQuery(pattern=r"^admin_set_brand_(name|bio)_txt$"))
     async def admin_set_branding_text_callback(event):
@@ -2187,6 +2624,64 @@ def register_handlers(client):
         except Exception:
             await event.respond(prompt_text, buttons=buttons)
 
+    @client.on(events.CallbackQuery(pattern=r"^admin_set_brand_username_txt$"))
+    async def admin_set_branding_username_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+
+        _admin_action_states[user_id] = "WAITING_FOR_BRAND_USERNAME_TXT"
+
+        prompt_text = (
+            "<blockquote><b>🔗 Set Branding Username</b>\n\n"
+            "Send the Telegram username (without @) that should be used as the fallback branding suffix.\n\n"
+            "Example: <code>MySupportBot</code>\n\n"
+            "💡 <i>Used as <code> via @MySupportBot</code> whenever no explicit name/bio suffix is configured.</i></blockquote>"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "admin_branding_settings", style="danger")]]
+        try:
+            await event.edit(prompt_text, buttons=buttons)
+        except Exception:
+            await event.respond(prompt_text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_tgl_brand_lock_opt$"))
+    async def admin_toggle_branding_lock_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        await event.answer()
+        global_settings = database.get_global_settings()
+        current = global_settings.get("branding_lock", True)
+        global_settings["branding_lock"] = not current
+        database.save_global_settings(global_settings)
+
+        import userbot_manager
+        client.loop.create_task(userbot_manager.broadcast_branding_update())
+
+        state = "ON" if not current else "OFF"
+        await event.answer(f"🔒 Branding lock turned {state}.", alert=True)
+        await show_branding_settings(event, user_id)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_apply_branding_now$"))
+    async def admin_apply_branding_now_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        await event.answer("🚀 Applying branding to all userbots...", alert=True)
+        from villain_ads_bot.services import userbot_manager
+        try:
+            await userbot_manager.broadcast_branding_update()
+            await event.answer("✅ Branding applied to all userbots.", alert=True)
+        except Exception as e:
+            logger.error(f"Manual branding apply failed: {e}")
+            utils.report_error("admin_apply_branding_now", e)
+            await event.answer("❌ Failed to apply branding.", alert=True)
+        await show_branding_settings(event, user_id)
+
 
 async def show_branding_settings(event, user_id: int):
     user = database.get_user(user_id)
@@ -2199,16 +2694,23 @@ async def show_branding_settings(event, user_id: int):
     global_settings = database.get_global_settings()
     brand_name_val = "✅ ON" if global_settings.get("branding_name_enabled", True) else "❌ OFF"
     brand_bio_val = "✅ ON" if global_settings.get("branding_bio_enabled", True) else "❌ OFF"
-    name_text = global_settings.get("branding_name_text") or "Not Set (Fallback:  via @BotUsername)"
-    bio_text = global_settings.get("branding_bio_text") or "Not Set (Fallback:  via @BotUsername)"
+    brand_lock_val = "🔒 LOCKED" if global_settings.get("branding_lock", True) else "🔓 UNLOCKED"
+    brand_username = (global_settings.get("branding_username") or "").strip()
+    name_text = global_settings.get("branding_name_text") or "Not Set"
+    bio_text = global_settings.get("branding_bio_text") or "Not Set"
+    fallback_note = f" via @{brand_username}" if brand_username else "Not Set"
     
     text = (
-        "<blockquote><b>» 🎨 Branding Configurations</b>\n\n"
-        f"📛 <b>Name Branding :</b> {brand_name_val}\n"
-        f"Suffix: <code>{name_text}</code>\n\n"
-        f"📝 <b>Bio Branding :</b> {brand_bio_val}\n"
-        f"Suffix: <code>{bio_text}</code>\n\n"
-        "⚡ <i>Configure Global Branding Text Appended To Userbots.</i></blockquote>"
+        f"{ui.card('Branding Configurations', '', 'Global branding for every hosted userbot', '🎨')}\n\n"
+        f"{ui.kv('Name branding', brand_name_val, '📛')}\n"
+        f"{ui.kv('Name suffix', str(name_text), '✏️')}\n\n"
+        f"{ui.kv('Bio branding', brand_bio_val, '📝')}\n"
+        f"{ui.kv('Bio suffix', str(bio_text), '✏️')}\n\n"
+        f"{ui.kv('Branding username', brand_username or 'Not Set', '🔗')}\n"
+        f"{ui.kv('Fallback suffix', fallback_note, '↪️')}\n"
+        f"{ui.kv('Branding lock', brand_lock_val, '🔒')}\n\n"
+        f"{ui.help_hint('The branding is applied to every userbot instantly when you save it, and to every userbot hosted in the future.')}\n"
+        f"{ui.help_hint('With the lock enabled no user can remove the branding from their account.')}"
     )
     
     buttons = [
@@ -2219,6 +2721,13 @@ async def show_branding_settings(event, user_id: int):
         [
             utils.styled_button("✏️ Set Name Suffix", "admin_set_brand_name_txt", style="primary"),
             utils.styled_button("✏️ Set Bio Suffix", "admin_set_brand_bio_txt", style="primary")
+        ],
+        [
+            utils.styled_button("🔗 Set Branding Username", "admin_set_brand_username_txt", style="primary"),
+            utils.styled_button("🔒 Toggle Branding Lock", "admin_tgl_brand_lock_opt", style="primary")
+        ],
+        [
+            utils.styled_button("🚀 Apply To All Userbots", "admin_apply_branding_now", style="success")
         ],
         [
             utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")
@@ -2307,7 +2816,7 @@ async def process_admin_usr_search(event, search_query: str, action: str):
         await event.reply(stats_text, buttons=buttons)
         
     elif action == "ctrl":
-        from handlers.my_bots import show_bots_list, show_all_slots_dashboard, set_admin_impersonation
+        from villain_ads_bot.handlers.my_bots import show_bots_list, show_all_slots_dashboard, set_admin_impersonation
         set_admin_impersonation(user_id, target_id)
         sessions = database.get_sessions(target_id)
         if sessions:

@@ -1,12 +1,131 @@
 import os
+import asyncio
 import logging
 from typing import Optional
 from telethon import Button
-import config
-import database
-from translations import TRANSLATIONS
+from villain_ads_bot import config
+from villain_ads_bot.data import database
+from villain_ads_bot.translations import TRANSLATIONS
 
 logger = logging.getLogger(__name__)
+
+
+def report_error(context: str, error: BaseException = None, tb=None):
+    """
+    Reports an internal error to the LOG GROUP and the OWNER.
+    End users must NEVER be shown raw exception text - use this helper
+    instead of leaking ``{e}`` into a user facing message.
+    """
+    try:
+        from villain_ads_bot.core import error_reporter
+        error_reporter.report(context, error, tb)
+    except Exception:
+        try:
+            logger.error(f"{context}: {error}", exc_info=True)
+        except Exception:
+            pass
+
+
+def user_safe_error(context: str, error: BaseException = None, tb=None) -> str:
+    """
+    Returns a generic, user-safe error message while reporting the real
+    cause to the owner / log group.
+    """
+    report_error(context, error, tb)
+    try:
+        from villain_ads_bot.core import error_reporter
+        return error_reporter.GENERIC_ERROR
+    except Exception:
+        return "<blockquote><b>» ❌ Something Went Wrong</b>\n\n⚠️ <i>An unexpected error occurred and has been reported to the admin team.</i></blockquote>"
+
+
+def normalize_brand_suffix(suffix: str) -> str:
+    """
+    Normalises a branding suffix:
+      * trailing whitespace is removed
+      * a separating space is added when the suffix contains a space but does
+        not start with one (otherwise "John" + "via @Bot" = "Johnvia @Bot")
+    """
+    s = (suffix or "").rstrip()
+    if not s:
+        return ""
+    if s.startswith(" "):
+        return s
+    if " " in s:
+        return " " + s
+    return s
+
+
+# ─── PYTGCALLS VERSION COMPATIBILITY ─────────────────────────────────────
+# PyTgCalls 2.x renamed the stream control helpers:
+#   mute_stream   -> mute
+#   unmute_stream -> unmute
+#   pause_stream  -> pause
+#   resume_stream -> resume
+# The old names raise AttributeError on 2.x, which silently broke muting,
+# pausing and resuming. These helpers support both APIs transparently.
+
+async def pytg_mute(pytg, chat_id):
+    """Mutes the userbot microphone inside the group call."""
+    if pytg is None:
+        raise RuntimeError("PyTgCalls client is not available")
+    for name in ("mute", "mute_stream"):
+        fn = getattr(pytg, name, None)
+        if fn is None:
+            continue
+        try:
+            result = await fn(chat_id)
+        except TypeError:
+            result = await fn()
+        return result
+    raise RuntimeError("This PyTgCalls version exposes no mute() method")
+
+async def pytg_unmute(pytg, chat_id):
+    """Unmutes the userbot microphone inside the group call."""
+    if pytg is None:
+        raise RuntimeError("PyTgCalls client is not available")
+    for name in ("unmute", "unmute_stream"):
+        fn = getattr(pytg, name, None)
+        if fn is None:
+            continue
+        try:
+            result = await fn(chat_id)
+        except TypeError:
+            result = await fn()
+        return result
+    raise RuntimeError("This PyTgCalls version exposes no unmute() method")
+
+async def pytg_pause(pytg, chat_id):
+    """Pauses the stream."""
+    if pytg is None:
+        raise RuntimeError("PyTgCalls client is not available")
+    for name in ("pause", "pause_stream"):
+        fn = getattr(pytg, name, None)
+        if fn is None:
+            continue
+        try:
+            result = await fn(chat_id)
+        except TypeError:
+            result = await fn()
+        return result
+    raise RuntimeError("This PyTgCalls version exposes no pause() method")
+
+async def pytg_resume(pytg, chat_id):
+    """Resumes the stream."""
+    if pytg is None:
+        raise RuntimeError("PyTgCalls client is not available")
+    for name in ("resume", "resume_stream"):
+        fn = getattr(pytg, name, None)
+        if fn is None:
+            continue
+        try:
+            result = await fn(chat_id)
+        except TypeError:
+            result = await fn()
+        return result
+    raise RuntimeError("This PyTgCalls version exposes no resume() method")
+
+
 
 def to_small_caps(text: str) -> str:
     """
@@ -211,7 +330,7 @@ async def guard(event, client) -> bool:
         
     user = database.get_user(user_id)
     if not user:
-        import models
+        from villain_ads_bot.data import models
         user = models.create_default_user(user_id)
         database.save_user(user)
         
@@ -256,6 +375,9 @@ def get_allowed_slots(user_id: int) -> int:
     """
     Calculates the user's allowed bot slots dynamically based on active subscriptions.
     Automatically cleans up expired subscriptions.
+
+    The free slot is already stored inside "allowed_slots" (see
+    models.create_default_user) so it must NOT be added a second time.
     """
     user = database.get_user(user_id)
     if not user:
@@ -265,19 +387,20 @@ def get_allowed_slots(user_id: int) -> int:
     now = time.time()
     subs = user.get("subscriptions", [])
     active_subs = []
-    active_slots = user.get("allowed_slots", 0)
+    # "allowed_slots" already contains the free slot + every gifted slot.
+    total_slots = int(user.get("allowed_slots", 1) or 1)
     
     for sub in subs:
         if sub.get("expires_at", 0) > now:
-            active_slots += sub.get("qty", 0)
+            total_slots += int(sub.get("qty", 0) or 0)
             active_subs.append(sub)
             
     # Save cleaned up list to DB if changes occurred
     if len(active_subs) != len(subs):
         user["subscriptions"] = active_subs
         database.save_user(user)
-        
-    return 1 + active_slots
+            
+    return max(1, total_slots)
 
 def allocate_slots_subscription(user_id: int, qty: int, days: int, plan_name: str, payment_id: str) -> float:
     """

@@ -8,12 +8,12 @@ from telethon import events, Button
 from telethon.tl import types
 from telethon.tl.types import Channel, Chat, User
 
-import config
-import database
-import utils
-import userbot_manager
-from youtube import YouTube
-from userbot import download_media, extract_media_info, generate_silence
+from villain_ads_bot import config
+from villain_ads_bot.data import database
+from villain_ads_bot.core import utils
+from villain_ads_bot.services import userbot_manager
+from villain_ads_bot.services.youtube import YouTube
+from villain_ads_bot.services.userbot import download_media, extract_media_info, generate_silence
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,51 @@ def get_chat_lock(chat_id: int) -> asyncio.Lock:
     if chat_id not in _chat_locks:
         _chat_locks[chat_id] = asyncio.Lock()
     return _chat_locks[chat_id]
+
+
+async def delete_now_playing_card(chat_id: int, bot_obj=None) -> bool:
+    """
+    Deletes the "Now Playing" card of a chat (if there is one).
+
+    The card is always removed from the chat when the song is skipped, ends
+    or the playback is stopped - the user never gets a chat full of stale
+    player cards.
+
+    Returns True when a card was deleted.
+    """
+    session = _active_chat_players.get(chat_id)
+    msg_id = session.get("msg_id") if session else None
+    if not msg_id:
+        return False
+
+    # Remember the id before the session is removed.
+    try:
+        client = _main_bot
+        if client is None and bot_obj is not None:
+            client = getattr(bot_obj, "client", None)
+        if client is None:
+            for _p, _b in list(_running_bots_snapshot().items()):
+                if getattr(_b, "client", None):
+                    client = _b.client
+                    break
+        if client is not None:
+            await client.delete_messages(chat_id, [msg_id])
+        return True
+    except Exception as e:
+        logger.debug(f"Could not delete now-playing card in {chat_id}: {e}")
+        return False
+    finally:
+        if session is not None:
+            session["msg_id"] = None
+
+
+def _running_bots_snapshot() -> dict:
+    """Returns a shallow copy of the running userbot registry (safe to iterate)."""
+    try:
+        from villain_ads_bot.services import userbot_manager
+        return dict(userbot_manager._running_bots)
+    except Exception:
+        return {}
 
 # Rate limit for download progress edits
 _last_progress_updates = {}
@@ -58,6 +103,38 @@ def download_progress_sync(current, total, msg_to_edit, operation_name="DOWNLOAD
         asyncio.create_task(msg_to_edit.edit(txt))
     except Exception:
         pass
+
+
+async def _delete_card_by_session(session: dict, chat_id: int) -> bool:
+    """
+    Deletes the "Now Playing" card that belongs to the given player session.
+    Falls back to the main bot / the userbot client for the delete call.
+    """
+    if not session:
+        return False
+    msg_id = session.get("msg_id")
+    if not msg_id:
+        return False
+
+    clients = []
+    if _main_bot is not None:
+        clients.append(_main_bot)
+    bot = session.get("bot")
+    if bot is not None and getattr(bot, "client", None) is not None:
+        clients.append(bot.client)
+    for _p, _b in list(_running_bots_snapshot().items()):
+        c = getattr(_b, "client", None)
+        if c is not None:
+            clients.append(c)
+
+    for client in clients:
+        try:
+            await client.delete_messages(chat_id, [msg_id])
+            session["msg_id"] = None
+            return True
+        except Exception:
+            continue
+    return False
 
 
 async def get_or_start_userbot_for_chat(user_id: int, chat_id: Optional[int] = None) -> Tuple[Optional[object], str]:
@@ -152,7 +229,7 @@ def format_now_playing_text(song_info: dict, requester_name: str, requester_id: 
         f"<b>👤 Requested By :</b> <a href=\"tg://user?id={requester_id}\">{req_name_safe}</a>\n"
         f"<b>🤖 Stream Source :</b> <b>{ub_name}</b> ({ub_display})</blockquote>"
     )
-    import utils
+    from villain_ads_bot.core import utils
     return utils.format_html_message(text)
 
 
@@ -170,6 +247,9 @@ async def play_next_in_queue(chat_id: int, client=None):
         # No more songs in queue — cleanly stop the stream
         _chat_queues.pop(chat_id, None)
         active_sess = _active_chat_players.pop(chat_id, None)
+        # The finished song's card must not stay in the chat.
+        if active_sess:
+            await _delete_card_by_session(active_sess, chat_id)
         if active_sess and active_sess.get("bot"):
             bot = active_sess["bot"]
             try:
@@ -215,6 +295,12 @@ async def play_next_in_queue(chat_id: int, client=None):
     np_text = format_now_playing_text(song_info, requester_name, requester_id, stream_type=play_type)
     buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
     thumb_file = song_info.get("thumb")
+
+    # The previous song's card is removed before the new one is posted so the
+    # chat never accumulates stale player cards.
+    previous = _active_chat_players.get(chat_id)
+    if previous:
+        await _delete_card_by_session(previous, chat_id)
 
     # Accept both local file paths and HTTP URLs for thumbnail
     def _thumb_valid(tf):
@@ -398,6 +484,13 @@ def register_handlers(client):
                         f"💡 <i>Track Will Play Automatically After Current Song Finishes.</i></blockquote>"
                     )
                 )
+                # The queue notice is temporary - remove it again so the chat
+                # stays clean.
+                try:
+                    await asyncio.sleep(4)
+                    await progress_msg.delete()
+                except Exception:
+                    pass
                 return
             else:
                 _preparing_chats.add(chat_id)
@@ -414,7 +507,7 @@ def register_handlers(client):
                         pass
                     try:
                         from telethon.tl.functions.messages import ExportChatInviteRequest
-                        from userbot import join_channel_single
+                        from villain_ads_bot.services.userbot import join_channel_single
                         invite = await client(ExportChatInviteRequest(chat_id))
                         if hasattr(invite, "link") and invite.link:
                             logger.info(f"Auto-inviting userbot {bot_obj.session_id} to group {chat_id} via {invite.link}")
@@ -440,10 +533,11 @@ def register_handlers(client):
             
             if not success or not song_info:
                 ub_handle = f"@{bot_obj.username}" if bot_obj.username else bot_obj.name
+                utils.report_error(f"player.play_failed:{chat_id}", RuntimeError(str(msg)))
                 await progress_msg.edit(
                     utils.format_html_message(
-                        f"<blockquote><b>» ❌ Playback Failed</b>\n\n"
-                        f"⚠️ <b>Error :</b> <code>{msg}</code>\n\n"
+                        "<blockquote><b>» ❌ Playback Failed</b>\n\n"
+                        "⚠️ <i>The track could not be played. The error was reported to the admin team.</i>\n\n"
                         f"💡 <b>Tip :</b> Make Sure Group Voice Chat Is Started And Userbot (<b>{ub_handle}</b>) Has Permission To Speak.</blockquote>"
                     )
                 )
@@ -514,17 +608,24 @@ def register_handlers(client):
             
         queue = _chat_queues.get(chat_id, [])
         if not queue:
-            _active_chat_players.pop(chat_id, None)
+            stale = _active_chat_players.pop(chat_id, None)
+            if stale:
+                await _delete_card_by_session(stale, chat_id)
             bot_obj, _ = await get_or_start_userbot_for_chat(user_id, chat_id)
             if bot_obj:
                 await bot_obj.stop_song(chat_id)
             
-            await event.respond(
+            empty_msg = await event.respond(
                 utils.format_html_message(
                     "<blockquote><b>» ⏭️ Queue Empty</b>\n\n"
                     "No More Songs In Queue. Stream Has Been Stopped.</blockquote>"
                 )
             )
+            try:
+                await asyncio.sleep(3)
+                await empty_msg.delete()
+            except Exception:
+                pass
             return
             
         prog = await event.respond(
@@ -617,7 +718,7 @@ def register_handlers(client):
         if cmd == "pause":
             try:
                 pytg = await bot_obj.get_pytgcalls()
-                await pytg.pause_stream(chat_id)
+                await utils.pytg_pause(pytg, chat_id)
                 await event.respond(
                     utils.format_html_message(
                         "<blockquote><b>» ⏸️ Playback Paused</b>\n\n"
@@ -625,12 +726,13 @@ def register_handlers(client):
                     )
                 )
             except Exception as e:
-                await event.respond(utils.format_html_message(f"<blockquote><b>» ❌ Error Pausing</b>\n\n⚠️ <code>{e}</code></blockquote>"))
+                utils.report_error("player.pause", e)
+                await event.respond(utils.format_html_message("<blockquote><b>» ❌ Error Pausing</b>\n\n⚠️ <i>Could not pause the stream. The error was reported to the admin team.</i></blockquote>"))
 
         elif cmd == "resume":
             try:
                 pytg = await bot_obj.get_pytgcalls()
-                await pytg.resume_stream(chat_id)
+                await utils.pytg_resume(pytg, chat_id)
                 await event.respond(
                     utils.format_html_message(
                         "<blockquote><b>» ▶️ Playback Resumed</b>\n\n"
@@ -638,7 +740,8 @@ def register_handlers(client):
                     )
                 )
             except Exception as e:
-                await event.respond(utils.format_html_message(f"<blockquote><b>» ❌ Error Resuming</b>\n\n⚠️ <code>{e}</code></blockquote>"))
+                utils.report_error("player.resume", e)
+                await event.respond(utils.format_html_message("<blockquote><b>» ❌ Error Resuming</b>\n\n⚠️ <i>Could not resume the stream. The error was reported to the admin team.</i></blockquote>"))
 
         elif cmd in ("stop", "end"):
             _chat_queues.pop(chat_id, None)
@@ -646,8 +749,12 @@ def register_handlers(client):
             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                 prev_timer.cancel()
 
-            # Eagerly pop from active players to prevent race conditions with new .play commands
-            _active_chat_players.pop(chat_id, None)
+            # Eagerly pop from active players to prevent race conditions with
+            # new .play commands - the card is deleted first so it does not
+            # stay behind in the chat.
+            stale = _active_chat_players.pop(chat_id, None)
+            if stale:
+                await _delete_card_by_session(stale, chat_id)
 
             prog = await event.respond(
                 utils.format_html_message(
@@ -682,21 +789,37 @@ def register_handlers(client):
 
         elif cmd == "mute":
             success, msg = await bot_obj.mute_mic(chat_id)
-            await event.respond(
-                utils.format_html_message(
-                    "<blockquote><b>» 🔇 Mic Muted</b>\n\n"
-                    "Userbot Microphone Has Been Turned <b>Off</b>.</blockquote>"
+            if success:
+                await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» 🔇 Mic Muted</b>\n\n"
+                        "Userbot Microphone Has Been Turned <b>Off</b>.</blockquote>"
+                    )
                 )
-            )
+            else:
+                await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» ❌ Could Not Mute</b>\n\n"
+                        "⚠️ <i>The microphone could not be muted. The error was reported to the admin team.</i></blockquote>"
+                    )
+                )
 
         elif cmd == "unmute":
             success, msg = await bot_obj.unmute_mic(chat_id)
-            await event.respond(
-                utils.format_html_message(
-                    "<blockquote><b>» 🔊 Mic Unmuted</b>\n\n"
-                    "Userbot Microphone Has Been Turned <b>On</b>.</blockquote>"
+            if success:
+                await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» 🔊 Mic Unmuted</b>\n\n"
+                        "Userbot Microphone Has Been Turned <b>On</b>.</blockquote>"
+                    )
                 )
-            )
+            else:
+                await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» ❌ Could Not Unmute</b>\n\n"
+                        "⚠️ <i>The microphone could not be unmuted. The error was reported to the admin team.</i></blockquote>"
+                    )
+                )
 
     # ------------------ /vc, .vc, /joinvc, .joinvc, /leavevc, .leavevc ------------------
     @client.on(events.NewMessage(pattern=r"(?i)^[./!?](vc|joinvc|leavevc|vcleft)(?:@\w+)?$"))
@@ -815,22 +938,24 @@ def register_handlers(client):
         if action == "pause":
             try:
                 pytg = await bot_obj.get_pytgcalls()
-                await pytg.pause_stream(chat_id)
+                await utils.pytg_pause(pytg, chat_id)
                 await event.answer("⏸️ Playback Paused.")
                 buttons = build_now_playing_markup(chat_id, is_paused=True, is_muted=bot_obj.is_muted)
                 await event.edit(buttons=buttons)
             except Exception as e:
-                await event.answer(f"❌ Error: {e}", alert=True)
+                utils.report_error("player_callback.pause", e)
+                await event.answer("❌ Could not pause the stream.", alert=True)
 
         elif action == "resume":
             try:
                 pytg = await bot_obj.get_pytgcalls()
-                await pytg.resume_stream(chat_id)
+                await utils.pytg_resume(pytg, chat_id)
                 await event.answer("▶️ Playback Resumed.")
                 buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=bot_obj.is_muted)
                 await event.edit(buttons=buttons)
             except Exception as e:
-                await event.answer(f"❌ Error: {e}", alert=True)
+                utils.report_error("player_callback.resume", e)
+                await event.answer("❌ Could not resume the stream.", alert=True)
 
         elif action == "stop":
             _chat_queues.pop(chat_id, None)
@@ -838,7 +963,9 @@ def register_handlers(client):
             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                 prev_timer.cancel()
             
-            _active_chat_players.pop(chat_id, None)
+            stale = _active_chat_players.pop(chat_id, None)
+            if stale:
+                await _delete_card_by_session(stale, chat_id)
             success, msg = await bot_obj.stop_song(chat_id)
             if success:
                 await event.answer("⏹️ Playback Stopped.")
@@ -852,12 +979,20 @@ def register_handlers(client):
                     )
                 except Exception:
                     pass
+                try:
+                    await event.delete()
+                except Exception:
+                    pass
             else:
-                await event.answer(f"❌ {msg}", alert=True)
+                await event.answer("❌ Could not stop the stream.", alert=True)
 
         elif action == "skip":
             await event.answer("⏭️ Skipping to next song...")
             await play_next_in_queue(chat_id, client)
+            try:
+                await event.delete()
+            except Exception:
+                pass
 
         elif action == "queue":
             queue = _chat_queues.get(chat_id, [])
@@ -868,7 +1003,7 @@ def register_handlers(client):
 
         elif action == "mute":
             success, msg = await bot_obj.mute_mic(chat_id)
-            await event.answer(msg)
+            await event.answer(msg if success else "❌ Could not mute the microphone.", alert=not success)
             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=True)
             try:
                 await event.edit(buttons=buttons)
@@ -877,7 +1012,7 @@ def register_handlers(client):
 
         elif action == "unmute":
             success, msg = await bot_obj.unmute_mic(chat_id)
-            await event.answer(msg)
+            await event.answer(msg if success else "❌ Could not unmute the microphone.", alert=not success)
             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
             try:
                 await event.edit(buttons=buttons)

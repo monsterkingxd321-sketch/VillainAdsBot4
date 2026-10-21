@@ -1,6 +1,6 @@
 import logging
 from telethon import events
-import utils
+from villain_ads_bot.core import utils
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,8 @@ def register_handlers(client):
                 return
                 
             # Fast Ban/Maintenance Guard for callbacks
-            import database, config
+            from villain_ads_bot.data import database
+            from villain_ads_bot import config
             user_id = event.sender_id
             if user_id:
                 user = database.get_user(user_id)

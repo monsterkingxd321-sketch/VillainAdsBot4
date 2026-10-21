@@ -1,9 +1,10 @@
 import logging
+import asyncio
 from telethon import events, Button
-import database
-import models
-import config
-from utils import styled_button, get_text
+from villain_ads_bot.data import database
+from villain_ads_bot.data import models
+from villain_ads_bot import config
+from villain_ads_bot.core.utils import styled_button, get_text
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,21 @@ async def show_main_menu(event, user_id):
         return
         
     lang = user.get("language", "en") or "en"
-    import utils
+    from villain_ads_bot.core import utils
     allowed = utils.get_allowed_slots(user_id)
     sessions = database.get_sessions(user_id)
     used = len(sessions)
     
-    text = get_text("main_menu", lang, allowed=allowed, used=used)
+    # ── Premium dashboard ──────────────────────────────────────────────
+    from villain_ads_bot.core import ui as _ui
+    used_pct = int((used / allowed) * 100) if allowed else 0
+    text = (
+        f"{_ui.card('Control Panel', 'Premium UserBot Manager', 'Manage every Telegram account from one place', '✦')}\n\n"
+        f"{_ui.kv('Slots used', f'{used} / {allowed}', '📦')}\n"
+        f"{_ui.kv('Usage', f'{_ui.progress_bar(used, allowed)}  {used_pct}%', '📈')}\n\n"
+        f"{_ui.help_hint('Add an account, open its dashboard and control broadcasts, welcome messages, VC playback and more.')}\n"
+        f"{_ui.footer()}"
+    )
     
     global_settings = database.get_global_settings()
     admins_list = global_settings.get("admins", [])
@@ -226,7 +236,7 @@ def register_handlers(client):
                     database.save_user(user)
                 
             # Security verification checks (bans, maintenance, force subscribe)
-            import utils
+            from villain_ads_bot.core import utils
             if await utils.guard(event, client):
                 return
                 

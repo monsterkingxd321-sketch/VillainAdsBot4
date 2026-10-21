@@ -12,4 +12,5 @@ Pillow
 aiofiles
 psutil
 youtube-search-python
+py-yt
 httpx==0.27.2

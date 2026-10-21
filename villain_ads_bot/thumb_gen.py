@@ -6,7 +6,7 @@ import random
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
 from youtubesearchpython import VideosSearch
-import config
+from villain_ads_bot import config
 
 BOT_NAME = config.BOT_NAME
 CACHE_DIR = Path("cache")
@@ -216,5 +216,5 @@ async def gen_thumb(videoid: str):
     except Exception as e:
         print(f"[THUMB ERROR] {e}")
         traceback.print_exc()
-        import config
+        from villain_ads_bot import config
         return config.YOUTUBE_IMG_URL

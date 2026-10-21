@@ -1,4 +1,12 @@
+import os
 import sys
+
+# Make sure the project root is importable no matter where the bot is started
+# from (systemd, cron, docker, ...).
+_BOT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _BOT_ROOT not in sys.path:
+    sys.path.insert(0, _BOT_ROOT)
+
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -6,16 +14,23 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-print("[*] Starting Villain Ads Bot v4.0...", flush=True)
-import os
+print("[*] Starting Villain Ads Bot v4.1...", flush=True)
 import logging
 import asyncio
 import nest_asyncio
 from telethon import TelegramClient
-import config
-import database
-import handlers
-import userbot_manager
+from villain_ads_bot import config
+from villain_ads_bot.data import database
+from villain_ads_bot import handlers
+from villain_ads_bot.services import userbot_manager
+from villain_ads_bot.core import error_reporter
+from villain_ads_bot.core import music as _music
+
+# Apply the music gateway credentials that were configured in the admin panel
+try:
+    _music.apply_configured_credentials()
+except Exception:
+    pass
 
 # Create directories if they do not exist
 os.makedirs(config.USER_DATA_DIR, exist_ok=True)
@@ -33,6 +48,12 @@ logger = logging.getLogger(__name__)
 logging.getLogger("telethon").setLevel(logging.ERROR)
 logging.getLogger("pytgcalls").setLevel(logging.ERROR)
 logging.getLogger("ntgcalls").setLevel(logging.ERROR)
+
+# Forward every ERROR record to the Telegram LOG GROUP and to the OWNER.
+# End users never see raw tracebacks any more.
+error_reporter.setup_error_reporter()
+error_reporter.setup_excepthook()
+
 
 # Apply Windows compatibility patch for nested asyncio loops
 nest_asyncio.apply()
@@ -267,6 +288,13 @@ async def main():
                 raise events.StopPropagation
 
     handlers.register_all_handlers(bot)
+
+    # Bind the bot client to the error reporter so errors reach the log group + owner
+    try:
+        error_reporter.set_bot_client(bot)
+        error_reporter.setup_asyncio_exception_handler(asyncio.get_running_loop())
+    except Exception as er_err:
+        logger.warning(f"Could not initialise error reporter bindings: {er_err}")
 
     # Persist the authorized session to MongoDB so that any future restart/deployment is instant
     try:

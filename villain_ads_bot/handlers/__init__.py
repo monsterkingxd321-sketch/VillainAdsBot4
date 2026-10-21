@@ -2,7 +2,7 @@ def register_all_handlers(client):
     """
     Registers all bot event handlers onto the client instance.
     """
-    import utils
+    from villain_ads_bot.core import utils
     from telethon.tl.types import PeerUser, InputPeerUser, User
     
     client.parse_mode = "html"

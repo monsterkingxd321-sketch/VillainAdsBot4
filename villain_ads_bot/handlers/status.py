@@ -1,7 +1,8 @@
 import logging
 from telethon import events
-import database
-import utils
+from villain_ads_bot.data import database
+from villain_ads_bot.core import utils
+from villain_ads_bot.core import ui
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,13 @@ async def render_status_dashboard(event, user_id: int):
     
     # Text formatting using blockquotes and bold
     text = (
-        f"<blockquote><b>» 📊 System Status Dashboard</b>\n\n"
-        f"📱 <b>Connected Bots :</b> <code>{total_sessions}</code>\n"
-        f"👥 <b>Managed Groups :</b> <code>{total_groups}</code>\n"
-        f"👤 <b>Contacts / Users :</b> <code>{total_users}</code>\n"
-        f"✉️ <b>Broadcasts Done :</b> <code>{total_broadcasts}</code>\n"
-        f"👋 <b>Users Welcomed :</b> <code>{total_welcomed}</code></blockquote>"
+        f"{ui.card('System Status', 'Live overview of your automation', 'Everything your userbots did so far', '📊')}\n\n"
+        f"{ui.kv('Connected bots', str(total_sessions), '📱')}\n"
+        f"{ui.kv('Managed groups', str(total_groups), '👥')}\n"
+        f"{ui.kv('Contacts / users', str(total_users), '👤')}\n"
+        f"{ui.kv('Broadcasts done', str(total_broadcasts), '✉️')}\n"
+        f"{ui.kv('Users welcomed', str(total_welcomed), '👋')}\n\n"
+        f"{ui.footer()}"
     )
     
     buttons = [[utils.styled_button(utils.get_text("back_to_menu", lang), "menu_start", style="primary")]]
@@ -51,7 +53,7 @@ def register_handlers(client):
         if not event.is_private:
             return
         # Verify onboarding
-        from handlers.start import check_onboarding
+        from villain_ads_bot.handlers.start import check_onboarding
         onboarded = await check_onboarding(client, event)
         if onboarded:
             await render_status_dashboard(event, event.sender_id)

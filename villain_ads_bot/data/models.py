@@ -72,5 +72,19 @@ def create_payment_request(payment_id: str, user_id: int, count: int) -> Dict[st
         "user_id": user_id,         # Requesting user
         "count": count,             # Number of requested extra IDs (1-5)
         "status": "pending",        # "pending", "approved", "rejected"
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        # Pricing (INR is the base currency, the crypto amounts are derived)
+        "amount": 0.0,              # Total in INR
+        "amount_usdt": 0.0,         # Total in USDT
+        "amount_ton": 0.0,          # Total in TON
+        "price_per_slot": 0.0,      # Price of a single slot in INR
+        "usdt_rate": 0.0,           # 1 USDT = X INR
+        "ton_rate": 0.0,            # 1 TON = X INR
+        "method": None,             # upi / usdt / ton / wallet
+        "reference": None,          # Human friendly reference shown to the user
+        "utr_code": None,           # User supplied transaction reference
+        "screenshot": None,         # Screenshot (url or file id)
+        "days": 30,                 # Validity in days
+        "plan_id": None,
+        "plan_name": "Slot Upgrade"
     }

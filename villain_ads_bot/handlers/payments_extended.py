@@ -2,17 +2,76 @@ import logging
 import time
 import secrets
 import asyncio
+import uuid
+import urllib.parse
+import urllib.request
+import tempfile
+import os
+import re
 from telethon import events, Button
-import database
-import models
-import config
-import utils
+from villain_ads_bot.data import database
+from villain_ads_bot.data import models
+from villain_ads_bot import config
+from villain_ads_bot.core import utils
+from villain_ads_bot.core import pricing
+from villain_ads_bot.core import ui
 
 logger = logging.getLogger(__name__)
 
 # State cache for payments and coupons
 # Structure: { user_id: { "payment_id": str, "method": str, "step": str } }
 _payment_user_states = {}
+
+# How many slot quantities the user may pick in one order.
+MAX_SLOT_QUANTITY = 10
+
+
+def _new_payment_id() -> str:
+    """Collision free payment id (12 hex chars)."""
+    return uuid.uuid4().hex[:12]
+
+
+def _new_reference() -> str:
+    """
+    Human friendly payment reference that the user has to mention in the
+    payment app (it is embedded in the UPI intent and shown on the invoice).
+    """
+    return f"XTR-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _validate_utr(utr: str) -> tuple:
+    """
+    Validates a user supplied UTR / transaction hash.
+
+    Returns (is_valid: bool, message: str)
+    """
+    if not utr:
+        return False, "❌ The transaction reference cannot be empty."
+    utr = utr.strip()
+    if len(utr) < 6:
+        return False, "❌ That reference is too short. A UTR / TxID is at least 6 characters long."
+    if len(utr) > 120:
+        return False, "❌ That reference is too long. Please send only the UTR / TxID."
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{6,120}", utr):
+        return False, "❌ Invalid reference. Only letters, numbers, `_` and `-` are allowed."
+    return True, utr
+
+
+def _payment_summary(pay_record: dict, qty: int) -> str:
+    """Multi currency summary of a payment (used for the user + the admin)."""
+    amount = float(pay_record.get("amount", 0) or 0)
+    usdt = float(pay_record.get("amount_usdt", 0) or 0)
+    ton = float(pay_record.get("amount_ton", 0) or 0)
+    lines = [
+        ui.kv("Quantity", f"{qty} slot(s)", "📦"),
+        ui.kv("Total (INR)", f"₹{amount:.2f}", "💴"),
+    ]
+    if usdt:
+        lines.append(ui.kv("Total (USDT)", f"{usdt:.2f} USDT", "🪙"))
+    if ton:
+        lines.append(ui.kv("Total (TON)", f"{ton:.4f} TON", "💎"))
+    return "\n".join(lines)
+
 
 def is_admin(user_id: int) -> bool:
     global_settings = database.get_global_settings()
@@ -57,7 +116,7 @@ def register_handlers(client):
             except Exception:
                 pass
             # Check onboarding next (Language & TOS)
-            from handlers.start import show_main_menu
+            from villain_ads_bot.handlers.start import show_main_menu
             await show_main_menu(event, user_id)
 
     # ==================== Redeem Coupon System ====================
@@ -130,7 +189,7 @@ def register_handlers(client):
             f"💰 Amount: <b>₹{amount:.2f}</b> has been credited to your wallet balance."
         )
         # Return to settings
-        from handlers.settings import show_settings_menu
+        from villain_ads_bot.handlers.settings import show_settings_menu
         await show_settings_menu(event, user_id)
 
     # ==================== Referrals Dashboard ====================
@@ -188,48 +247,33 @@ def register_handlers(client):
         
         global_settings = database.get_global_settings()
         plans = global_settings.get("subscription_plans", [])
-        plan = next((p for p in plans if p["id"] == plan_id), None)
-        
-        if plan and plan.get("slots"):
-            qty = plan["slots"]
-            import uuid
-            payment_id = str(uuid.uuid4())[:8]
-            amount = plan["price"]
-            days = plan["days"]
-            
-            req_data = models.create_payment_request(payment_id, user_id, qty)
-            req_data["plan_id"] = plan_id
-            req_data["plan_name"] = plan["button_name"]
-            req_data["amount"] = amount
-            req_data["days"] = days
-            database.save_payment_request(req_data)
-            
-            class MockMatch:
-                def group(self, group_idx):
-                    if group_idx == 1:
-                        return qty
-                    elif group_idx == 2:
-                        return payment_id
-                    return None
-                    
-            event.pattern_match = MockMatch()
-            await choose_method_callback(event)
+        plan = next((p for p in plans if str(p.get("id")) == str(plan_id)), None)
+        if not plan:
+            await event.answer("⚠️ This plan is no longer available.", alert=True)
             return
-        
-        # Ask quantity
+
+        # The price is ALWAYS per slot - the admin sets one price per slot in
+        # INR and the user simply picks how many slots they want.
+        per_slot = pricing.get_price_per_slot()
+        plan_days = int(plan.get("days", 30) or 30)
         text = (
-            "⚙️ <b>Select Slots Quantity</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "How many bot account slots would you like to purchase under this plan?"
+            f"{ui.card('Select Slot Quantity', '', 'Choose how many userbot slots you want to activate', '💎')}\n\n"
+            f"{ui.kv('Price per slot', f'₹{per_slot:.2f}', '💎')}\n"
+            f"{ui.kv('Validity', f'{plan_days} days', '📅')}\n\n"
+            f"{ui.help_hint('Tap the quantity you want — the total is calculated automatically.')}"
         )
         buttons = []
-        for qty in range(1, 6):
+        for qty in range(1, MAX_SLOT_QUANTITY + 1):
+            total = round(per_slot * qty, 2)
             buttons.append([
-                utils.styled_button(f"Request {qty} Account Slot(s)", f"buy_plan_qty_{plan_id}_{qty}", style="primary")
+                utils.styled_button(
+                    f"➕ {qty} Slot{'s' if qty > 1 else ''}  •  ₹{total:.2f}",
+                    f"buy_plan_qty_{plan_id}_{qty}", style="primary"
+                )
             ])
-        buttons.append([utils.styled_button("🔙 Back", "settings_buy_slots", style="primary")])
+        buttons.append([utils.styled_button("🔙 Back", "settings_buy_slots", style="danger")])
         
-        await event.respond(text, buttons=buttons)
+        await event.respond(text, buttons=buttons, parse_mode="html")
         try:
             await event.delete()
         except Exception:
@@ -238,28 +282,41 @@ def register_handlers(client):
     @client.on(events.CallbackQuery(pattern=r"^buy_plan_qty_(.+)_(.+)$"))
     async def buy_plan_qty_callback(event):
         plan_id = event.pattern_match.group(1)
-        qty = int(event.pattern_match.group(2))
+        try:
+            qty = int(event.pattern_match.group(2))
+        except (TypeError, ValueError):
+            await event.answer("⚠️ Invalid quantity.", alert=True)
+            return
+        if qty < 1 or qty > MAX_SLOT_QUANTITY:
+            await event.answer("⚠️ Invalid quantity.", alert=True)
+            return
         user_id = event.sender_id
         
         global_settings = database.get_global_settings()
         plans = global_settings.get("subscription_plans", [])
-        plan = next((p for p in plans if p["id"] == plan_id), None)
+        plan = next((p for p in plans if str(p.get("id")) == str(plan_id)), None)
         if not plan:
             await event.respond("❌ Selected plan not found.")
             return
             
-        import uuid
-        payment_id = str(uuid.uuid4())[:8]
+        payment_id = _new_payment_id()
         
-        # Calculate cost
-        amount = plan["price"] * qty
-        days = plan["days"]
+        # Price everything from the single per-slot price.
+        price = pricing.breakdown(qty)
+        amount = price["inr"]
+        days = int(plan.get("days", 30) or 30)
         
         req_data = models.create_payment_request(payment_id, user_id, qty)
         req_data["plan_id"] = plan_id
-        req_data["plan_name"] = plan["button_name"]
+        req_data["plan_name"] = plan.get("button_name", "Slot Upgrade")
         req_data["amount"] = amount
+        req_data["amount_usdt"] = price["usdt"]
+        req_data["amount_ton"] = price["ton"]
+        req_data["price_per_slot"] = price["price_per_slot"]
+        req_data["usdt_rate"] = price["usdt_rate"]
+        req_data["ton_rate"] = price["ton_rate"]
         req_data["days"] = days
+        req_data["reference"] = _new_reference()
         database.save_payment_request(req_data)
         
         # Redirect
@@ -282,36 +339,39 @@ def register_handlers(client):
         user_id = event.sender_id
         
         user = database.get_user(user_id)
-        lang = user.get("language", "en") if user else "en"
+        if not user:
+            user = models.create_default_user(user_id)
+            database.save_user(user)
+        lang = user.get("language", "en") or "en"
         
-        # Get actual price from payment record
+        # Get the exact price from the payment record
         pay_record = database.get_payment_request(payment_id)
-        if pay_record and "amount" in pay_record:
-            cost_inr = pay_record["amount"]
-        else:
-            global_settings = database.get_global_settings()
-            price_per_id = global_settings.get("price_per_id", 10.0)
-            cost_inr = price_per_id * qty
+        if not pay_record:
+            await event.answer("⚠️ This payment request expired. Please start again.", alert=True)
+            return
+        if str(pay_record.get("user_id")) != str(user_id):
+            await event.answer("⛔ This payment request does not belong to you.", alert=True)
+            return
             
-        wallet_bal = user.get("wallet_balance", 0.0)
+        cost_inr = float(pay_record.get("amount", 0) or 0)
+        wallet_bal = float(user.get("wallet_balance", 0.0) or 0)
         
         text = (
-            f"<blockquote><b>» 💳 Select Payment Method</b>\n\n"
-            f"Quantity : <b>{qty} Id(s)</b>\n"
-            f"Total Cost : <b>₹{cost_inr:.2f}</b>\n"
-            f"Wallet Balance : <b>₹{wallet_bal:.2f}</b>\n\n"
-            f"⚡ <i>Choose Your Payment Method Below :</i></blockquote>"
+            f"{ui.card('Select Payment Method', '', 'Review the amount and choose how you want to pay', '💳')}\n\n"
+            f"{_payment_summary(pay_record, qty)}\n"
+            f"{ui.kv('Wallet balance', f'₹{wallet_bal:.2f}', '👛')}\n\n"
+            f"{ui.help_hint('UPI · USDT · TON are all accepted — the crypto amounts are exact, not approximate.')}"
         )
         
         global_settings = database.get_global_settings()
         buttons = []
         
         if global_settings.get("payment_upi_enabled", True):
-            buttons.append([utils.styled_button("💳 Upi Payment", f"pay_method_upi_{qty}_{payment_id}", style="primary")])
+            buttons.append([utils.styled_button("💳 UPI / QR", f"pay_method_upi_{qty}_{payment_id}", style="success")])
         if global_settings.get("payment_usdt_enabled", True):
-            buttons.append([utils.styled_button("🪙 Usdt (BEP20)", f"pay_method_usdt_{qty}_{payment_id}", style="primary")])
+            buttons.append([utils.styled_button("🪙 USDT (BEP20)", f"pay_method_usdt_{qty}_{payment_id}", style="primary")])
         if global_settings.get("payment_ton_enabled", True):
-            buttons.append([utils.styled_button("💎 Ton (Toncoin)", f"pay_method_ton_{qty}_{payment_id}", style="primary")])
+            buttons.append([utils.styled_button("💎 TON (Toncoin)", f"pay_method_ton_{qty}_{payment_id}", style="primary")])
         
         # Allow paying using wallet if balance covers it
         if wallet_bal >= cost_inr:
@@ -320,12 +380,25 @@ def register_handlers(client):
         if not buttons:
             buttons = [[utils.styled_button("⚠️ No Payment Methods Available", "menu_settings", style="danger")]]
         
-        buttons.append([utils.styled_button("🔙 Cancel", "menu_settings", style="danger")])
+        buttons.append([utils.styled_button("❌ Cancel Payment", "payment_cancel", style="danger")])
         await event.respond(text, buttons=buttons, parse_mode="html")
         try:
             await event.delete()
         except Exception:
             pass
+
+    @client.on(events.CallbackQuery(pattern="^payment_cancel$"))
+    async def payment_cancel_callback(event):
+        """Cancels an in-flight payment and clears the pending state."""
+        user_id = event.sender_id
+        _payment_user_states.pop(user_id, None)
+        await event.answer("❌ Payment cancelled.", alert=True)
+        try:
+            await event.delete()
+        except Exception:
+            pass
+        from villain_ads_bot.handlers.settings import show_settings_menu
+        await show_settings_menu(event, user_id)
 
     # ==================== Payment Handler (Wallet Instant) ====================
     @client.on(events.CallbackQuery(pattern=r"^pay_method_wallet_(\d+)_(.+)$"))
@@ -335,18 +408,21 @@ def register_handlers(client):
         user_id = event.sender_id
         
         user = database.get_user(user_id)
-        lang = user.get("language", "en") if user else "en"
+        if not user:
+            await event.answer("❌ User not found. Please run /start first.", alert=True)
+            return
+        lang = user.get("language", "en") or "en"
         
-        # Get actual price from payment record
         pay_record = database.get_payment_request(payment_id)
-        if pay_record and "amount" in pay_record:
-            cost_inr = pay_record["amount"]
-        else:
-            global_settings = database.get_global_settings()
-            price_per_id = global_settings.get("price_per_id", 10.0)
-            cost_inr = price_per_id * qty
+        if not pay_record:
+            await event.answer("⚠️ This payment request expired. Please start again.", alert=True)
+            return
+        if str(pay_record.get("user_id")) != str(user_id):
+            await event.answer("⛔ This payment request does not belong to you.", alert=True)
+            return
             
-        wallet_bal = user.get("wallet_balance", 0.0)
+        cost_inr = float(pay_record.get("amount", 0) or 0)
+        wallet_bal = float(user.get("wallet_balance", 0.0) or 0)
         
         if wallet_bal < cost_inr:
             await event.answer("❌ Insufficient wallet balance.", alert=True)
@@ -403,7 +479,7 @@ def register_handlers(client):
                     pass
                     
         # Go to settings
-        from handlers.settings import show_settings_menu
+        from villain_ads_bot.handlers.settings import show_settings_menu
         await show_settings_menu(event, user_id)
 
     # ==================== Payment Handler (UPI/USDT/TON details) ====================
@@ -415,17 +491,25 @@ def register_handlers(client):
         user_id = event.sender_id
         
         user = database.get_user(user_id)
-        lang = user.get("language", "en") if user else "en"
+        if not user:
+            user = models.create_default_user(user_id)
+            database.save_user(user)
+        lang = user.get("language", "en") or "en"
         
-        # Fetch payment record to get exact amount
+        # Fetch payment record to get the exact amounts
         pay_record = database.get_payment_request(payment_id)
-        if pay_record and "amount" in pay_record:
-            cost_inr = pay_record["amount"]
-        else:
-            global_settings = database.get_global_settings()
-            price_per_id = global_settings.get("price_per_id", 10.0)
-            cost_inr = price_per_id * qty
+        if not pay_record:
+            await event.answer("⚠️ This payment request expired. Please start again.", alert=True)
+            return
+        if str(pay_record.get("user_id")) != str(user_id):
+            await event.answer("⛔ This payment request does not belong to you.", alert=True)
+            return
             
+        cost_inr = float(pay_record.get("amount", 0) or 0)
+        amount_usdt = float(pay_record.get("amount_usdt", 0) or 0)
+        amount_ton = float(pay_record.get("amount_ton", 0) or 0)
+        reference = pay_record.get("reference") or pay_record.get("payment_id", "")
+        
         global_settings = database.get_global_settings()
         
         # Save state
@@ -434,46 +518,45 @@ def register_handlers(client):
             "method": method,
             "qty": qty,
             "amount": cost_inr,
+            "reference": reference,
             "action": "WAITING_FOR_SCREENSHOT"
         }
         
         if method == "upi":
             upi_id = global_settings.get('upi_id', 'merchant@upi')
-            address_text = f"🏦 UPI ID: `{upi_id}`"
-            import urllib.parse
-            import config
+            address_text = f"🏦 <b>UPI ID :</b> <code>{upi_id}</code>"
             pn_encoded = urllib.parse.quote(config.BOT_NAME)
-            upi_uri = f"upi://pay?pa={upi_id}&pn={pn_encoded}&am={cost_inr:.2f}&cu=INR&tn={payment_id}"
-            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&format=jpg&data={urllib.parse.quote(upi_uri)}"
-            amount_text = f"Amount To Pay: <b>₹{cost_inr:.2f}</b>"
+            tr_encoded = urllib.parse.quote(str(reference))
+            # tr = the transaction reference the user must send, tn = the note
+            upi_uri = (f"upi://pay?pa={upi_id}&pn={pn_encoded}&am={cost_inr:.2f}"
+                       f"&cu=INR&tr={tr_encoded}&tn={tr_encoded}")
+            qr_url = (f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&format=jpg"
+                      f"&data={urllib.parse.quote(upi_uri)}")
+            amount_text = f"💳 <b>Pay Exactly :</b> <code>₹{cost_inr:.2f}</code>"
         elif method == "usdt":
-            address_text = f"🪙 Usdt (BEP20) Address:\n`{global_settings.get('usdt_bep20_address', '0x000')}`"
+            address_text = (f"🪙 <b>USDT (BEP20) Address :</b>\n"
+                            f"<code>{global_settings.get('usdt_bep20_address', '0x000')}</code>")
             qr_url = None
-            usdt_rate = global_settings.get("usdt_rate", 90.0)
-            cost_crypto = cost_inr / usdt_rate if usdt_rate > 0 else 0
-            amount_text = f"Amount To Pay: <b>₹{cost_inr:.2f}</b> (Approx <b>${cost_crypto:.2f} Usdt</b>)"
-        else: # ton
-            address_text = f"💎 Ton (Toncoin) Address:\n`{global_settings.get('ton_address', 'UQ00000000000000000000000000000000000000000000000')}`"
+            amount_text = (f"🪙 <b>Send Exactly :</b> <code>{amount_usdt:.2f} USDT</code>\n"
+                           f"💳 <i>Worth : ₹{cost_inr:.2f}</i>")
+        else:  # ton
+            address_text = (f"💎 <b>TON Address :</b>\n"
+                            f"<code>{global_settings.get('ton_address', 'UQ00000000000000000000000000000000000000000000000')}</code>")
             qr_url = None
-            ton_rate = global_settings.get("ton_rate", 500.0)
-            cost_crypto = cost_inr / ton_rate if ton_rate > 0 else 0
-            amount_text = f"Amount To Pay: <b>₹{cost_inr:.2f}</b> (Approx <b>{cost_crypto:.2f} Ton</b>)"
+            amount_text = (f"💎 <b>Send Exactly :</b> <code>{amount_ton:.4f} TON</code>\n"
+                           f"💳 <i>Worth : ₹{cost_inr:.2f}</i>")
             
         text = (
-            f"<blockquote><b>» 💳 Make Payment</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Method: <b>{method.upper()}</b>\n"
+            f"{ui.card('Make Payment', f'Method : <b>{method.upper()}</b>', 'Pay the exact amount and send the screenshot', '💳')}\n\n"
             f"{amount_text}\n"
-            f"{address_text}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📸 Send Your Payment Confirmation <b>Screenshot (As A Photo Or Image Link)</b>:</blockquote>"
+            f"{address_text}\n\n"
+            f"{ui.kv('Reference', str(reference), '🏷')}\n"
+            f"{ui.help_hint('Include the reference above in the payment note / UTR so we can verify it faster.')}\n"
+            f"{ui.help_hint('📸 Now send your payment screenshot (photo or image link).')}"
         )
         
-        buttons = [[utils.styled_button("❌ Cancel", "menu_settings", style="danger")]]
+        buttons = [[utils.styled_button("❌ Cancel Payment", "payment_cancel", style="danger")]]
         if qr_url:
-            import urllib.request
-            import tempfile
-            import os
             try:
                 # Download QR code image from the API
                 req = urllib.request.Request(qr_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -537,43 +620,68 @@ def register_handlers(client):
             state["photo_file_id"] = file_to_save
             state["action"] = "WAITING_FOR_UTR"
             
-            buttons = [[utils.styled_button("❌ Cancel", "menu_settings", style="danger")]]
+            buttons = [[utils.styled_button("❌ Cancel Payment", "payment_cancel", style="danger")]]
+            ref_txt = state.get("reference", "")
+            state_amount = float(state.get("amount", 0) or 0)
             await event.reply(
-                "📸 <b>Screenshot received!</b>\n\n"
-                "🔢 <b>Now enter your UTR / Transaction Hash:</b>\n"
-                "Example: `612207806800` or transaction reference code.",
+                f"{ui.card('Screenshot Received', '', 'One last step — send your transaction reference', '📸')}\n\n"
+                f"{ui.kv('Reference', str(ref_txt), '🏷')}\n"
+                f"{ui.kv('Amount', f'₹{state_amount:.2f}', '💳')}\n\n"
+                f"{ui.help_hint('🔢 Now enter the UTR / Transaction Hash / TxID from your payment app.')}\n"
+                f"{ui.help_hint('Example : 612207806800')}",
                 buttons=buttons
             )
 
         # 2. UTR transaction code input
         elif action == "WAITING_FOR_UTR":
-            utr_code = event.text.strip()
-            if not utr_code:
-                await event.reply("❌ Please enter a valid Transaction Hash/UTR:")
+            raw_text = (event.raw_text or event.text or "").strip()
+            ok, utr_code = _validate_utr(raw_text)
+            if not ok:
+                await event.reply(utr_code)
                 return
                 
-            # Pop state
-            _payment_user_states.pop(user_id, None)
-            
+            # The same UTR must never be used twice (prevents double credit).
+            existing = database.get_payment_request_by_utr_and_status(utr_code, "approved")
+            if existing:
+                await event.reply("❌ This transaction reference has already been used. Please send the correct UTR / TxID.")
+                return
+            pending = database.get_payment_request_by_utr_and_status(utr_code, "pending")
+            if pending and str(pending.get("payment_id")) != str(state.get("payment_id")):
+                await event.reply("❌ This transaction reference is already attached to another payment request.")
+                return
+                
             payment_id = state["payment_id"]
             method = state["method"]
             qty = state["qty"]
             amount = state["amount"]
+            reference = state.get("reference", "")
             photo_file_id = state["photo_file_id"]
             
-            # Save detail in payment record
+            # Save detail in payment record FIRST, only then drop the state so
+            # a database error never loses the user's UTR / screenshot.
             pay_record = database.get_payment_request(payment_id)
             if pay_record:
                 pay_record["method"] = method
                 pay_record["utr_code"] = utr_code
+                pay_record["reference"] = reference or pay_record.get("reference", "")
                 if isinstance(photo_file_id, str):
                     pay_record["screenshot"] = photo_file_id
                 else:
-                    pay_record["screenshot"] = f"photo_{photo_file_id.id}"
+                    pay_record["screenshot"] = getattr(photo_file_id, "id", None)
+                    pay_record["screenshot_file_ref"] = getattr(photo_file_id, "file_reference", None)
                 database.save_payment_request(pay_record)
+            
+            # Pop the state only after everything was persisted.
+            _payment_user_states.pop(user_id, None)
                 
             # Confirm to User
-            await event.reply("📩 <b>Payment submitted successfully!</b>\nAn administrator will review your submission shortly.")
+            await event.reply(
+                f"{ui.card('Payment Submitted', '', 'Your payment details were received', '📩')}\n\n"
+                f"{ui.kv('Reference', str(reference), '🏷')}\n"
+                f"{ui.kv('UTR / TxID', utr_code, '🔢')}\n"
+                f"{ui.kv('Amount', f'₹{float(amount):.2f}', '💳')}\n\n"
+                f"{ui.help_hint('An administrator will verify and activate your slots shortly.')}"
+            )
             
             # Forward notification and screenshot to Admin log group
             global_settings = database.get_global_settings()
@@ -582,20 +690,19 @@ def register_handlers(client):
                 try:
                     user_mention = f"[{user_id}](tg://user?id={user_id})"
                     admin_text = (
-                        f"🚨 <b>New Payment Verification Request</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"User: {user_mention} (`{user_id}`)\n"
-                        f"Method: <b>{method.upper()}</b>\n"
-                        f"Amount: <b>₹{amount:.2f}</b> (qty: {qty})\n"
-                        f"UTR/Hash: `{utr_code}`\n"
-                        f"━━━━━━━━━━━━━━━━━━━━"
+                        f"{ui.card('Payment Verification Request', '', 'A user is waiting for slot activation', '🚨')}\n\n"
+                        f"{ui.kv('User', f'{user_mention} (`{user_id}`)', '👤')}\n"
+                        f"{ui.kv('Method', method.upper(), '💳')}\n"
+                        f"{_payment_summary(pay_record, qty)}\n"
+                        f"{ui.kv('Reference', str(reference), '🏷')}\n"
+                        f"{ui.kv('UTR / TxID', utr_code, '🔢')}\n"
                     )
                     
+                    # Approve and Reject live in SEPARATE rows so the button
+                    # styler does not paint both of them red.
                     buttons = [
-                        [
-                            utils.styled_button("✅ Approve", f"approve_payment_{payment_id}", style="success"),
-                            utils.styled_button("❌ Reject", f"reject_payment_{payment_id}", style="danger")
-                        ]
+                        [utils.styled_button("✅ Approve & Activate Slots", f"approve_payment_{payment_id}", style="success")],
+                        [utils.styled_button("❌ Reject Payment", f"reject_payment_{payment_id}", style="danger")],
                     ]
                     
                     await client.send_message(

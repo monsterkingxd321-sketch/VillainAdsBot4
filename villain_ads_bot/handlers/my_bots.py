@@ -4,12 +4,14 @@ import os
 import re
 from typing import Optional, Set
 from telethon import events, Button
-import database
-import models
-import utils
-import config
-import userbot_manager
-from userbot import join_vc_by_link, leave_chat_single, join_channel_single
+from villain_ads_bot.data import database
+from villain_ads_bot.data import models
+from villain_ads_bot.core import utils
+from villain_ads_bot.core import ui
+from villain_ads_bot.core import joiner
+from villain_ads_bot import config
+from villain_ads_bot.services import userbot_manager
+from villain_ads_bot.services.userbot import join_vc_by_link, leave_chat_single, join_channel_single
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +231,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
     if flash_message:
         text += f"{flash_message}\n\n"
     text += (
-        "<blockquote><b>» 📱 Connected Userbots</b>\n\n"
+        f"{ui.card_open('Connected Userbots', 'Your active Telegram accounts')}\n"
     )
     buttons = [
         [
@@ -251,7 +253,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
         username = s.get("username")
         user_display = f"@{username}" if username else phone
         
-        text += f"• {status_emoji} <b>{name}</b> (<code>{user_display}</code>)\n"
+        text += f"\n{status_emoji} <b>{name}</b>  <code>{user_display}</code>"
         
         # Add a selection button for this bot
         buttons.append([
@@ -262,7 +264,8 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
             )
         ])
     text += (
-        "\n💡 <i>Select A Bot Below To Open Its Control Panel Or Tap <b>All Slots</b>.</i></blockquote>"
+        f"\n\n{ui.help_hint('Select an account below to open its control panel, or tap All Slots for the bulk dashboard.')}"
+        f"\n{ui.card_close()}"
     )
     
     allowed = utils.get_allowed_slots(user_id)
@@ -281,6 +284,9 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
             utils.styled_button("🚪 Exit To Admin", "admin_exit_impersonation", style="danger")
         ])
     else:
+        buttons.append([
+            utils.styled_button("📂 Load Accounts From Session Files", "user_load_sessions_from_disk", style="primary")
+        ])
         buttons.append([utils.styled_button(utils.get_text("back_to_menu", lang), "menu_start", style="primary")])
     
     try:
@@ -360,6 +366,11 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # Row 1: Set Broadcast Message (Full width)
         rows.append([
             ("btn_set_broadcast", f"set_broadcast_{phone}")
+        ])
+
+        # Row 1.1: Send the broadcast NOW (live progress)
+        rows.append([
+            ("📢 Broadcast Now", f"broadcast_now_{phone}")
         ])
 
         # Row 1.2: Set DM Welcome Message (Full width)
@@ -476,7 +487,8 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             
     except Exception as e:
         logger.exception("Error rendering bot dashboard")
-        err_msg = f"❌ <b>Error rendering dashboard:</b> {e}"
+        utils.report_error("my_bots.render_dashboard", e)
+        err_msg = "<blockquote><b>» ❌ Dashboard Error</b>\n\n⚠️ <i>Something went wrong while loading the dashboard. The error was reported to the admin team.</i></blockquote>"
         try:
             await event.edit(err_msg)
         except Exception:
@@ -528,19 +540,19 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
     if flash_message:
         text += f"{flash_message}\n\n"
         
-    header_title = "» 👑 All System Userbots Control (Owner Mode)" if is_sys_all else "» 👥 All Slots Control Dashboard"
-    desc_text = "⚡ <i>Control All Connected Userbots Across The Entire System Simultaneously.</i>" if is_sys_all else "⚡ <i>Control All Your Userbots Simultaneously From This Panel.</i>"
+    header_title = "All System Userbots Control (Owner Mode)" if is_sys_all else "All Slots Control Dashboard"
+    desc_text = "Control every connected userbot across the entire system simultaneously." if is_sys_all else "Control all of your userbots simultaneously from this panel."
 
     text += (
-        f"<blockquote><b>{header_title}</b>\n\n"
-        f"<b>📊 System Overview :</b>\n"
-        f"• Total Linked Bots : <b>{total_slots}</b>\n"
-        f"• Active : <b>🟢 {running_bots}</b> | Stopped : <b>🔴 {stopped_bots}</b>\n"
-        f"• Auto Broadcast (All) : <b>{spam_state_display}</b>\n"
-        f"• Auto-Welcome (All) : <b>{welcome_state_display}</b>\n"
-        f"• Tag Auto-Reply (All) : <b>{reply_state_display}</b>\n"
-        f"• Auto-Contact (All) : <b>{add_contact_state_display}</b>\n\n"
-        f"{desc_text}</blockquote>"
+        f"{ui.card_open(header_title, desc_text)}\n\n"
+        f"{ui.kv('Total linked bots', str(total_slots), '📊')}\n"
+        f"{ui.kv('Active', f'🟢 {running_bots}', '⚡')}\n"
+        f"{ui.kv('Stopped', f'🔴 {stopped_bots}', '⏹️')}\n\n"
+        f"{ui.kv('Auto broadcast (all)', spam_state_display, '✉️')}\n"
+        f"{ui.kv('Auto welcome (all)', welcome_state_display, '👋')}\n"
+        f"{ui.kv('Tag auto-reply (all)', reply_state_display, '💬')}\n"
+        f"{ui.kv('Auto contact (all)', add_contact_state_display, '👥')}\n\n"
+        f"{ui.card_close()}"
     )
     
     buttons = [
@@ -556,6 +568,10 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
         # Row 1: Set All Broadcast
         [
             utils.styled_button("✉️ Set All Broadcast Text", "all_slots_set_broadcast", style="primary")
+        ],
+        # Row 1.1: Broadcast NOW on every running userbot (live progress)
+        [
+            utils.styled_button("📢 Broadcast Now (All)", "all_slots_broadcast_now", style="success")
         ],
         # Row 1.2: Set All Welcome
         [
@@ -793,35 +809,52 @@ def register_handlers(client):
         vc_chat_id = getattr(bot_obj, "current_vc_chat_id", None)
         vc_status = "🟢 Connected" if vc_chat_id else "🔴 Disconnected"
         
+        sec_vc_join = (
+            "• Join Vc — connect the userbot to the active voice chat\n"
+            "• Join All Vcs — connect to every group VC\n"
+            "• Leave Vc / Leave All Vcs — disconnect again"
+        )
+        sec_vc_playing = (
+            "• Play Song — stream audio / video into the voice chat\n"
+            "• Pause / Resume / Skip / Stop / Queue — playback controls\n"
+            "• Mute / Unmute — control the userbot microphone"
+        )
+        sec_group = (
+            "• Join Group — join a group via an invite link\n"
+            "• Join Multi Groups — join many groups (flood limits are handled automatically)\n"
+            "• Leave Group — leave a group / channel"
+        )
         text = (
-            f"<blockquote><b>» 🎙️ Vc + Grp Joining Menu</b>\n\n"
-            f"<b>📌 Current Status :</b> <b>{vc_status}</b>\n\n"
-            f"<b>👥 Group Joining Module :</b>\n"
-            f"• Join Group : Userbot Joins A Group Via Invite Link.\n"
-            f"• Leave Group : Userbot Leaves A Group/Channel.\n\n"
-            f"<b>🎙️ Vc Module :</b>\n"
-            f"• Join Vc : Connects Userbot To Group Voice Chat.\n"
-            f"• Leave Vc : Disconnects Userbot From Group Voice Chat.\n\n"
-            f"<b>🎵 Playing Module :</b>\n"
-            f"• Play Song : Stream Audio/Video Or Play Uploaded Files.</blockquote>"
+            f"{ui.card('VC + Group Control', 'Voice chat & group management', 'Every action of your userbot in one place', '🎙️')}\n\n"
+            f"{ui.kv('VC status', vc_status, '📌')}\n\n"
+            f"{ui.section('🎙️ VC Join', sec_vc_join)}\n\n"
+            f"{ui.section('🎵 VC Playing', sec_vc_playing)}\n\n"
+            f"{ui.section('👥 Group Joining & Leaving', sec_group)}"
+            f"\n{ui.footer()}</blockquote>"
         )
         
         buttons = [
-            [
-                utils.styled_button("🔗 Join Group", f"vc_join_grp_{phone}", style="success"),
-                utils.styled_button("📚 Join Multi Groups", f"vc_join_multi_grp_{phone}", style="success")
-            ],
+            # ── SECTION 1 : VC JOIN ──
             [
                 utils.styled_button("🎙️ Join Vc", f"vc_join_{phone}", style="success"),
                 utils.styled_button("🔴 Leave Vc", f"vc_leave_{phone}", style="danger")
             ],
             [
-                utils.styled_button("🎙️ Join All Group Vcs", f"vc_join_all_{phone}", style="primary"),
+                utils.styled_button("🎙️ Join All Group Vcs", f"vc_join_all_{phone}", style="success"),
                 utils.styled_button("🔴 Leave All Group Vcs", f"vc_leave_all_{phone}", style="danger")
             ],
+            # ── SECTION 2 : VC PLAYING ──
             [
-                utils.styled_button("❌ Leave Group", f"vc_leave_grp_{phone}", style="danger"),
-                utils.styled_button("🎵 Play Song", f"play_song_{phone}", style="primary")
+                utils.styled_button("🎵 Play Song", f"play_song_{phone}", style="primary"),
+                utils.styled_button("📖 Commands Guide", f"music_guide_{phone}", style="primary")
+            ],
+            # ── SECTION 3 : GROUP JOINING & LEAVING ──
+            [
+                utils.styled_button("🔗 Join Group", f"vc_join_grp_{phone}", style="primary"),
+                utils.styled_button("📚 Join Multi Groups", f"vc_join_multi_grp_{phone}", style="primary")
+            ],
+            [
+                utils.styled_button("❌ Leave Group", f"vc_leave_grp_{phone}", style="danger")
             ],
             [
                 utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="primary")
@@ -876,38 +909,46 @@ def register_handlers(client):
             if getattr(userbot_manager._running_bots.get(p), "current_vc_chat_id", None)
         )
         
-        header_vc = "» 🎙️ Vc + Grp Joining Menu (All System Bots)" if is_system_all_mode(event.sender_id) else "» 🎙️ Vc + Grp Joining Menu (All Slots)"
+        header_vc = "VC + Group Control (All System Bots)" if is_system_all_mode(event.sender_id) else "VC + Group Control (All Slots)"
+        all_vc_join = (
+            "• Join Vc / Leave Vc — connect or disconnect every userbot\n"
+            "• Join All Active Vcs / Leave All — sweep every group VC"
+        )
+        all_vc_playing = "• Play Song — stream on all running userbots at once"
+        all_group = (
+            "• Join Group / Join Multi Groups — every userbot joins (flood limits are handled automatically)\n"
+            "• Leave Group — every userbot leaves"
+        )
         text = (
-            f"<blockquote><b>{header_vc}</b>\n\n"
-            f"<b>📌 Vc Connected Bots :</b> <b>{vc_connected_count} / {len(sessions)}</b>\n\n"
-            f"<b>👥 Group Joining Module (All) :</b>\n"
-            f"• Join Group : All Running Userbots Join A Group.\n"
-            f"• Leave Group : All Running Userbots Leave A Group.\n\n"
-            f"<b>🎙️ Vc Module (All) :</b>\n"
-            f"• Join Vc : Connect All Running Userbots To Vc.\n"
-            f"• Leave Vc : Disconnect All Running Userbots From Vc.\n"
-            f"• Join All Active Vcs : Auto-Join All Active Group Vcs.\n"
-            f"• Leave All Active Vcs : Auto-Leave All Active Group Vcs.\n\n"
-            f"<b>🎵 Playing Module (All) :</b>\n"
-            f"• Play Song : Stream On All Running Userbots.</blockquote>"
+            f"{ui.card(header_vc, 'Bulk voice chat & group management', 'Control every userbot at once', '🎙️')}\n\n"
+            f"{ui.kv('VC connected bots', f'{vc_connected_count} / {len(sessions)}', '📌')}\n\n"
+            f"{ui.section('🎙️ VC Join', all_vc_join)}\n\n"
+            f"{ui.section('🎵 VC Playing', all_vc_playing)}\n\n"
+            f"{ui.section('👥 Group Joining & Leaving', all_group)}"
+            f"\n{ui.footer()}</blockquote>"
         )
         
         buttons = [
-            [
-                utils.styled_button("🔗 Join Group (All)", "all_slots_vc_join_grp", style="success"),
-                utils.styled_button("📚 Join Multi Groups (All)", "all_slots_vc_join_multi_grp", style="success")
-            ],
+            # ── SECTION 1 : VC JOIN ──
             [
                 utils.styled_button("🎙️ Join Vc (All)", "all_slots_vc_join", style="success"),
                 utils.styled_button("🔴 Leave Vc (All)", "all_slots_vc_leave", style="danger")
             ],
             [
-                utils.styled_button("🎙️ Join All Active Vcs (All)", "all_slots_vc_join_all", style="primary"),
+                utils.styled_button("🎙️ Join All Active Vcs (All)", "all_slots_vc_join_all", style="success"),
                 utils.styled_button("🔴 Leave All Active Vcs (All)", "all_slots_vc_leave_all", style="danger")
             ],
+            # ── SECTION 2 : VC PLAYING ──
             [
-                utils.styled_button("❌ Leave Group (All)", "all_slots_vc_leave_grp", style="danger"),
                 utils.styled_button("🎵 Play Song (All)", "all_slots_play_song", style="primary")
+            ],
+            # ── SECTION 3 : GROUP JOINING & LEAVING ──
+            [
+                utils.styled_button("🔗 Join Group (All)", "all_slots_vc_join_grp", style="primary"),
+                utils.styled_button("📚 Join Multi Groups (All)", "all_slots_vc_join_multi_grp", style="primary")
+            ],
+            [
+                utils.styled_button("❌ Leave Group (All)", "all_slots_vc_leave_grp", style="danger")
             ],
             [
                 utils.styled_button("🔙 Back", "menu_all_slots", style="primary")
@@ -917,6 +958,123 @@ def register_handlers(client):
             await event.edit(text, buttons=buttons)
         except Exception:
             await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern=r"^broadcast_now_(.+)$"))
+    async def broadcast_now_callback(event):
+        """Sends one broadcast round right now with a live progress message."""
+        phone = event.pattern_match.group(1).strip()
+        user_id = event.sender_id
+
+        bot_obj = userbot_manager.find_running_bot(phone)
+        if not bot_obj or not bot_obj.is_running:
+            await event.answer("⚠️ The userbot must be running to broadcast.", alert=True)
+            return
+
+        sess = database.get_session(phone)
+        settings = (sess or {}).get("settings", {}) or {}
+        if not (settings.get("broadcast_msg") or settings.get("broadcast_messages")):
+            await event.answer("⚠️ No broadcast message is set for this userbot.", alert=True)
+            return
+
+        progress = await event.respond(
+            "📢 <b>Broadcast starting...</b>\n\n⏳ <i>Preparing the group list…</i>",
+            parse_mode="html"
+        )
+        try:
+            stats = await bot_obj.broadcast_round(progress_msg=progress)
+        finally:
+            pass
+
+        total = stats.get("total", 0)
+        sent = stats.get("sent", 0)
+        failed = stats.get("failed", 0)
+        remaining = max(0, total - sent - failed)
+
+        summary = (
+            f"📢 <b>Broadcast Complete</b>\n\n"
+            f"✅ <b>Sent :</b> <code>{sent}</code> / <code>{total}</code>\n"
+            f"❌ <b>Failed :</b> <code>{failed}</code>\n"
+            f"⏳ <b>Remaining :</b> <code>{remaining}</code>\n"
+            f"⏱️ <b>Took :</b> <code>{stats.get('elapsed', 0)}s</code>"
+        )
+        if stats.get("flood_waits"):
+            summary += (
+                f"\n⏸️ <b>Flood waits :</b> <code>{stats['flood_waits']}</code> "
+                f"(<code>{stats.get('wait_total', 0)}s</code> waited)"
+            )
+        if remaining:
+            summary += (
+                f"\n\n💡 <i>{remaining} group(s) were not reached. Run it again to continue.</i>"
+            )
+
+        try:
+            await progress.edit(summary, parse_mode="html")
+        except Exception:
+            await event.respond(summary, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^all_slots_broadcast_now$"))
+    async def all_slots_broadcast_now_callback(event):
+        """Sends one broadcast round on every running userbot at once."""
+        user_id = _admin_impersonation.get(event.sender_id, event.sender_id)
+        sessions = get_effective_sessions(event.sender_id)
+        if not sessions:
+            await event.answer("⚠️ No userbot slots found.", alert=True)
+            return
+
+        running = [s for s in sessions if userbot_manager.is_bot_running(s.get("phone"))]
+        if not running:
+            await event.answer("⚠️ None of your userbots are running.", alert=True)
+            return
+
+        progress = await event.respond(
+            f"📢 <b>Broadcasting on {len(running)} userbot(s)...</b>\n\n⏳ <i>Starting…</i>",
+            parse_mode="html"
+        )
+
+        total_sent = 0
+        total_failed = 0
+        total_groups = 0
+        total_flood = 0
+
+        async def _one(s):
+            nonlocal total_sent, total_failed, total_groups, total_flood
+            bot_obj = userbot_manager.find_running_bot(s.get("phone"))
+            if not bot_obj:
+                return
+            try:
+                stats = await bot_obj.broadcast_round()
+            except Exception as e:
+                logger.warning(f"Broadcast failed for {s.get('phone')}: {e}")
+                return
+            total_sent += stats.get("sent", 0)
+            total_failed += stats.get("failed", 0)
+            total_groups += stats.get("total", 0)
+            total_flood += stats.get("flood_waits", 0)
+
+        for s in running:
+            await _one(s)
+            try:
+                await progress.edit(
+                    f"📢 <b>Broadcasting on {len(running)} userbot(s)...</b>\n\n"
+                    f"✅ <b>Sent :</b> <code>{total_sent}</code> / <code>{total_groups}</code>\n"
+                    f"❌ <b>Failed :</b> <code>{total_failed}</code>\n"
+                    f"⏸️ <b>Flood waits :</b> <code>{total_flood}</code>",
+                    parse_mode="html"
+                )
+            except Exception:
+                pass
+
+        summary = (
+            f"📢 <b>Broadcast Complete (All Slots)</b>\n\n"
+            f"🤖 <b>Userbots :</b> <code>{len(running)}</code>\n"
+            f"✅ <b>Sent :</b> <code>{total_sent}</code> / <code>{total_groups}</code>\n"
+            f"❌ <b>Failed :</b> <code>{total_failed}</code>\n"
+            f"⏸️ <b>Flood waits :</b> <code>{total_flood}</code>"
+        )
+        try:
+            await progress.edit(summary, parse_mode="html")
+        except Exception:
+            await event.respond(summary, parse_mode="html")
 
     @client.on(events.CallbackQuery(pattern=r"^vc_join_all_(.+)$"))
     async def vc_join_all_callback(event):
@@ -1046,7 +1204,8 @@ def register_handlers(client):
             left_count, msg = await bot_obj.leave_all_voice_chats()
         except Exception as e:
             logger.error(f"Error during leave_all_voice_chats for {phone}: {e}")
-            left_count, msg = 0, f"Error: {e}"
+            utils.report_error(f"my_bots.leave_all_vc:{phone}", e)
+            left_count, msg = 0, "Could not leave the voice chats. The error was reported to the admin team."
 
         try:
             await progress_msg.delete()
@@ -1074,7 +1233,8 @@ def register_handlers(client):
             success, msg = await bot_obj.leave_voice_chat()
         except Exception as e:
             logger.error(f"Error during leave_voice_chat for {phone}: {e}")
-            success, msg = False, f"Error: {e}"
+            utils.report_error(f"my_bots.leave_vc:{phone}", e)
+            success, msg = False, "Could not leave the voice chat. The error was reported to the admin team."
 
         try:
             await progress_msg.delete()
@@ -1155,8 +1315,8 @@ def register_handlers(client):
             return
         sessions = get_effective_sessions(user_id)
         running_phones = [s["phone"] for s in sessions if userbot_manager.is_bot_running(s["phone"])]
-        vc_bots = [(p, userbot_manager._running_bots[p]) for p in running_phones
-                   if getattr(userbot_manager._running_bots[p], "current_vc_chat_id", None)]
+        vc_bots = [(p, userbot_manager.find_running_bot(p)) for p in running_phones
+                   if getattr(userbot_manager.find_running_bot(p), "current_vc_chat_id", None)]
         if not vc_bots:
             await event.answer("⚠️ No active VC bots found.", alert=True)
             return
@@ -1176,8 +1336,8 @@ def register_handlers(client):
             return
         sessions = get_effective_sessions(user_id)
         running_phones = [s["phone"] for s in sessions if userbot_manager.is_bot_running(s["phone"])]
-        vc_bots = [(p, userbot_manager._running_bots[p]) for p in running_phones
-                   if getattr(userbot_manager._running_bots[p], "current_vc_chat_id", None)]
+        vc_bots = [(p, userbot_manager.find_running_bot(p)) for p in running_phones
+                   if getattr(userbot_manager.find_running_bot(p), "current_vc_chat_id", None)]
         if not vc_bots:
             await event.answer("⚠️ No active VC bots found.", alert=True)
             return
@@ -1211,7 +1371,7 @@ def register_handlers(client):
             return
             
         async def _mute_one(p):
-            bot_obj = userbot_manager._running_bots[p]
+            bot_obj = userbot_manager.find_running_bot(p)
             return await bot_obj.mute_mic()
             
         await asyncio.gather(*[_mute_one(p) for p in running_phones], return_exceptions=True)
@@ -1228,7 +1388,7 @@ def register_handlers(client):
             return
             
         async def _unmute_one(p):
-            bot_obj = userbot_manager._running_bots[p]
+            bot_obj = userbot_manager.find_running_bot(p)
             return await bot_obj.unmute_mic()
             
         await asyncio.gather(*[_unmute_one(p) for p in running_phones], return_exceptions=True)
@@ -1245,7 +1405,7 @@ def register_handlers(client):
             return
             
         async def _stop_one(p):
-            bot_obj = userbot_manager._running_bots[p]
+            bot_obj = userbot_manager.find_running_bot(p)
             return await bot_obj.stop_song()
             
         await asyncio.gather(*[_stop_one(p) for p in running_phones], return_exceptions=True)
@@ -1289,7 +1449,7 @@ def register_handlers(client):
         progress_msg = await event.reply("<blockquote><b>» ⏳ Leaving Voice Chats On All Running Userbots...</b></blockquote>", parse_mode="html")
         
         async def _leave_one(p):
-            bot_obj = userbot_manager._running_bots[p]
+            bot_obj = userbot_manager.find_running_bot(p)
             success, msg = await bot_obj.leave_voice_chat()
             return success
             
@@ -1315,7 +1475,7 @@ def register_handlers(client):
         
         restarted = 0
         limit_reached = False
-        import config
+        from villain_ads_bot import config
         max_running = getattr(config, "MAX_RUNNING_USERBOTS", 99999)
 
         for s in sessions:
@@ -1459,7 +1619,7 @@ def register_handlers(client):
         progress_msg = await event.reply("⏳ <b>Refreshing statistics for all running userbots concurrently...</b>")
         
         async def _refresh_one(phone):
-            bot_obj = userbot_manager._running_bots[phone]
+            bot_obj = userbot_manager.find_running_bot(phone)
             try:
                 await bot_obj.get_groups(force_refresh=True)
                 return True
@@ -1516,7 +1676,7 @@ def register_handlers(client):
         
         started = 0
         limit_reached = False
-        import config
+        from villain_ads_bot import config
         max_running = getattr(config, "MAX_RUNNING_USERBOTS", 99999)
 
         for s in sessions:
@@ -1881,12 +2041,18 @@ def register_handlers(client):
         db_key = key_map[feature]
         
         any_on = any(s.get("settings", {}).get(db_key, False) for s in sessions)
-        new_state = not any_on
+        all_on = all(s.get("settings", {}).get(db_key, False) for s in sessions)
+        # If every userbot is already on -> switch everything off.
+        # If only some are on -> switch everything on (so a single tap never
+        # silently disables a feature that is active on other userbots).
+        new_state = False if all_on else True
         
         for s in sessions:
             s.setdefault("settings", {})[db_key] = new_state
+        for s in sessions:
             database.save_session(s)
-            userbot_manager.reload_bot_settings(s["phone"])
+            userbot_manager.reload_bot_settings(s.get("phone", ""))
+            userbot_manager.reload_bot_settings(s.get("session_id", ""))
             
         state_word = "🟢 On" if new_state else "🔴 Off"
         feature_name = "Auto Broadcast" if feature == "spam" else ("Auto-Welcome" if feature == "welcome" else "Auto-Contact")
@@ -2256,6 +2422,62 @@ def register_handlers(client):
         phone = event.pattern_match.group(1)
         await show_bot_dashboard(event, phone, event.sender_id)
 
+    @client.on(events.CallbackQuery(pattern="^user_load_sessions_from_disk$"))
+    async def user_load_sessions_from_disk_callback(event):
+        """Lets a user load & log in every account that has a session file on disk."""
+        user_id = event.sender_id
+        await event.answer("📂 Scanning your session files...", alert=True)
+
+        try:
+            files = userbot_manager.list_session_files()
+            mine = [f for f in files if str(f.get("owner_id")) == str(user_id)]
+            if not mine:
+                await event.edit(
+                    "<blockquote><b>» 📂 No Session Files Found</b>\n\n"
+                    "⚠️ <i>No <code>.session</code> file was found for your account. "
+                    "Use <b>Add / Login Userbot</b> to connect a new account.</i></blockquote>",
+                    parse_mode="html"
+                )
+                return
+
+            status_msg = await event.edit(
+                "<blockquote><b>» 🔑 Logging In Your Accounts...</b>\n\n"
+                f"📁 <b>Session Files :</b> <code>{len(mine)}</code>\n\n"
+                "<i>Please wait, this can take a moment…</i></blockquote>",
+                parse_mode="html"
+            )
+
+            result = await userbot_manager.login_all_sessions_from_disk(owner_id=user_id)
+            lines = [
+                "<blockquote><b>» 🔑 Account Login Results</b>\n",
+                f"📁 <b>Session Files :</b> <code>{len(mine)}</code>\n",
+                f"🆕 <b>Newly Registered :</b> <code>{result['imported']}</code>\n",
+                f"✅ <b>Logged In (Running) :</b> <code>{result['started']}</code>\n",
+                f"❌ <b>Failed :</b> <code>{result['failed']}</code>\n",
+            ]
+            if result.get("details"):
+                lines.append("\n<b>Details :</b>")
+                for sid, note in result["details"][:40]:
+                    lines.append(f"\n• <code>{sid}</code> — <i>{note}</i>")
+            lines.append("\n\n💡 <i>All your accounts are now listed in the dashboard.</i></blockquote>")
+
+            buttons = [[utils.styled_button("📱 My Userbots", "menu_my_bots", style="primary")]]
+            try:
+                await status_msg.edit("\n".join(lines), buttons=buttons, parse_mode="html")
+            except Exception:
+                await event.edit("\n".join(lines), buttons=buttons, parse_mode="html")
+        except Exception as e:
+            logger.error(f"Load sessions from disk failed for {user_id}: {e}")
+            utils.report_error(f"my_bots.load_sessions_from_disk:{user_id}", e)
+            try:
+                await event.edit(
+                    "<blockquote><b>» ❌ Could Not Load Accounts</b>\n\n"
+                    "⚠️ <i>Something went wrong. The error was reported to the admin team.</i></blockquote>",
+                    parse_mode="html"
+                )
+            except Exception:
+                pass
+
     @client.on(events.CallbackQuery(pattern=r"^admin_ctrl_bot_(.+)$"))
     async def admin_ctrl_bot_callback(event):
         user_id = event.sender_id
@@ -2318,7 +2540,7 @@ def register_handlers(client):
     @client.on(events.CallbackQuery(pattern="^admin_exit_impersonation$"))
     async def admin_exit_impersonation_callback(event):
         _admin_impersonation.pop(event.sender_id, None)
-        from handlers.admin import show_admin_panel
+        from villain_ads_bot.handlers.admin import show_admin_panel
         await show_admin_panel(event, event.sender_id)
 
     # ------------------ Core Controls ------------------
@@ -2387,10 +2609,19 @@ def register_handlers(client):
         add_contact_status = "🟢 On" if settings.get("auto_add_contact") else "🔴 Off"
         reply_status = "🟢 On" if settings.get("auto_reply") else "🔴 Off"
         interval = settings.get("broadcast_interval", 300)
-        delay = settings.get("inter_group_delay", 5)
+        delay = settings.get("inter_group_delay", 30)
+        spam_mode = settings.get("broadcast_mode", "single")
+        welcome_mode = settings.get("welcome_mode", "single")
         spam_msg = settings.get("broadcast_msg", "None")
         welcome_msg = settings.get("welcome_msg", "None")
         welcome_msgs = ", ".join(settings.get("welcome_messages", [])) or "None"
+        run_expiry = sess.get("run_expiry")
+        if run_expiry:
+            import time as _t
+            remaining = int(max(0, float(run_expiry) - _t.time()))
+            run_timer_txt = f"⏳ <b>{remaining // 3600}h {(remaining % 3600) // 60}m {remaining % 60}s</b> remaining"
+        else:
+            run_timer_txt = "🔴 <b>Not set</b>"
         
         # Format a clean message
         text = (
@@ -2400,11 +2631,13 @@ def register_handlers(client):
             f"• <b>🔗 Username :</b> @{sess.get('username', 'None')}\n\n"
             f"<b>📢 Auto Broadcast Settings :</b>\n"
             f"• <b>Status :</b> {spam_status}\n"
+            f"• <b>Mode :</b> <b>{'📚 Multiple' if spam_mode == 'multiple' else '✉️ Single'}</b>\n"
             f"• <b>Interval :</b> <b>{interval}s</b> | <b>Delay :</b> <b>{delay}s</b>\n"
             f"• <b>Broadcast Msg :</b>\n"
             f"  <code>{spam_msg}</code>\n\n"
             f"<b>👋 Auto-Welcome Settings :</b>\n"
             f"• <b>Status :</b> {welcome_status}\n"
+            f"• <b>Mode :</b> <b>{'📚 Multiple' if welcome_mode == 'multiple' else '👋 Single'}</b>\n"
             f"• <b>Welcome Msg :</b>\n"
             f"  <code>{welcome_msg}</code>\n"
             f"• <b>Multiple Welcome Msgs :</b>\n"
@@ -2412,7 +2645,8 @@ def register_handlers(client):
             f"<b>💬 Tag Auto-Reply Settings :</b>\n"
             f"• <b>Status :</b> {reply_status}\n\n"
             f"<b>👥 Auto-Contact Settings :</b>\n"
-            f"• <b>Status :</b> {add_contact_status}</blockquote>"
+            f"• <b>Status :</b> {add_contact_status}\n\n"
+            f"<b>⏱️ Run Timer :</b> {run_timer_txt}</blockquote>"
         )
         
         buttons = [[utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="primary")]]
@@ -2472,7 +2706,7 @@ def register_handlers(client):
         flash = None
         if sess and is_session_owner_or_admin(sess, event.sender_id):
             if userbot_manager.is_bot_running(phone):
-                bot_obj = userbot_manager._running_bots[phone]
+                bot_obj = userbot_manager.find_running_bot(phone)
                 try:
                     # Force refresh the groups cache, which also updates the DB stats
                     groups = await bot_obj.get_groups(force_refresh=True)
@@ -2482,7 +2716,8 @@ def register_handlers(client):
                     flash = f"🔄 <b>Stats refreshed! Groups: {len(groups)} | Contacts: {users}</b>"
                 except Exception as e:
                     logger.error(f"Error refreshing stats: {e}")
-                    flash = f"❌ <b>Error during refresh: {e}</b>"
+                    utils.report_error(f"my_bots.refresh_stats:{phone}", e)
+                    flash = "❌ <b>Error during refresh.</b> <i>The error was reported to the admin team.</i>"
             else:
                 flash = "⚠️ <b>Bot must be running to refresh statistics.</b>"
                 
@@ -3028,16 +3263,32 @@ def register_handlers(client):
         cmd_text = event.text.strip() if event.text else ""
         if cmd_text.startswith("/"):
             # Clear pending state on commands so standard command handlers process them
-            if user_id in _bot_action_states:
-                _bot_action_states.pop(user_id, None)
+            _bot_action_states.pop(user_id, None)
+            _target = _admin_impersonation.get(user_id)
+            if _target is not None:
+                _bot_action_states.pop(_target, None)
             return
 
-        if user_id not in _bot_action_states:
+        # The pending state may have been stored under the sender id OR under the
+        # impersonated target id (admin / owner mode). Look up both so the
+        # "apply to all" flows work for admins too.
+        state = None
+        if user_id in _bot_action_states:
+            state = _bot_action_states.pop(user_id)
+        else:
+            _target = _admin_impersonation.get(user_id)
+            if _target is None:
+                _target = _admin_impersonation.get(str(user_id))
+            if _target is not None and _target in _bot_action_states:
+                state = _bot_action_states.pop(_target)
+            elif _admin_impersonation.get(str(user_id)) in _bot_action_states:
+                state = _bot_action_states.pop(_admin_impersonation.get(str(user_id)))
+
+        if not state:
             return
             
         raw_txt = (event.text or "").strip().lower()
         if raw_txt in ("/cancel", "cancel", "back", "/abort", "abort", "🔙 cancel", "🔙 back"):
-            state = _bot_action_states.pop(user_id, {})
             phone = state.get("phone")
             if phone:
                 await show_bot_dashboard(event, phone, user_id, flash_message="❌ <b>Action cancelled.</b>")
@@ -3045,7 +3296,6 @@ def register_handlers(client):
                 await show_all_slots_dashboard(event, user_id, flash_message="❌ <b>Action cancelled.</b>", fetch_all=is_system_all_mode(user_id))
             return
             
-        state = _bot_action_states.pop(user_id)
         phone = state.get("phone")
         action = state["action"]
         
@@ -3070,7 +3320,9 @@ def register_handlers(client):
             progress_msg = await event.reply(f"<blockquote><b>» ⏳ Joining Voice Chat On {len(running_phones)} Running Userbots...</b></blockquote>", parse_mode="html")
             
             async def _join_vc_concurrent(phone_num):
-                bot_obj = userbot_manager._running_bots[phone_num]
+                bot_obj = userbot_manager.find_running_bot(phone_num)
+                if not bot_obj:
+                    return phone_num, False, "Userbot is not running."
                 success, msg = await bot_obj.join_voice_chat(link)
                 return phone_num, success, msg
                 
@@ -3104,10 +3356,16 @@ def register_handlers(client):
             sessions = get_effective_sessions(user_id)
             for s in sessions:
                 s.setdefault("settings", {})["broadcast_msg"] = broadcast_msg
+                # Setting a broadcast message also ENABLES the auto broadcast,
+                # otherwise the message would never be sent.
+                s["settings"]["auto_spam"] = True
+            # Save once per session AFTER all changes so the async writer can
+            # never persist an older snapshot last.
+            for s in sessions:
                 database.save_session(s)
-                if userbot_manager.is_bot_running(s["phone"]):
-                    userbot_manager.reload_bot_settings(s["phone"])
-            flash = "<blockquote><b>» ✉️ Broadcast Message Updated For All Bots!</b></blockquote>"
+                userbot_manager.reload_bot_settings(s.get("phone", ""))
+                userbot_manager.reload_bot_settings(s.get("session_id", ""))
+            flash = "<blockquote><b>» ✉️ Broadcast Message Updated For All Bots!</b>\n\n<i>✅ Auto Broadcast has been enabled for all selected userbots.</i></blockquote>"
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
             
@@ -3116,10 +3374,13 @@ def register_handlers(client):
             sessions = get_effective_sessions(user_id)
             for s in sessions:
                 s.setdefault("settings", {})["welcome_msg"] = welcome_msg
+                # Setting a welcome message also ENABLES the auto welcome.
+                s["settings"]["auto_welcome"] = True
+            for s in sessions:
                 database.save_session(s)
-                if userbot_manager.is_bot_running(s["phone"]):
-                    userbot_manager.reload_bot_settings(s["phone"])
-            flash = "<blockquote><b>» 👋 Welcome Message Updated For All Bots!</b></blockquote>"
+                userbot_manager.reload_bot_settings(s.get("phone", ""))
+                userbot_manager.reload_bot_settings(s.get("session_id", ""))
+            flash = "<blockquote><b>» 👋 Welcome Message Updated For All Bots!</b>\n\n<i>✅ Auto Welcome has been enabled for all selected userbots.</i></blockquote>"
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
 
@@ -3131,10 +3392,15 @@ def register_handlers(client):
             sessions = get_effective_sessions(user_id)
             for s in sessions:
                 s.setdefault("settings", {})["welcome_messages"] = msgs
+                # Switch the runtime into "multiple" mode, otherwise the
+                # single (default) welcome message would still be used.
+                s["settings"]["welcome_mode"] = "multiple"
+                s["settings"]["auto_welcome"] = True
+            for s in sessions:
                 database.save_session(s)
-                if userbot_manager.is_bot_running(s["phone"]):
-                    userbot_manager.reload_bot_settings(s["phone"])
-            flash = "<blockquote><b>» 👋 Multiple Welcome Messages Updated For All Bots!</b></blockquote>"
+                userbot_manager.reload_bot_settings(s.get("phone", ""))
+                userbot_manager.reload_bot_settings(s.get("session_id", ""))
+            flash = "<blockquote><b>» 👋 Multiple Welcome Messages Updated For All Bots!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Welcome enabled.</i></blockquote>"
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
  
@@ -3187,11 +3453,19 @@ def register_handlers(client):
                 pass
             
             success_count = 0
-            for res in results:
-                if not isinstance(res, Exception) and res[0]:
+            fail_msgs = []
+            for res, phone_num in zip(results, running_phones):
+                if isinstance(res, Exception):
+                    fail_msgs.append(f"📞 <code>{phone_num}</code>: {type(res).__name__}")
+                    continue
+                if res[0]:
                     success_count += 1
+                else:
+                    fail_msgs.append(f"📞 <code>{phone_num}</code>: {res[1]}")
                     
             flash = f"<blockquote><b>» 👤 Profile Cloning Results</b>\n• Cloned Successfully On {success_count}/{len(running_phones)} Userbots!</blockquote>"
+            if fail_msgs:
+                flash += "\n\n<b>Errors :</b>\n" + "\n".join(fail_msgs[:15])
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
  
@@ -3261,10 +3535,15 @@ def register_handlers(client):
                 sessions = get_effective_sessions(user_id)
                 for s in sessions:
                     s.setdefault("settings", {})["broadcast_messages"] = msgs
+                    # Switch the runtime into "multiple" mode, otherwise the
+                    # single (default) broadcast message would still be used.
+                    s["settings"]["broadcast_mode"] = "multiple"
+                    s["settings"]["auto_spam"] = True
+                for s in sessions:
                     database.save_session(s)
-                    if userbot_manager.is_bot_running(s["phone"]):
-                        userbot_manager.reload_bot_settings(s["phone"])
-                flash = f"<blockquote><b>» ✅ Randomized Messages Updated For All Bots ({len(msgs)} Msgs)!</b></blockquote>"
+                    userbot_manager.reload_bot_settings(s.get("phone", ""))
+                    userbot_manager.reload_bot_settings(s.get("session_id", ""))
+                flash = f"<blockquote><b>» ✅ Randomized Messages Updated For All Bots ({len(msgs)} Msgs)!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Broadcast enabled.</i></blockquote>"
                 await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
                 return
             else:
@@ -3384,7 +3663,7 @@ def register_handlers(client):
             
             vc_bots = []
             for p in running_phones:
-                bot_obj = userbot_manager._running_bots[p]
+                bot_obj = userbot_manager.find_running_bot(p)
                 if getattr(bot_obj, "current_vc_chat_id", None):
                     vc_bots.append((p, bot_obj))
                     
@@ -3492,44 +3771,57 @@ def register_handlers(client):
             
             total_joins_success = 0
             total_joins_failed = 0
+            total_flood_waits = 0
+            total_wait_time = 0
             
             for p_idx, phone_num in enumerate(running_phones, 1):
-                bot_obj = userbot_manager._running_bots.get(phone_num)
+                bot_obj = userbot_manager.find_running_bot(phone_num)
                 if not bot_obj:
                     continue
-                for l_idx, link in enumerate(links, 1):
+                # Each userbot joins the groups on its own. Flood limits are
+                # respected per account and the remaining groups are joined
+                # automatically after the wait.
+                async def _on_progress(done, total, state, _phone=phone_num):
                     try:
-                        ok = await join_channel_single(bot_obj.client, link)
-                        if ok:
-                            total_joins_success += 1
-                            bot_obj.groups_cache_time = 0
-                        else:
-                            total_joins_failed += 1
-                    except Exception as e:
-                        logger.warning(f"Error bot {phone_num} joining {link}: {e}")
-                        total_joins_failed += 1
-                    if l_idx < len(links):
-                        await asyncio.sleep(1.2)
-                try:
-                    await progress_msg.edit(
-                        f"⏳ <b>Joining Groups... (Bot {p_idx}/{len(running_phones)})</b>\n\n"
-                        f"✅ <b>Successful :</b> {total_joins_success} | ❌ <b>Failed :</b> {total_joins_failed}",
-                        parse_mode="html"
-                    )
-                except Exception:
-                    pass
-                    
+                        await progress_msg.edit(
+                            f"⏳ <b>Joining Groups...</b> <code>({p_idx}/{len(running_phones)} bots)</code>\n\n"
+                            f"🤖 <b>Account :</b> <code>{_phone}</code>\n"
+                            f"✅ <b>Joined :</b> {total_joins_success}\n"
+                            f"❌ <b>Failed :</b> {total_joins_failed}\n"
+                            f"⏳ <b>Remaining :</b> {state.get('remaining', 0)}\n"
+                            f"⏸️ <b>Flood waits :</b> {total_flood_waits}"
+                            + (f" (<code>{total_wait_time}s</code> waited)" if total_flood_waits else ""),
+                            parse_mode="html"
+                        )
+                    except Exception:
+                        pass
+
+                result = await joiner.join_many(
+                    bot_obj.client, links,
+                    progress_msg=progress_msg,
+                    progress_callback=_on_progress,
+                )
+                total_joins_success += result.get("joined", 0)
+                total_joins_failed += result.get("failed", 0)
+                total_flood_waits += result.get("flood_waits", 0)
+                total_wait_time += result.get("wait_total", 0)
+                bot_obj.groups_cache_time = 0
+                
             try:
                 await progress_msg.delete()
             except Exception:
                 pass
                 
+            remaining_groups = max(0, len(links) * len(running_phones) - total_joins_success - total_joins_failed)
             flash = (
                 f"<blockquote><b>» 📚 All Slots : Group Joining Completed</b>\n\n"
                 f"• <b>Total Userbots :</b> <b>{len(running_phones)}</b>\n"
                 f"• <b>Total Group Links :</b> <b>{len(links)}</b>\n"
                 f"• <b>✅ Successful Joins :</b> <b>{total_joins_success}</b>\n"
-                f"• <b>❌ Failed Joins :</b> <b>{total_joins_failed}</b></blockquote>"
+                f"• <b>❌ Failed Joins :</b> <b>{total_joins_failed}</b>"
+                + (f"\n• <b>⏸️ Flood Waits :</b> <b>{total_flood_waits}</b> (<b>{total_wait_time}s</b> waited)" if total_flood_waits else "")
+                + (f"\n• <b>⏳ Remaining :</b> <b>{remaining_groups}</b>" if remaining_groups else "")
+                + "</blockquote>"
             )
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
@@ -3580,8 +3872,11 @@ def register_handlers(client):
         # 1. Broadcast Message
         if action == "WAITING_FOR_BROADCAST":
             sess["settings"]["broadcast_msg"] = event.text
+            # Setting a broadcast message also enables the auto broadcast.
+            sess["settings"]["auto_spam"] = True
             database.save_session(sess)
-            flash = "<blockquote><b>» ✉️ Broadcast Message Updated Successfully!</b></blockquote>"
+            userbot_manager.reload_bot_settings(phone)
+            flash = "<blockquote><b>» ✉️ Broadcast Message Updated Successfully!</b>\n\n<i>✅ Auto Broadcast enabled.</i></blockquote>"
             
         elif action == "WAITING_FOR_RUN_TIMER":
             raw_text = event.text.strip().lower()
@@ -3611,8 +3906,11 @@ def register_handlers(client):
         # 2. Welcome Message
         elif action == "WAITING_FOR_WELCOME":
             sess["settings"]["welcome_msg"] = event.text
+            # Setting a welcome message also enables the auto welcome.
+            sess["settings"]["auto_welcome"] = True
             database.save_session(sess)
-            flash = "<blockquote><b>» 👋 Welcome Message Updated Successfully!</b></blockquote>"
+            userbot_manager.reload_bot_settings(phone)
+            flash = "<blockquote><b>» 👋 Welcome Message Updated Successfully!</b>\n\n<i>✅ Auto Welcome enabled.</i></blockquote>"
             
         # 2.b Multiple Welcome Messages
         elif action == "WAITING_FOR_MULTI_WELCOME":
@@ -3621,8 +3919,12 @@ def register_handlers(client):
                 await event.reply("<blockquote><b>» ❌ Input Cannot Be Empty.</b></blockquote>", parse_mode="html")
                 return
             sess["settings"]["welcome_messages"] = msgs
+            # Switch the runtime into "multiple" mode.
+            sess["settings"]["welcome_mode"] = "multiple"
+            sess["settings"]["auto_welcome"] = True
             database.save_session(sess)
-            flash = "<blockquote><b>» 👋 Multiple Welcome Messages Updated Successfully!</b></blockquote>"
+            userbot_manager.reload_bot_settings(phone)
+            flash = "<blockquote><b>» 👋 Multiple Welcome Messages Updated Successfully!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Welcome enabled.</i></blockquote>"
             
         # 2.5 Join VC Link
         elif action == "WAITING_FOR_VC_LINK":
@@ -3636,7 +3938,7 @@ def register_handlers(client):
                 return
                 
             progress_msg = await event.reply("⏳ <b>Joining Voice Chat, Please Wait...</b>", parse_mode="html")
-            bot_obj = userbot_manager._running_bots[phone]
+            bot_obj = userbot_manager.find_running_bot(phone)
             success, msg = await bot_obj.join_voice_chat(link)
             try:
                 await progress_msg.delete()
@@ -3667,7 +3969,7 @@ def register_handlers(client):
                 await event.reply("<blockquote><b>» ❌ No Valid Links Provided.</b></blockquote>", parse_mode="html")
                 return
                 
-            bot_obj = userbot_manager._running_bots[phone]
+            bot_obj = userbot_manager.find_running_bot(phone)
             
             if len(links) == 1:
                 link = links[0]
@@ -3683,41 +3985,21 @@ def register_handlers(client):
                 else:
                     flash = f"<blockquote><b>» ❌ Failed To Join Group</b>\n\n• <b>Target :</b> <code>{link}</code>\n• <i>Make Sure The Link Is Valid Or Not Expired.</i></blockquote>"
             else:
-                progress_msg = await event.reply(f"⏳ <b>Joining {len(links)} Groups... (0/{len(links)})</b>", parse_mode="html")
-                success_count = 0
-                failed_count = 0
-                for idx, link in enumerate(links, 1):
-                    try:
-                        ok = await join_channel_single(bot_obj.client, link)
-                        if ok:
-                            success_count += 1
-                            bot_obj.groups_cache_time = 0
-                        else:
-                            failed_count += 1
-                    except Exception as e:
-                        logger.warning(f"Error joining {link}: {e}")
-                        failed_count += 1
-                    try:
-                        await progress_msg.edit(
-                            f"⏳ <b>Joining {len(links)} Groups... ({idx}/{len(links)})</b>\n\n"
-                            f"✅ <b>Success :</b> {success_count} | ❌ <b>Failed :</b> {failed_count}",
-                            parse_mode="html"
-                        )
-                    except Exception:
-                        pass
-                    if idx < len(links):
-                        await asyncio.sleep(1.5)
-                        
+                progress_msg = await event.reply(
+                    f"⏳ <b>Joining {len(links)} Groups...</b> <code>(0/{len(links)})</code>",
+                    parse_mode="html"
+                )
+                # Flood limits are respected: the joiner waits and continues
+                # with the remaining groups automatically.
+                result = await joiner.join_many(bot_obj.client, links, progress_msg=progress_msg)
+                bot_obj.groups_cache_time = 0
                 try:
                     await progress_msg.delete()
                 except Exception:
                     pass
-                    
+
                 flash = (
-                    f"<blockquote><b>» 📚 Multiple Groups Join Completed</b>\n\n"
-                    f"• <b>Total Links :</b> <b>{len(links)}</b>\n"
-                    f"• <b>✅ Successfully Joined :</b> <b>{success_count}</b>\n"
-                    f"• <b>❌ Failed :</b> <b>{failed_count}</b></blockquote>"
+                    f"<blockquote>{joiner.format_result(result, 'Multiple Groups Join Completed')}</blockquote>"
                 )
                 
             await show_bot_dashboard(event, phone, user_id, flash_message=flash)
@@ -3743,7 +4025,7 @@ def register_handlers(client):
                 return
                 
             progress_msg = await event.reply("⏳ <b>Leaving Group/Channel, Please Wait...</b>", parse_mode="html")
-            bot_obj = userbot_manager._running_bots[phone]
+            bot_obj = userbot_manager.find_running_bot(phone)
             left_cnt = 0
             for lk in links:
                 try:
@@ -3855,8 +4137,12 @@ def register_handlers(client):
             msgs = [m.strip() for m in raw_text.split(",") if m.strip()]
             if msgs:
                 sess.setdefault("settings", {})["broadcast_messages"] = msgs
+                # Switch the runtime into "multiple" mode.
+                sess["settings"]["broadcast_mode"] = "multiple"
+                sess["settings"]["auto_spam"] = True
                 database.save_session(sess)
-                flash = f"<blockquote><b>» ✅ Successfully Set {len(msgs)} Messages For Randomized Broadcast!</b></blockquote>"
+                userbot_manager.reload_bot_settings(phone)
+                flash = f"<blockquote><b>» ✅ Successfully Set {len(msgs)} Messages For Randomized Broadcast!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Broadcast enabled.</i></blockquote>"
             else:
                 await event.reply("<blockquote><b>» ❌ Message List Cannot Be Empty. Separate With Commas (,).</b></blockquote>", parse_mode="html")
                 return
@@ -3936,7 +4222,7 @@ def register_handlers(client):
                 await event.reply("<blockquote><b>» ❌ Userbot Is Not Running.</b></blockquote>", parse_mode="html")
                 return
                 
-            bot_obj = userbot_manager._running_bots[phone]
+            bot_obj = userbot_manager.find_running_bot(phone)
             progress_msg = await event.reply("⏳ <b>Playing Song, Please Wait...</b>", parse_mode="html")
             success, msg, song_info = await bot_obj.play_song(query, play_type="audio", local_file=local_file_path, title=audio_title, duration=audio_duration)
             try:

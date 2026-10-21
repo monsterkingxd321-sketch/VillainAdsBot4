@@ -6,12 +6,12 @@ import tempfile
 from telethon import events, TelegramClient
 from telethon.sessions import StringSession, SQLiteSession
 from telethon.errors import SessionPasswordNeededError
-import database
-import models
-import config
-import utils
-import userbot_manager
-from userbot import force_join_channels, apply_branding
+from villain_ads_bot.data import database
+from villain_ads_bot.data import models
+from villain_ads_bot import config
+from villain_ads_bot.core import utils
+from villain_ads_bot.services import userbot_manager
+from villain_ads_bot.services.userbot import force_join_channels, apply_branding
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +83,14 @@ def register_handlers(client):
                 await event.respond(prompt_text, buttons=buttons)
         except Exception as e:
             logger.error(f"Failed to resend code to {phone}: {e}")
+            utils.report_error(f"add_bot.resend_otp:{phone}", e)
             buttons = [
                 [
                     utils.styled_button("🔄 Try Again", "menu_add_bot", style="primary"),
                     utils.styled_button("❌ Cancel", "cancel_login", style="danger")
                 ]
             ]
-            fail_text = f"<blockquote><b>» ❌ Failed To Resend Otp</b>\n\n⚠️ <b>Error :</b> <code>{e}</code></blockquote>"
+            fail_text = "<blockquote><b>» ❌ Failed To Resend Otp</b>\n\n⚠️ <i>Could not send the OTP right now. The error was reported to the admin team — please try again in a moment.</i></blockquote>"
             try:
                 await event.edit(fail_text, buttons=buttons)
             except Exception:
@@ -233,12 +234,13 @@ def register_handlers(client):
             allowed = utils.get_allowed_slots(user_id)
             existing = database.get_sessions(user_id)
             remaining = state.get("remaining_slots", allowed - len(existing))
-            os.makedirs("downloads", exist_ok=True)
-            temp_dl = os.path.join("downloads", fname or "upload.tmp")
+            os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
+            temp_dl = os.path.join(config.DOWNLOADS_DIR, fname or "upload.tmp")
             try:
                 await client.download_media(event.media, file=temp_dl)
             except Exception as dl_err:
-                await prog.edit(f"<blockquote><b>» ❌ Download Failed</b>\n\n<code>{dl_err}</code></blockquote>", parse_mode="html")
+                utils.report_error("add_bot.session_download", dl_err)
+                await prog.edit("<blockquote><b>» ❌ Download Failed</b>\n\n⚠️ <i>The session file could not be downloaded. The error was reported to the admin team.</i></blockquote>", parse_mode="html")
                 await clean_login_state(user_id)
                 return
             session_files = []
@@ -255,7 +257,8 @@ def register_handlers(client):
                                 session_files.append((os.path.join(extract_dir, member), os.path.basename(member)))
                     os.remove(temp_dl)
                 except Exception as zip_err:
-                    await prog.edit(f"<blockquote><b>» ❌ Zip Extraction Failed</b>\n\n<code>{zip_err}</code></blockquote>", parse_mode="html")
+                    utils.report_error("add_bot.zip_extraction", zip_err)
+                    await prog.edit("<blockquote><b>» ❌ Zip Extraction Failed</b>\n\n⚠️ <i>The zip archive could not be extracted. The error was reported to the admin team.</i></blockquote>", parse_mode="html")
                     await clean_login_state(user_id)
                     return
             if not session_files:
@@ -412,13 +415,14 @@ def register_handlers(client):
                 await event.reply(utils.get_text("login_otp_prompt", lang), buttons=buttons)
             except Exception as e:
                 logger.error(f"Failed to send code request to {phone}: {e}")
+                utils.report_error(f"add_bot.send_code:{phone}", e)
                 buttons = [
                     [
                         utils.styled_button("🔄 Try Again", "menu_add_bot", style="primary"),
                         utils.styled_button("🔙 Cancel", "cancel_login", style="danger")
                     ]
                 ]
-                await event.reply(utils.get_text("login_failed", lang, error=str(e)), buttons=buttons)
+                await event.reply(utils.get_text("login_failed", lang, error="The login request failed. The error was reported to the admin team."), buttons=buttons)
                 await clean_login_state(user_id)
                 
         # ------------------ STEP 2: OTP input ------------------
@@ -455,6 +459,7 @@ def register_handlers(client):
 
             except Exception as e:
                 logger.error(f"Sign in failed for {phone}: {e}")
+                utils.report_error(f"add_bot.sign_in:{phone}", e)
                 buttons = [
                     [
                         utils.styled_button("🔄 Resend Otp", "resend_otp_action", style="primary"),
@@ -462,7 +467,7 @@ def register_handlers(client):
                     ]
                 ]
                 await event.reply(
-                    f"<blockquote><b>» ❌ Login Failed</b>\n\n⚠️ <b>Error :</b> <code>{e}</code>\n\n💡 <i>You Can Re-Enter Your Code, Tap Resend Otp Or Cancel.</i></blockquote>",
+                    "<blockquote><b>» ❌ Login Failed</b>\n\n⚠️ <i>The login could not be completed. The error was reported to the admin team.</i>\n\n💡 <i>You Can Re-Enter Your Code, Tap Resend Otp Or Cancel.</i></blockquote>",
                     buttons=buttons
                 )
                 
@@ -481,6 +486,7 @@ def register_handlers(client):
                 await complete_login(client, event, user_id, state)
             except Exception as e:
                 logger.error(f"2FA sign in failed: {e}")
+                utils.report_error("add_bot.2fa", e)
                 buttons = [
                     [
                         utils.styled_button("🔄 Resend Otp", "resend_otp_action", style="primary"),
@@ -488,7 +494,7 @@ def register_handlers(client):
                     ]
                 ]
                 await event.reply(
-                    f"<blockquote><b>» ❌ 2FA Verification Failed</b>\n\n⚠️ <b>Error :</b> <code>{e}</code>\n\n<i>Please Enter The Correct 2FA Password Or Tap Cancel :</i></blockquote>",
+                    "<blockquote><b>» ❌ 2FA Verification Failed</b>\n\n⚠️ <i>The verification failed. The error was reported to the admin team.</i>\n\n<i>Please Enter The Correct 2FA Password Or Tap Cancel :</i></blockquote>",
                     buttons=buttons
                 )
 
@@ -618,7 +624,8 @@ async def complete_login(bot_client, event, user_id: int, state: dict):
                 
     except Exception as e:
         logger.error(f"Error finalizing login: {e}")
-        await event.reply(utils.get_text("login_failed", lang, error=str(e)))
+        utils.report_error("add_bot.finalize_login", e)
+        await event.reply(utils.get_text("login_failed", lang, error="The login could not be finalised. The error was reported to the admin team."))
     finally:
         # Always clean up temporary state
         await clean_login_state(user_id)

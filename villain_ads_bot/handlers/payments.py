@@ -1,10 +1,63 @@
 import logging
 from telethon import events
-import database
-import config
-import utils
+from villain_ads_bot.data import database
+from villain_ads_bot import config
+from villain_ads_bot.core import utils
+from villain_ads_bot.core import ui
 
 logger = logging.getLogger(__name__)
+
+
+def _payment_lines(payment_req: dict, qty: int) -> str:
+    """Multi currency summary of a payment request."""
+    amount = float(payment_req.get("amount", 0) or 0)
+    usdt = float(payment_req.get("amount_usdt", 0) or 0)
+    ton = float(payment_req.get("amount_ton", 0) or 0)
+    lines = [
+        ui.kv("Quantity", f"{qty} slot(s)", "📦"),
+        ui.kv("Total (INR)", f"₹{amount:.2f}", "💴"),
+    ]
+    if usdt:
+        lines.append(ui.kv("Total (USDT)", f"{usdt:.2f} USDT", "🪙"))
+    if ton:
+        lines.append(ui.kv("Total (TON)", f"{ton:.4f} TON", "💎"))
+    return "\n".join(lines)
+
+
+async def _pay_referral_commission(user_id: int, amount: float, client) -> None:
+    """Credits the referrer of `user_id` with the referral commission."""
+    try:
+        user = database.get_user(user_id)
+        if not user:
+            return
+        referrer_id = user.get("referred_by")
+        if not referrer_id:
+            return
+        ref_user = database.get_user(referrer_id)
+        if not ref_user:
+            return
+        global_settings = database.get_global_settings()
+        comm_rate = float(global_settings.get("referral_commission", 0.10) or 0)
+        if comm_rate <= 0:
+            return
+        commission = round(float(amount) * comm_rate, 2)
+        if commission <= 0:
+            return
+        ref_user["wallet_balance"] = float(ref_user.get("wallet_balance", 0.0) or 0) + commission
+        ref_user["referral_earnings"] = float(ref_user.get("referral_earnings", 0.0) or 0) + commission
+        database.save_user(ref_user)
+        try:
+            await client.send_message(
+                referrer_id,
+                f"{ui.card('Commission Received', '', 'Your referral just paid out', '💰')}\n\n"
+                f"{ui.kv('Commission', f'₹{commission:.2f}', '💰')}\n"
+                f"{ui.kv('Rate', f'{comm_rate * 100:.0f}%', '📈')}\n\n"
+                f"{ui.help_hint('The amount was added to your wallet balance.')}"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"Could not pay referral commission: {e}")
 
 def register_handlers(client):
     
@@ -41,10 +94,13 @@ def register_handlers(client):
             await event.answer("⚠️ This request has already been processed.", alert=True)
             return
             
-        user_id = payment_req["user_id"]
-        qty = payment_req["count"]
+        user_id = payment_req.get("user_id")
+        qty = int(payment_req.get("count", 1) or 1)
         user_record = database.get_user(user_id)
         user_lang = user_record.get("language", "en") if user_record else "en"
+        if not user_record:
+            await event.answer("❌ The user record for this payment no longer exists.", alert=True)
+            return
         
         # 3. Apply decision
         try:
@@ -62,14 +118,15 @@ def register_handlers(client):
             database.save_payment_request(payment_req)
             
             # Update user slot limit with subscription duration
-            expires_at = 0.0
-            if user_record:
-                days = payment_req.get("days", 30)
-                plan_name = payment_req.get("plan_name", "Slot Upgrade")
-                expires_at = utils.allocate_slots_subscription(
-                    user_id, qty, days, plan_name, payment_id
-                )
-                
+            days = payment_req.get("days", 30)
+            plan_name = payment_req.get("plan_name", "Slot Upgrade")
+            expires_at = utils.allocate_slots_subscription(
+                user_id, qty, days, plan_name, payment_id
+            )
+            
+            # The referrer earns a commission on EVERY approved payment
+            await _pay_referral_commission(user_id, float(payment_req.get("amount", 0) or 0), client)
+            
             try:
                 await event.answer("✅ Request approved!", alert=False)
             except Exception:
@@ -95,9 +152,11 @@ def register_handlers(client):
                 import datetime
                 expiry_str = datetime.datetime.fromtimestamp(expires_at).strftime('%d %b %Y %H:%M') if expires_at else "N/A"
                 notify_text = (
-                    f"✅ <b>Your subscription upgrade of {qty} slot(s) has been approved!</b>\n"
-                    f"Plan: <b>{payment_req.get('plan_name', 'Upgrade')}</b>\n"
-                    f"Expires at: <b>{expiry_str}</b>"
+                    f"{ui.card('Payment Approved', '', 'Your slots are now active', '✅')}\n\n"
+                    f"{ui.kv('Slots activated', f'{qty}', '📦')}\n"
+                    f"{ui.kv('Plan', str(payment_req.get('plan_name', 'Upgrade')), '💎')}\n"
+                    f"{ui.kv('Expires at', expiry_str, '📅')}\n\n"
+                    f"{ui.help_hint('Open Settings → My Userbots to add your accounts.')}"
                 )
                 await client.send_message(user_id, notify_text)
             except Exception as e:
@@ -166,6 +225,8 @@ def register_handlers(client):
         amount = payment_req.get("amount", 0.0)
         qty = payment_req.get("count", 1)
         utr = payment_req.get("utr_code", "N/A")
+        reference = payment_req.get("reference", "N/A")
+        method = payment_req.get("method", "N/A").upper()
         user_id = payment_req.get("user_id", "N/A")
         processed_by = payment_req.get("processed_by", "N/A")
         processed_at = payment_req.get("processed_at")
@@ -185,7 +246,9 @@ def register_handlers(client):
             f"ID: {payment_id}\n"
             f"Status: {status}\n"
             f"User ID: {user_id}\n"
-            f"Amount: ₹{amount:.2f} (qty: {qty})\n"
+            f"Method: {method}\n"
+            f"{_payment_lines(payment_req, qty)}\n"
+            f"Reference: {reference}\n"
             f"UTR: {utr}\n"
             f"Processed By: {processed_by}\n"
             f"Time: {time_str}"
