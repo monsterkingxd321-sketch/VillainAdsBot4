@@ -35,45 +35,53 @@ def footer(text: str = "") -> str:
 
 def card(title: str, body: str = "", subtitle: str = "", emoji: str = "✦") -> str:
     """
-    Builds a full premium card.
-
-        <blockquote> ... </blockquote>
+    Builds a full premium card with separate <blockquote> on each line.
     """
     parts = [header(title, subtitle, emoji)]
     if body:
         parts.append(body)
-    return f"<blockquote>{chr(10).join(parts)}</blockquote>"
+    raw = "\n".join(parts)
+    lines = raw.split("\n")
+    return "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
 
 
 def card_open(title: str, body: str = "", subtitle: str = "", emoji: str = "✦") -> str:
     """
-    Opens a premium card. Use together with card_close() when the body is
-    built dynamically (e.g. a list of accounts).
-
-    The signature matches card() so the two can never be mixed up.
+    Opens a premium card with per-line blockquotes.
     """
-    return f"<blockquote>{header(title, subtitle, emoji)}\n{body}"
+    lines = header(title, subtitle, emoji).split("\n")
+    out = [f"<blockquote>{l}</blockquote>" for l in lines if l.strip()]
+    if body:
+        out.extend(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in body.split("\n"))
+    return "\n".join(out)
 
 
 def card_close(footer_text: str = "") -> str:
-    """Closes a premium card that was opened with card_open()."""
-    return f"{footer(footer_text)}</blockquote>"
+    """Closes a premium card with per-line blockquotes."""
+    lines = footer(footer_text).split("\n")
+    return "\n".join(f"<blockquote>{l}</blockquote>" for l in lines if l.strip())
 
 
 def section(title: str, body: str = "") -> str:
     """A titled section inside a card."""
     if not body:
-        return f"<b>{title}</b>"
-    return f"<b>{title}</b>\n{body}"
+        return f"<blockquote><b>{title}</b></blockquote>"
+    lines = [f"<blockquote><b>{title}</b></blockquote>"]
+    for l in body.split("\n"):
+        if l.strip():
+            lines.append(f"<blockquote>{l}</blockquote>")
+        else:
+            lines.append("")
+    return "\n".join(lines)
 
 
 def kv(label: str, value: str, icon: str = "•") -> str:
     """A single key/value line."""
-    return f"{icon} <b>{label} :</b> <code>{value}</code>"
+    return f"<blockquote>{icon} <b>{label} :</b> <code>{value}</code></blockquote>"
 
 
 def bullet(text: str, icon: str = "•") -> str:
-    return f"{icon} {text}"
+    return f"<blockquote>{icon} {text}</blockquote>"
 
 
 def status(enabled: bool, on_text: str = "ON", off_text: str = "OFF") -> str:
@@ -82,10 +90,10 @@ def status(enabled: bool, on_text: str = "ON", off_text: str = "OFF") -> str:
 
 
 def locked(text: str = "This action is reserved for the owner.") -> str:
-    """A premium 'locked' notice."""
+    """A premium 'locked' notice with per-line blockquotes."""
     return (
-        f"<blockquote>{LOCK} <b>Owner Only</b>\n\n"
-        f"{SPARK} <i>{text}</i></blockquote>"
+        f"<blockquote>{LOCK} <b>Owner Only</b></blockquote>\n\n"
+        f"<blockquote>{SPARK} <i>{text}</i></blockquote>"
     )
 
 

@@ -256,7 +256,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
         username = s.get("username")
         user_display = f"@{username}" if username else phone
         
-        text += f"\n{status_emoji} <b>{name}</b>  <code>{user_display}</code>"
+        text += f"\n<blockquote>{status_emoji} <b>{name}</b>  <code>{user_display}</code></blockquote>"
         
         # Add a selection button for this bot
         buttons.append([
@@ -267,7 +267,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
             )
         ])
     text += (
-        f"\n\n{ui.help_hint(utils.get_text('premium_bots_hint', lang))}"
+        f"\n\n<blockquote>{ui.help_hint(utils.get_text('premium_bots_hint', lang))}</blockquote>"
         f"\n{ui.card_close()}"
     )
     
