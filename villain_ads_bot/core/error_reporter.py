@@ -2,13 +2,11 @@
 Centralised error reporting for the Villain Ads Bot.
 
 Owner requirements implemented here:
-  * Every unhandled / handled error is forwarded to the Telegram **LOG GROUP**
-    and to the **OWNER** (admins). The end user NEVER receives a raw
-    traceback or internal exception text any more.
-  * Reports are buffered and flushed in batches so a burst of errors can
-    never trigger a Telegram flood-wait.
-  * The reporter is completely fail-safe: if reporting itself fails the
-    error is written to stdout only and never loops back into the buffer.
+  * Errors are buffered in-memory and written to file only.
+  * NO Telegram delivery - errors are NEVER sent to the log group or owner DM.
+  * Owner can download the full error log file from the Admin Panel at any time.
+  * The reporter is completely fail-safe: if logging itself fails the
+    error is written to stdout only.
 """
 
 import asyncio
@@ -39,10 +37,10 @@ _recent_notified = deque(maxlen=200)   # dedupe identical error bursts
 _last_flush_at = 0.0
 _reports_this_hour = [0, 0.0]         # [count, window_start_timestamp]
 
-FLUSH_INTERVAL = 12.0        # seconds between flushes
-MAX_CHUNK_SIZE = 3800       # Telegram message limit safety margin
-MAX_RECORDS_PER_FLUSH = 8   # don't flood the log group
-MAX_REPORTS_PER_HOUR = 120  # hard cap on how many reports are delivered per hour
+FLUSH_INTERVAL = 12.0        # seconds between periodic file-write
+MAX_CHUNK_SIZE = 3800       # (unused for Telegram, kept for compat)
+MAX_RECORDS_PER_FLUSH = 8   # (unused, kept for compat)
+MAX_REPORTS_PER_HOUR = 120  # (unused, kept for compat)
 
 # Generic messages that are safe to show to an end user.
 GENERIC_ERROR = "<blockquote><b>» ❌ Something Went Wrong</b>\n\n⚠️ <i>An unexpected error occurred. The issue has been reported to the admin team and will be fixed shortly.</i></blockquote>"
@@ -139,7 +137,7 @@ def _chunks(text: str, size: int = MAX_CHUNK_SIZE):
 # --------------------------------------------------------------------------
 def add_error(context: str, error: BaseException = None, tb=None, level: str = "ERROR"):
     """
-    Buffers an error for delivery to the log group + owner.
+    Stores an error in-memory for admin panel download only.
     Safe to call from anywhere, including inside except blocks.
     """
     try:
@@ -160,18 +158,11 @@ def add_error(context: str, error: BaseException = None, tb=None, level: str = "
             "stamp": stamp,
             "level": level,
         }
+        # Only store in memory - NO Telegram delivery
         _all_error_logs.append(item_record)
 
-        # Dedupe identical bursts (same context + same message within 60s)
-        signature = f"{context}|{detail[:200]}"
-        now = datetime.now().timestamp()
-        for sig, ts in list(_recent_notified):
-            if sig == signature and (now - ts) < 60:
-                return
-        _recent_notified.append((signature, now))
-
-        _buffer.append(item_record)
-        logger.log(logging.ERROR, "%s | %s", context, detail.split("\n")[0][:500])
+        # Print to console/stdout only (no Telegram, no _buffer)
+        print(f"[error_reporter] {stamp} | {level} | {context} | {detail.split(chr(10))[0][:200]}", flush=True)
     except Exception:
         # Reporting must never raise.
         pass
@@ -203,11 +194,11 @@ def get_error_logs_count() -> int:
 
 def report(context: str, error: BaseException = None, tb=None):
     """
-    Public API: report an error to the log group and owner.
-    Use this INSTEAD of showing raw exception text to the end user.
+    Public API: stores an error for admin panel download.
+    Telegram delivery is disabled - use Admin Panel to download error log.
     """
     add_error(context, error, tb)
-    schedule_flush()
+    # No schedule_flush() - Telegram delivery is intentionally disabled.
 
 
 # --------------------------------------------------------------------------
@@ -269,41 +260,13 @@ def _reset_unreachable(chat_id):
 
 
 async def _send_to_log_group(text: str):
-    client = _bot_client
-    lgid = get_log_group_id()
-    if not client or not lgid:
-        return
-    if _is_unreachable(lgid):
-        return
-    try:
-        entity = await _resolve(client, lgid)
-        await client.send_message(entity, text, parse_mode="html")
-        _reset_unreachable(lgid)
-    except Exception as e:
-        count = _mark_unreachable(lgid)
-        if count == 1:
-            print(f"[error_reporter] The log group is not reachable ({e}). "
-                  f"Add the bot to the log group - the reports are skipped for an hour.",
-                  flush=True)
+    """Disabled: errors are stored locally only, not sent to Telegram."""
+    pass  # Delivery to log group is intentionally disabled.
 
 
 async def _send_to_owner(text: str):
-    client = _bot_client
-    if not client:
-        return
-    for owner_id in get_owner_ids():
-        if _is_unreachable(owner_id):
-            continue
-        try:
-            entity = await _resolve(client, owner_id)
-            await client.send_message(entity, text, parse_mode="html")
-            _reset_unreachable(owner_id)
-        except Exception as e:
-            count = _mark_unreachable(owner_id)
-            if count == 1:
-                print(f"[error_reporter] The owner {owner_id} is not reachable ({e}). "
-                      f"They have to press /start in the bot once - the reports are "
-                      f"skipped for an hour.", flush=True)
+    """Disabled: errors are stored locally only, not sent to owner DM."""
+    pass  # Delivery to owner DM is intentionally disabled.
 
 
 async def _flush_once():
@@ -452,6 +415,7 @@ class TelegramErrorLogHandler(logging.Handler):
                 "stamp": stamp,
                 "level": record.levelname,
             }
+            # Only store in memory for admin panel download - NEVER send to Telegram
             _all_error_logs.append(item_record)
 
             signature = f"logger:{record.name}|{detail[:200]}"
@@ -461,8 +425,8 @@ class TelegramErrorLogHandler(logging.Handler):
                     return
             _recent_notified.append((signature, now))
 
-            _buffer.append(item_record)
-            schedule_flush()
+            # Do NOT append to _buffer and do NOT call schedule_flush()
+            # Errors are only available via Admin Panel -> Download Error Log
         except Exception:
             pass
 
@@ -494,7 +458,7 @@ def setup_asyncio_exception_handler(loop):
         try:
             tb = exc.__traceback__ if exc else None
             add_error(f"asyncio:{message}", exc, tb)
-            schedule_flush()
+            # No schedule_flush() - Telegram delivery is disabled
         except Exception:
             pass
 
@@ -511,7 +475,7 @@ def setup_excepthook():
     def _hook(exc_type, exc_value, exc_tb):
         try:
             add_error("uncaught_exception", exc_value, exc_tb)
-            schedule_flush()
+            # No schedule_flush() - Telegram delivery is disabled
         except Exception:
             pass
         try:

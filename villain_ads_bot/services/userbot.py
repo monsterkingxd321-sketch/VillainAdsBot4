@@ -1898,7 +1898,7 @@ class UserBot:
             # PyTgCalls play() only updates sources via set_stream_sources without re-negotiating video_stopped=False.
             # We leave first so PyTgCalls executes a full fresh _connect_call with video_stopped=False!
             sess_data = database.get_session(self.session_id) or {}
-            prev_play_type = sess_data.get("current_song", {}).get("play_type")
+            prev_play_type = (sess_data.get("current_song") or {}).get("play_type")
             should_reconnect = (play_type == "video") or (prev_play_type == "video" and play_type == "audio")
 
             if should_reconnect:
