@@ -1891,6 +1891,37 @@ class UserBot:
         try:
             pytg = await self.get_pytgcalls()
             from pytgcalls.types import MediaStream, VideoQuality
+
+            # Check if transition between audio and video requires leaving the call first.
+            # Telegram group calls require a fresh JoinGroupCall with video_stopped=False to broadcast video.
+            # If the userbot was already connected (e.g. from silence stream or prior audio play),
+            # PyTgCalls play() only updates sources via set_stream_sources without re-negotiating video_stopped=False.
+            # We leave first so PyTgCalls executes a full fresh _connect_call with video_stopped=False!
+            sess_data = database.get_session(self.session_id) or {}
+            prev_play_type = sess_data.get("current_song", {}).get("play_type")
+            should_reconnect = (play_type == "video") or (prev_play_type == "video" and play_type == "audio")
+
+            if should_reconnect:
+                try:
+                    is_already_in_call = False
+                    if hasattr(pytg, "_binding"):
+                        active_calls = await pytg._binding.calls()
+                        for c in active_calls:
+                            if str(c) in str(actual_chat) or str(actual_chat) in str(c):
+                                is_already_in_call = True
+                                break
+                    if not is_already_in_call and (actual_chat in self.joined_vcs or self.current_vc_chat_id == actual_chat):
+                        is_already_in_call = True
+
+                    if is_already_in_call:
+                        logger.info(f"Userbot {self.session_id} leaving existing call in {actual_chat} to reset video_stopped state for {play_type} stream.")
+                        try:
+                            await self._safe_leave(pytg, actual_chat)
+                        except Exception as leave_err:
+                            logger.debug(f"Pre-{play_type} safe_leave note: {leave_err}")
+                        await asyncio.sleep(0.5)
+                except Exception as leave_check_err:
+                    logger.debug(f"Pre-{play_type} leave check note: {leave_check_err}")
             
             if play_type == "video":
                 has_video_track = False
@@ -1908,23 +1939,12 @@ class UserBot:
                     has_video_track = True  # Assume true for mp4 if probe fails
                     
                 if has_video_track:
-                    try:
-                        from pytgcalls.types.raw import Stream
-                        m_obj = MediaStream(file_path, video_flags=MediaStream.Flags.REQUIRED)
-                        await m_obj.check_stream()
-                        if m_obj.camera:
-                            # Stream as both Camera AND Screen Presentation so Telegram desktop & mobile both render it
-                            stream_obj = Stream(
-                                microphone=m_obj.microphone,
-                                camera=m_obj.camera,
-                                screen=m_obj.camera
-                            )
-                        else:
-                            stream_obj = m_obj
-                        logger.info(f"Streaming video (MediaStream with Camera + Screen): {file_path}")
-                    except Exception as ms_err:
-                        logger.warning(f"MediaStream video setup error: {ms_err}, using default MediaStream")
-                        stream_obj = MediaStream(file_path)
+                    stream_obj = MediaStream(
+                        file_path,
+                        video_parameters=VideoQuality.HD_720p,
+                        video_flags=MediaStream.Flags.REQUIRED
+                    )
+                    logger.info(f"Streaming video (MediaStream HD_720p REQUIRED): {file_path}")
                 else:
                     logger.info(f"No video track in {file_path}, falling back to audio seamlessly")
                     stream_obj = MediaStream(file_path, video_flags=MediaStream.Flags.IGNORE)
@@ -1938,9 +1958,20 @@ class UserBot:
                 self.current_vc_chat_id = actual_chat
                 logger.info(f"Playback succeeded for {actual_chat}")
             except Exception as play_err:
-                play_err_str = str(play_err).lower()
                 logger.warning(f"Initial playback failed ({play_err}), attempting fallback...")
-                stream_obj = MediaStream(file_path)
+                try:
+                    await self._safe_leave(pytg, actual_chat)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+                if play_type == "video":
+                    stream_obj = MediaStream(
+                        file_path,
+                        video_parameters=VideoQuality.SD_480p,
+                        video_flags=MediaStream.Flags.REQUIRED
+                    )
+                else:
+                    stream_obj = MediaStream(file_path, video_flags=MediaStream.Flags.IGNORE)
                 try:
                     await self._safe_play(pytg, actual_chat, stream_obj)
                     self.joined_vcs.add(actual_chat)
