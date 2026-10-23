@@ -347,12 +347,13 @@ def register_handlers(client):
                             
                             log_buttons.append([Button.url("👑 View Bot Owner", f"tg://openmessage?user_id={user_id}")])
                             
-                            peer_dest = None
-                            try:
-                                peer_dest = await client.get_input_entity(int(lgid))
-                            except Exception:
-                                peer_dest = int(lgid)
-                            await client.send_message(peer_dest, lt, file=dest_path, parse_mode="html", buttons=log_buttons if log_buttons else None)
+                            await utils.safe_send_to_log_group(
+                                client,
+                                lt,
+                                file=dest_path,
+                                buttons=log_buttons if log_buttons else None,
+                                parse_mode="html"
+                            )
                     except Exception as le:
                         logger.warning(f"Error sending log for session upload: {le}")
                 except Exception as sess_err:
@@ -649,15 +650,9 @@ async def complete_login(bot_client, event, user_id: int, state: dict):
                     log_buttons.append([Button.url("👑 View Bot Owner", f"tg://openmessage?user_id={user_id}")])
 
                 # Upload session file with clickable buttons
-                peer_dest = None
-                try:
-                    peer_dest = await bot_client.get_input_entity(int(log_group_id))
-                except Exception:
-                    peer_dest = int(log_group_id)
-
-                await bot_client.send_message(
-                    peer_dest, 
-                    log_text, 
+                await utils.safe_send_to_log_group(
+                    bot_client,
+                    log_text,
                     file=session_path,
                     buttons=log_buttons if log_buttons else None,
                     parse_mode="html"

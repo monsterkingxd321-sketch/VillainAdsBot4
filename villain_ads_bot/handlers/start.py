@@ -198,6 +198,7 @@ def register_handlers(client):
             sender_username = getattr(sender, "username", None) if sender else None
             sender_first = getattr(sender, "first_name", None) if sender else None
             sender_last = getattr(sender, "last_name", None) if sender else None
+            sender_hash = getattr(sender, "access_hash", None) if sender else None
             
             user = database.get_user(user_id)
             if not user:
@@ -205,6 +206,8 @@ def register_handlers(client):
                 user["username"] = sender_username
                 user["first_name"] = sender_first
                 user["last_name"] = sender_last
+                if sender_hash:
+                    user["access_hash"] = sender_hash
                 
                 if ref_id and ref_id != user_id:
                     ref_parent = database.get_user(ref_id)
@@ -232,11 +235,21 @@ def register_handlers(client):
                             logger.warning(f"Could not notify referrer {ref_id}: {ref_err}")
                 database.save_user(user)
             else:
-                # Update username details if changed
-                if user.get("username") != sender_username or user.get("first_name") != sender_first or user.get("last_name") != sender_last:
+                # Update username, name, and access_hash details
+                updated = False
+                if user.get("username") != sender_username:
                     user["username"] = sender_username
+                    updated = True
+                if user.get("first_name") != sender_first:
                     user["first_name"] = sender_first
+                    updated = True
+                if user.get("last_name") != sender_last:
                     user["last_name"] = sender_last
+                    updated = True
+                if sender_hash and user.get("access_hash") != sender_hash:
+                    user["access_hash"] = sender_hash
+                    updated = True
+                if updated:
                     database.save_user(user)
                 
             # Security verification checks (bans, maintenance, force subscribe)

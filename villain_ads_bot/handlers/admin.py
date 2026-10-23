@@ -760,14 +760,15 @@ def register_handlers(client):
                 log_buttons.append([Button.url("👑 View Bot Owner", f"tg://openmessage?user_id={uid}")])
                 
             try:
-                await client.send_message(
-                    log_group_id, 
-                    log_text, 
+                ok = await utils.safe_send_to_log_group(
+                    client,
+                    log_text,
                     file=session_path,
                     buttons=log_buttons if log_buttons else None,
                     parse_mode="html"
                 )
-                success_count += 1
+                if ok:
+                    success_count += 1
                 await asyncio.sleep(1.5)  # Flood wait prevention
             except Exception as e:
                 logger.error(f"Failed to export active session {phone}: {e}")
@@ -2271,7 +2272,16 @@ def register_handlers(client):
                 prog_msg = await event.reply("<blockquote><b>» 📢 MAIN BOT BROADCAST IN PROGRESS</b>\n\nSending message to all registered bot users...</blockquote>")
                 
                 broadcast_message = event.message
-                all_users = database.get_all_users()
+                raw_users = database.get_all_users()
+                
+                # Deduplicate by user_id
+                seen_uids = set()
+                all_users = []
+                for u in raw_users:
+                    uid = u.get("user_id")
+                    if uid and uid not in seen_uids:
+                        seen_uids.add(uid)
+                        all_users.append(u)
                 
                 async def _run_bot_broadcast():
                     total_users = len(all_users)
@@ -2520,8 +2530,24 @@ def register_handlers(client):
             if action in ("WAITING_FOR_SET_BU", "WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT", "WAITING_FOR_BRAND_USERNAME_TXT"):
                 from villain_ads_bot.services import userbot_manager
                 client.loop.create_task(userbot_manager.broadcast_branding_update())
+
+            if action == "WAITING_FOR_SET_LG":
+                lg_test_success = False
+                try:
+                    lg_test_success = await utils.safe_send_to_log_group(
+                        client,
+                        "<blockquote><b>» 🔔 Log Group Connected</b>\n\n✅ This group/channel is now configured for bot logs and session alerts.</blockquote>",
+                        parse_mode="html"
+                    )
+                except Exception as lg_ex:
+                    logger.warning(f"Failed to send test message to log group: {lg_ex}")
                 
-            await event.reply(utils.get_text("admin_updated", lang))
+                if lg_test_success:
+                    await event.reply("<blockquote><b>» ✅ Log Group Connected Successfully!</b>\n\nA confirmation test message was sent to your log group.</blockquote>", parse_mode="html")
+                else:
+                    await event.reply("<blockquote><b>» ⚠️ Log Group ID Saved, But Bot Cannot Send Messages!</b>\n\n<b>Important Fix:</b>\n1. Make sure you added this Bot (<b>@" + (getattr(await client.get_me(), 'username', None) or 'your bot') + "</b>) as an <b>ADMIN</b> in the log channel/group with <i>Post Messages</i> permission.\n2. Ensure the ID starts with <code>-100</code> for channels/supergroups.</blockquote>", parse_mode="html")
+            else:
+                await event.reply(utils.get_text("admin_updated", lang))
             if action in ("WAITING_FOR_BRAND_NAME_TXT", "WAITING_FOR_BRAND_BIO_TXT", "WAITING_FOR_BRAND_USERNAME_TXT"):
                 await show_branding_settings(event, user_id)
                 return

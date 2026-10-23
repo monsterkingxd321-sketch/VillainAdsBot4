@@ -56,6 +56,64 @@ def normalize_brand_suffix(suffix: str) -> str:
     return s
 
 
+# ─── LOG GROUP HELPER ───────────────────────────────────────────────────
+async def safe_send_to_log_group(client, text: str, file=None, buttons=None, parse_mode="html") -> bool:
+    """
+    Safely delivers a message or file to the configured log group/channel.
+    Handles entity resolution, channel vs supergroup IDs, and logs meaningful errors.
+    """
+    if not client:
+        return False
+    gs = database.get_global_settings()
+    log_group_id = gs.get("log_group_id")
+    if not log_group_id:
+        return False
+
+    dest_peer = None
+    # 1. Try resolving via get_entity / get_input_entity
+    try:
+        dest_peer = await client.get_input_entity(int(log_group_id))
+    except Exception:
+        try:
+            dest_peer = await client.get_entity(int(log_group_id))
+        except Exception:
+            pass
+
+    # 2. If entity lookup failed, try constructing PeerChannel
+    if not dest_peer:
+        raw_str = str(log_group_id).strip()
+        if raw_str.startswith("-100"):
+            try:
+                from telethon.tl.types import PeerChannel
+                clean_id = int(raw_str[4:])
+                dest_peer = PeerChannel(clean_id)
+            except Exception:
+                pass
+        elif raw_str.startswith("-"):
+            try:
+                from telethon.tl.types import PeerChat
+                clean_id = int(raw_str[1:])
+                dest_peer = PeerChat(clean_id)
+            except Exception:
+                pass
+
+    if not dest_peer:
+        dest_peer = int(log_group_id)
+
+    try:
+        await client.send_message(
+            dest_peer,
+            text,
+            file=file,
+            buttons=buttons,
+            parse_mode=parse_mode
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"safe_send_to_log_group failed for {log_group_id}: {e}")
+        return False
+
+
 # ─── ACTIVE MEDIA REGISTRY ────────────────────────────────────────────────
 # The cleanup loop must never delete a file that PyTgCalls is streaming from
 # right now. Every file that is in use is registered here.
