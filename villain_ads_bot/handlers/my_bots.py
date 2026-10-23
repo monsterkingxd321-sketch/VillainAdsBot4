@@ -377,12 +377,6 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # The proxy section is OWNER ONLY - it must not appear in the ads
         # userbot dashboard.
 
-        # Row 1.1: Broadcast Now - the MAIN action of an ads bot.
-        # It is on the dashboard directly, no extra sub menu needed.
-        rows.append([
-            ("\U0001f4e2 Broadcast Now", f"broadcast_now_{phone}")
-        ])
-
         # Row 1.2: Set DM Welcome Message (Full width)
         rows.append([
             ("btn_set_welcome", f"set_welcome_{phone}")
@@ -398,10 +392,9 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             ("⏱️ Set Run Timer", f"set_run_timer_{phone}")
         ])
         
-        # Row 1.8: Voice Chat (VC) Menu & Music Commands Guide
+        # Row 1.8: Voice Chat (VC) & Music & Group Management Menu
         rows.append([
-            ("\U0001f399\ufe0f VC & Music", f"vc_menu_{phone}"),
-            ("\U0001f465 Group Joining", f"grp_menu_{phone}")
+            ("🎙️ VC, Music & Groups", f"vc_menu_{phone}")
         ])
         
         # Row 2: Auto Feature Toggles (Spam, Welcome, Tag Reply, Contact)
@@ -575,10 +568,6 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
         # Row 1: Set All Broadcast
         [
             utils.styled_button("✉️ Set All Broadcast Text", "all_slots_set_broadcast", style="primary")
-        ],
-        # Row 1.1: Broadcast NOW on every running userbot (live progress)
-        [
-            utils.styled_button("📢 Broadcast Now (All)", "all_slots_broadcast_now", style="success")
         ],
         # Row 1.2: Set All Welcome
         [

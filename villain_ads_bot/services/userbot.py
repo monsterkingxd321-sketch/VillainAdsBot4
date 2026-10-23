@@ -1909,10 +1909,21 @@ class UserBot:
                     
                 if has_video_track:
                     try:
-                        stream_obj = MediaStream(file_path, video_flags=MediaStream.Flags.REQUIRED)
-                        logger.info(f"Streaming video (MediaStream with Flags.REQUIRED): {file_path}")
+                        from pytgcalls.types.raw import Stream
+                        m_obj = MediaStream(file_path, video_flags=MediaStream.Flags.REQUIRED)
+                        await m_obj.check_stream()
+                        if m_obj.camera:
+                            # Stream as both Camera AND Screen Presentation so Telegram desktop & mobile both render it
+                            stream_obj = Stream(
+                                microphone=m_obj.microphone,
+                                camera=m_obj.camera,
+                                screen=m_obj.camera
+                            )
+                        else:
+                            stream_obj = m_obj
+                        logger.info(f"Streaming video (MediaStream with Camera + Screen): {file_path}")
                     except Exception as ms_err:
-                        logger.warning(f"MediaStream video flag error: {ms_err}, using default MediaStream")
+                        logger.warning(f"MediaStream video setup error: {ms_err}, using default MediaStream")
                         stream_obj = MediaStream(file_path)
                 else:
                     logger.info(f"No video track in {file_path}, falling back to audio seamlessly")
@@ -1960,19 +1971,26 @@ class UserBot:
             # If playing video, ensure video is unstopped in group call status
             if play_type == "video":
                 try:
-                    if hasattr(pytg, "_app") and hasattr(pytg._app, "set_call_status"):
-                        peer = await pytg._app.resolve_peer(self.session_id)
-                        await pytg._app.set_call_status(
-                            chat_id=actual_chat,
-                            muted_status=False,
-                            video_paused=False,
-                            video_stopped=False,
-                            presentation_paused=False,
-                            participant=peer
+                    from telethon.tl.types import InputPeerSelf
+                    from telethon.tl.functions.phone import EditGroupCallParticipantRequest
+                    # Set via telethon client directly using InputGroupCall & InputPeerSelf
+                    input_call = None
+                    if hasattr(pytg, "_app") and hasattr(pytg._app, "get_input_call"):
+                        input_call = await pytg._app.get_input_call(actual_chat)
+                    if input_call:
+                        await self.client(
+                            EditGroupCallParticipantRequest(
+                                call=input_call,
+                                participant=InputPeerSelf(),
+                                muted=False,
+                                video_stopped=False,
+                                video_paused=False,
+                                presentation_paused=False
+                            )
                         )
-                        logger.info(f"Set call status video_stopped=False for {actual_chat}")
+                        logger.info(f"Directly called EditGroupCallParticipantRequest video_stopped=False for {actual_chat}")
                 except Exception as vid_status_err:
-                    logger.debug(f"Video call status update note: {vid_status_err}")
+                    logger.debug(f"Direct video call status update note: {vid_status_err}")
             
             # Save playing status in MongoDB
             sess_data = database.get_session(self.session_id)
