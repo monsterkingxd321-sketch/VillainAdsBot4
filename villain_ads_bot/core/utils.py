@@ -395,6 +395,21 @@ def format_html_message(text: str) -> str:
     text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
     text = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'<i>\1</i>', text)
     
+    # Format blockquotes so that each line gets its own separate <blockquote>...</blockquote>
+    if "<blockquote>" in text:
+        def _per_line_bq(match):
+            inner = match.group(1)
+            lines = inner.split('\n')
+            res = []
+            for l in lines:
+                s = l.strip()
+                if s:
+                    res.append(f"<blockquote>{l}</blockquote>")
+                else:
+                    res.append("")
+            return '\n'.join(res)
+        text = re.sub(r'<blockquote>([\s\S]*?)</blockquote>', _per_line_bq, text)
+
     return text
 
 def get_text(key: str, lang: Optional[str] = "en", **kwargs) -> str:

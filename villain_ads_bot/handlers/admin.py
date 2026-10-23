@@ -1594,10 +1594,21 @@ def register_handlers(client):
                     if target_user:
                         target_user["allowed_slots"] = target_user.get("allowed_slots", 0) + slots_to_gift
                         audit("user.gift_slots", str(target_uid), f"+{slots_to_gift} slots", user_id)
-                        database.save_user(target_user)
-                        await event.reply(f"✅ **Successfully gifted {slots_to_gift} slots** to `{target_uid}`!")
+                        await event.reply(
+                            utils.format_html_message(
+                                f"<blockquote><b>» 🎁 Slots Gifted Successfully!</b>\n\n"
+                                f"👤 <b>User ID :</b> <code>{target_uid}</code>\n"
+                                f"⚡ <b>Added Slots :</b> <code>+{slots_to_gift}</code>\n"
+                                f"📊 <b>Total Allowed :</b> <code>{target_user.get('allowed_slots', 0)}</code></blockquote>"
+                            )
+                        )
                         try:
-                            await client.send_message(target_uid, f"🎉 **Congratulations!**\n\nYou have been gifted **{slots_to_gift} Userbot Slots** by the Administrator! Enjoy your new slots! 🎁")
+                            gift_card = utils.format_html_message(
+                                f"<blockquote><b>» 🎁 Surprise Gift Received!</b>\n\n"
+                                f"🎉 <b>Congratulations!</b> You have been gifted <b>{slots_to_gift} Userbot Slot{'s' if slots_to_gift > 1 else ''}</b> by Admin.\n\n"
+                                f"🚀 <i>Your slot limit has been upgraded! Use /start or Check 'My Bots' to deploy your new userbots now.</i></blockquote>"
+                            )
+                            await client.send_message(target_uid, gift_card, parse_mode="html")
                         except Exception as e:
                             logger.error(f"Failed to send gift notification: {e}")
                 _admin_plan_temp.pop(user_id, None)
@@ -1607,22 +1618,32 @@ def register_handlers(client):
                 try:
                     slots_to_gift = int(val_str)
                 except ValueError:
-                    await event.reply("❌ Invalid number. Please enter a valid integer.")
+                    await event.reply("<blockquote><b>» ❌ Invalid number. Please enter a valid integer.</b></blockquote>", parse_mode="html")
                     return
                 if slots_to_gift <= 0: raise ValueError("Slots must be positive")
                 all_users = database.get_all_users()
                 count = 0
-                await event.reply(f"⏳ **Gifting {slots_to_gift} slots** to all {len(all_users)} users... Please wait.")
+                await event.reply(f"<blockquote><b>» ⏳ Gifting {slots_to_gift} slots to all {len(all_users)} users... Please wait.</b></blockquote>", parse_mode="html")
+                gift_broadcast_card = utils.format_html_message(
+                    f"<blockquote><b>» 🎁 Global Gift From Admin!</b>\n\n"
+                    f"🎉 <b>Good News!</b> You have been gifted <b>{slots_to_gift} Free Userbot Slot{'s' if slots_to_gift > 1 else ''}</b>!\n\n"
+                    f"🚀 <i>Your slot limit has been increased. Head over to /start or 'My Bots' to connect more accounts!</i></blockquote>"
+                )
                 for u in all_users:
                     u["allowed_slots"] = u.get("allowed_slots", 0) + slots_to_gift
                     database.save_user(u)
                     count += 1
                     try:
                         # Schedule message in background to not block the loop
-                        client.loop.create_task(client.send_message(u["user_id"], f"🎉 **Congratulations!**\n\nYou and all other users have been gifted **{slots_to_gift} Userbot Slots** by the Administrator! Enjoy! 🎁"))
+                        client.loop.create_task(client.send_message(u["user_id"], gift_broadcast_card, parse_mode="html"))
                     except Exception:
                         pass
-                await event.reply(f"✅ **Successfully gifted {slots_to_gift} slots** to all {count} users!")
+                await event.reply(
+                    utils.format_html_message(
+                        f"<blockquote><b>» ✅ Global Gift Distributed!</b>\n\n"
+                        f"🎁 Added <b>{slots_to_gift} slots</b> to all <b>{count}</b> users successfully!</blockquote>"
+                    )
+                )
                 return
 
             # 0.1 Plan Days

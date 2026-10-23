@@ -3746,13 +3746,19 @@ def register_handlers(client):
                 return
                 
             clone_type = state.get("clone_type", "complete")
+            clone_label = {
+                "name": "Name",
+                "bio": "Bio",
+                "photo": "Photo",
+                "complete": "Profile Details"
+            }.get(clone_type, "Profile")
             sessions = get_effective_sessions(user_id)
             running_phones = [s["phone"] for s in sessions if userbot_manager.is_bot_running(s["phone"])]
             if not running_phones:
                 await event.reply("<blockquote><b>» ❌ No Userbots Are Currently Running. Please Start Your Userbots First.</b></blockquote>", parse_mode="html")
                 return
                 
-            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Cloning Profile Details (Photos/Videos/Bio) On {len(running_phones)} Running Userbots...</b></blockquote>", parse_mode="html")
+            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Cloning {clone_label} On {len(running_phones)} Running Userbots...</b></blockquote>", parse_mode="html")
             
             async def _clone_concurrent(phone_num):
                 return await userbot_manager.clone_profile(
@@ -4397,7 +4403,13 @@ def register_handlers(client):
                 return
                 
             clone_type = state.get("clone_type", "complete")
-            progress_msg = await event.reply("<blockquote><b>» ⏳ Cloning Profile Details (Photos/Videos/Bio), Please Wait...</b></blockquote>", parse_mode="html")
+            clone_label = {
+                "name": "Name",
+                "bio": "Bio",
+                "photo": "Photo",
+                "complete": "Profile Details"
+            }.get(clone_type, "Profile")
+            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Cloning {clone_label}, Please Wait...</b></blockquote>", parse_mode="html")
             success, msg = await userbot_manager.clone_profile(
                 phone, 
                 target, 

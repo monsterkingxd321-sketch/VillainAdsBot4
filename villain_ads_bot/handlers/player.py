@@ -415,13 +415,7 @@ def register_handlers(client):
         audio_duration = 0
         
         display_query = audio_title or query or "Replied Media"
-        progress_msg = await event.respond(
-            utils.format_html_message(
-                f"<blockquote><b>» 🎧 Playing Inquiry...</b>\n\n"
-                f"🔍 <i>{display_query}</i>\n"
-                f"⏳ <b>Status :</b> Preparing {play_type} Stream... 🎶</blockquote>"
-            )
-        )
+        progress_msg = await event.respond(f"<b>» 🎧 Playing :</b> <b>{display_query}</b>")
         
         # 1. Handle replied media (Audio, Video, Voice, Document)
         if reply_msg and (reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document):
@@ -442,6 +436,11 @@ def register_handlers(client):
                             f"⚠️ <b>Error :</b> <code>{dl_err}</code></blockquote>"
                         )
                     )
+                    try:
+                        await asyncio.sleep(5)
+                        await progress_msg.delete()
+                    except Exception:
+                        pass
                     return
         elif not query:
             await progress_msg.edit(
@@ -474,6 +473,11 @@ def register_handlers(client):
         bot_obj, err = await get_or_start_userbot_for_chat(user_id, chat_id)
         if not bot_obj:
             await progress_msg.edit(err)
+            try:
+                await asyncio.sleep(5)
+                await progress_msg.delete()
+            except Exception:
+                pass
             return
 
         # 3. Queue logic: if already playing or currently preparing, or queue has tracks, and NOT a force play -> add to queue
@@ -569,6 +573,11 @@ def register_handlers(client):
                         f"💡 <b>Tip :</b> Make Sure Group Voice Chat Is Started And Userbot (<b>{ub_handle}</b>) Has Permission To Speak.</blockquote>"
                     )
                 )
+                try:
+                    await asyncio.sleep(5)
+                    await progress_msg.delete()
+                except Exception:
+                    pass
                 return
         finally:
             # 4.6 - the chat must only become free again once the new

@@ -132,27 +132,24 @@ def group_tag(group_id) -> str:
     return h[:4]
 
 
-def vary_message(text: str, group_id=None, tag: bool = True, emoji: bool = True) -> str:
+def vary_message(text: str, group_id=None, tag: bool = False, emoji: bool = False) -> str:
     """
-    Returns a version of the message that is really different from the one
-    that was sent to the other groups.
-
-    * the spintax is expanded
-    * the separator and the trailing emoji rotate
-    * every group gets its own short visible tag
+    Returns the message cleanly.
+    Expands spintax {option1|option2} if present.
+    Only appends emoji or group tags if explicitly enabled (defaults to False).
     """
     if not text:
         return text
 
     out = expand_spintax(text)
 
-    # rotate the trailing emoji
+    # rotate the trailing emoji only if explicitly enabled
     if emoji:
         chosen = random.choice(TRAILING_EMOJI)
         if chosen:
             out = f"{out.rstrip()} {chosen}"
 
-    # the per group tag
+    # the per group tag only if explicitly enabled
     if tag and group_id is not None:
         code = group_tag(group_id)
         if code:

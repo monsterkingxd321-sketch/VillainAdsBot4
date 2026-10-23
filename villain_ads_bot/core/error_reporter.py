@@ -488,6 +488,9 @@ def setup_asyncio_exception_handler(loop):
     def _handler(active_loop, context):
         exc = context.get("exception")
         message = context.get("message", "Unhandled exception in event loop")
+        # Ignore benign Telegram callback query timeouts (button clicked long ago or double tapped)
+        if exc and "QueryIdInvalidError" in type(exc).__name__:
+            return
         try:
             tb = exc.__traceback__ if exc else None
             add_error(f"asyncio:{message}", exc, tb)

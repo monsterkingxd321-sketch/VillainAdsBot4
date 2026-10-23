@@ -759,8 +759,15 @@ async def clone_profile(session_id: str, target: Any, clone_type: str = "complet
         # the user can never get rid of it.
         await enforce_branding(session_id)
 
-        media_note = f" | 📷 {media_cloned} photo(s)/video(s) cloned" if clone_type in ("photo", "complete") else ""
-        return True, f"Successfully cloned profile ({clone_type}) of {first_name} (@{user.username or 'None'}){media_note}!"
+        type_titles = {
+            "name": "Name",
+            "bio": "Bio",
+            "photo": "Photo",
+            "complete": "Profile"
+        }
+        cloned_aspect = type_titles.get(clone_type, "Profile")
+        media_note = f" (📷 {media_cloned} items)" if clone_type in ("photo", "complete") and media_cloned > 0 else ""
+        return True, f"Successfully cloned {cloned_aspect} of {first_name} (@{user.username or 'None'}){media_note}!"
     except Exception as e:
         logger.error(f"Error cloning profile: {e}")
         utils.report_error(f"clone_profile:{session_id}", e)
