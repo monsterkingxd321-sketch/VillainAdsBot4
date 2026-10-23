@@ -28,24 +28,23 @@ error_reporter.setup_error_reporter()
 
 
 async def main():
-    # 1. Direct report
+    # 1. Direct report -> goes to log group, but owner PM is kept clean (downloadable via admin panel)
     error_reporter.report("test:context", ValueError("boom"))
     await error_reporter._flush_once()
-    assert len(SENT) == 2, SENT
+    assert len(SENT) == 1, SENT
     assert SENT[0][0] == -100123456, "must go to the log group"
-    assert SENT[1][0] == 777000, "must go to the owner"
     assert "test:context" in SENT[0][1]
     assert "boom" in SENT[0][1]
-    print("1) report -> log group + owner OK")
+    print("1) report -> log group OK (owner PM kept clean)")
 
     # 2. A logging ERROR record is captured
     SENT.clear()
     logging.getLogger("some.module").error("logging failure %s", "here")
     await error_reporter._flush_once()
-    assert len(SENT) == 2, SENT
+    assert len(SENT) == 1, SENT
     assert "logging failure here" in SENT[0][1]
     assert "some.module" in SENT[0][1]
-    print("2) logger.error -> log group + owner OK")
+    print("2) logger.error -> captured OK")
 
     # 3. The end user must never see the raw exception
     from villain_ads_bot.core import utils
@@ -60,7 +59,7 @@ async def main():
     error_reporter.report("dup:ctx", ValueError("same"))
     error_reporter.report("dup:ctx", ValueError("same"))
     await error_reporter._flush_once()
-    assert len(SENT) == 2, f"expected 1 report (2 deliveries), got {len(SENT)}"
+    assert len(SENT) == 1, f"expected 1 report delivery to log group, got {len(SENT)}"
     print("4) duplicate errors are deduped OK")
 
     # 5. Hourly cap
@@ -71,6 +70,13 @@ async def main():
     assert len(SENT) == 0, "hourly cap must drop the report"
     error_reporter._reports_this_hour[0] = 0
     print("5) hourly rate limit OK")
+
+    # 6. Verify errorlogs.txt contains recorded errors
+    logs_text = error_reporter.get_error_logs_text()
+    assert "VILLAIN ADS BOT - ERROR LOGS" in logs_text
+    assert "test:context" in logs_text
+    assert error_reporter.get_error_logs_count() > 0
+    print("6) errorlogs.txt generation OK")
 
     print("\nALL ERROR REPORTER TESTS PASSED")
 

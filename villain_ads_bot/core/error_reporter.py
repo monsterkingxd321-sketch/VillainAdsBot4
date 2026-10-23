@@ -32,6 +32,7 @@ logger = logging.getLogger("error_reporter")
 # --------------------------------------------------------------------------
 _bot_client = None
 _buffer = deque(maxlen=50)
+_all_error_logs = deque(maxlen=2000)  # Stores all error events since startup
 _flush_lock = None
 _flush_task = None
 _recent_notified = deque(maxlen=200)   # dedupe identical error bursts
@@ -153,6 +154,14 @@ def add_error(context: str, error: BaseException = None, tb=None, level: str = "
         else:
             detail = str(context)
 
+        item_record = {
+            "context": context,
+            "detail": detail,
+            "stamp": stamp,
+            "level": level,
+        }
+        _all_error_logs.append(item_record)
+
         # Dedupe identical bursts (same context + same message within 60s)
         signature = f"{context}|{detail[:200]}"
         now = datetime.now().timestamp()
@@ -161,16 +170,35 @@ def add_error(context: str, error: BaseException = None, tb=None, level: str = "
                 return
         _recent_notified.append((signature, now))
 
-        _buffer.append({
-            "context": context,
-            "detail": detail,
-            "stamp": stamp,
-            "level": level,
-        })
+        _buffer.append(item_record)
         logger.log(logging.ERROR, "%s | %s", context, detail.split("\n")[0][:500])
     except Exception:
         # Reporting must never raise.
         pass
+
+
+def get_error_logs_text() -> str:
+    """Returns all error logs recorded since the bot started as formatted text."""
+    if not _all_error_logs:
+        return ""
+    lines = []
+    lines.append("=" * 70)
+    lines.append("VILLAIN ADS BOT - ERROR LOGS (SINCE UPTIME)")
+    lines.append(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Total error events recorded: {len(_all_error_logs)}")
+    lines.append("=" * 70)
+    lines.append("")
+    for i, item in enumerate(_all_error_logs, 1):
+        lines.append(f"[{i}] [{item.get('stamp', '?')}] [{item.get('level', 'ERROR')}] {item.get('context', 'unknown')}")
+        detail = item.get("detail", "")
+        lines.append(detail)
+        lines.append("-" * 70)
+    return "\n".join(lines)
+
+
+def get_error_logs_count() -> int:
+    """Returns the total number of errors captured since startup."""
+    return len(_all_error_logs)
 
 
 def report(context: str, error: BaseException = None, tb=None):
@@ -329,10 +357,10 @@ async def _deliver(item):
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚠️ <i>These errors are visible to the owner only. End users receive a generic message.</i>"
     )
-    full = header + "\n\n" + body
     for chunk in _chunks(full):
         await _send_to_log_group(chunk)
-        await _send_to_owner(chunk)
+        # Note: Direct owner messaging disabled so owner's DM is not spammed.
+        # Owner can view/download errorlogs.txt from the admin panel anytime.
 
 
 async def _deliver_batch(items):
@@ -363,7 +391,7 @@ async def _deliver_batch(items):
     full = header + "\n\n" + "\n\n".join(blocks)
     for chunk in _chunks(full):
         await _send_to_log_group(chunk)
-        await _send_to_owner(chunk)
+        # Direct owner PM disabled by user request. Can download full errorlogs.txt in Admin Panel.
 
 
 async def _flush_loop():
@@ -418,6 +446,14 @@ class TelegramErrorLogHandler(logging.Handler):
 
             stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             detail = _format_record(record)
+            item_record = {
+                "context": f"logger:{record.name}",
+                "detail": detail,
+                "stamp": stamp,
+                "level": record.levelname,
+            }
+            _all_error_logs.append(item_record)
+
             signature = f"logger:{record.name}|{detail[:200]}"
             now = datetime.now().timestamp()
             for sig, ts in list(_recent_notified):
@@ -425,12 +461,7 @@ class TelegramErrorLogHandler(logging.Handler):
                     return
             _recent_notified.append((signature, now))
 
-            _buffer.append({
-                "context": f"logger:{record.name}",
-                "detail": detail,
-                "stamp": stamp,
-                "level": record.levelname,
-            })
+            _buffer.append(item_record)
             schedule_flush()
         except Exception:
             pass

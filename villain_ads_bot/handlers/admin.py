@@ -189,7 +189,8 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button("🔄 Restore Backup", "admin_restore_backup", style="primary")
         ],
         [
-            utils.styled_button("🧾 Audit Log", "admin_audit_log", style="primary")
+            utils.styled_button("🧾 Audit Log", "admin_audit_log", style="primary"),
+            utils.styled_button("📜 Error Logs", "admin_error_logs", style="danger")
         ],
         [
             utils.styled_button("📢 Broadcast", "admin_broadcast", style="primary"),
@@ -3533,6 +3534,77 @@ def register_handlers(client):
         audit("audit.purge", None, f"removed={removed}", user_id)
         await event.answer(f"🗑 {removed} old entries removed", alert=True)
         await admin_audit_log_callback(event)
+
+    # ==================== ERROR LOGS VIEWER & DOWNLOADER ====================
+    @client.on(events.CallbackQuery(pattern="^admin_error_logs$"))
+    async def admin_error_logs_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_MODERATOR):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        from villain_ads_bot.core import error_reporter
+        err_count = error_reporter.get_error_logs_count()
+        uptime_seconds = int(time.time() - _BOT_START_TIME)
+        days, remainder = divmod(uptime_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{days}d {hours}h {minutes}m {seconds}s" if days else f"{hours}h {minutes}m {seconds}s"
+
+        text = (
+            f"{ui.card_open('System Error Logs', 'Captured since bot uptime', f'{err_count} total errors', '📜')}\n\n"
+            f"{ui.kv('Uptime', uptime_str, '⏱️')}\n"
+            f"{ui.kv('Errors Recorded', str(err_count), '🚨')}\n"
+            f"{ui.kv('Realtime Owner PMs', 'Disabled (No Spam)', '🔕')}\n\n"
+            f"ℹ️ <i>Click <b>Download errorlogs.txt</b> below to download the entire error logs generated since the bot started.</i>\n\n"
+            f"{ui.card_close()}"
+        )
+
+        buttons = [
+            [utils.styled_button("📥 Download errorlogs.txt", "admin_download_error_logs", style="danger")],
+            [utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")]
+        ]
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern="^admin_download_error_logs$"))
+    async def admin_download_error_logs_callback(event):
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_MODERATOR):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        from villain_ads_bot.core import error_reporter
+        logs_text = error_reporter.get_error_logs_text()
+        if not logs_text:
+            await event.answer("✅ No errors have occurred since bot uptime!", alert=True)
+            return
+
+        await event.answer("⏳ Generating errorlogs.txt...", alert=False)
+        import io
+        log_bytes = logs_text.encode("utf-8")
+        file_obj = io.BytesIO(log_bytes)
+        file_obj.name = "errorlogs.txt"
+
+        err_count = error_reporter.get_error_logs_count()
+        caption = (
+            f"📜 <b>Villain Ads Bot — Error Logs</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Total Events :</b> <code>{err_count}</code>\n"
+            f"⏱️ <b>Since Uptime :</b> <code>All recorded errors</code>\n"
+            f"📁 <b>Filename :</b> <code>errorlogs.txt</code>"
+        )
+        try:
+            await client.send_file(
+                event.chat_id,
+                file=file_obj,
+                caption=caption,
+                parse_mode="html"
+            )
+        except Exception as send_err:
+            await event.respond(f"❌ Failed to send error file: {send_err}")
 
     # ==================== #10  ADMIN ROLES ====================
     @client.on(events.CallbackQuery(pattern="^admin_roles$"))
