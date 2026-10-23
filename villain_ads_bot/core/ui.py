@@ -85,8 +85,10 @@ def bullet(text: str, icon: str = "•") -> str:
 
 
 def status(enabled: bool, on_text: str = "ON", off_text: str = "OFF") -> str:
-    """A coloured ON/OFF pill."""
-    return f"🟢 <b>{on_text}</b>" if enabled else f"🔴 <b>{off_text}</b>"
+    """A coloured ON/OFF pill or styled symbol."""
+    from villain_ads_bot.core import utils
+    raw = f"🟢 <b>{on_text}</b>" if enabled else f"🔴 <b>{off_text}</b>"
+    return utils.apply_emoji_filter(raw)
 
 
 def locked(text: str = "This action is reserved for the owner.") -> str:

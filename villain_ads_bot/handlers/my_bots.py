@@ -251,7 +251,7 @@ async def show_bots_list(event, user_id: int, flash_message: Optional[str] = Non
             s["status"] = status
             database.save_session(s)
             
-        status_emoji = "🟢" if status == "running" else "🔴"
+        status_emoji = utils.apply_emoji_filter("🟢" if status == "running" else "🔴")
         name = s.get("name") or "UserBot"
         username = s.get("username")
         user_display = f"@{username}" if username else phone

@@ -197,8 +197,11 @@ async def show_admin_panel(event, user_id: int):
             utils.styled_button(maint_text, "admin_toggle_maint", style="primary")
         ],
         [
-            utils.styled_button(utils.get_text("btn_manage_admins", lang), "admin_manage_admins", style="primary"),
+            utils.styled_button(f"✨ Emoji Mode: {'🟢 On' if global_settings.get('emoji_mode', True) else '🔴 Off'}", "admin_toggle_emoji_mode", style="primary"),
             utils.styled_button("🖥️ Vps Usage", "admin_vps_usage", style="primary")
+        ],
+        [
+            utils.styled_button(utils.get_text("btn_manage_admins", lang), "admin_manage_admins", style="primary")
         ],
         [
             utils.styled_button(utils.get_text("back_to_menu", lang), "menu_start", style="primary")
@@ -962,6 +965,21 @@ def register_handlers(client):
         
         status_word = "enabled" if global_settings["maintenance_mode"] else "disabled"
         await event.answer(f"🔧 Maintenance Mode is now {status_word}.", alert=True)
+        await show_admin_panel(event, user_id)
+
+    @client.on(events.CallbackQuery(pattern="^admin_toggle_emoji_mode$"))
+    async def admin_toggle_emoji_mode_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            return
+            
+        global_settings = database.get_global_settings()
+        current_state = global_settings.get("emoji_mode", True)
+        global_settings["emoji_mode"] = not current_state
+        database.save_global_settings(global_settings)
+        
+        mode_word = "Enabled (Emoji Style)" if global_settings["emoji_mode"] else "Disabled (Special Symbols & Badges Style)"
+        await event.answer(f"Emoji Mode is now {mode_word}.", alert=True)
         await show_admin_panel(event, user_id)
 
     # ------------------ Images & UI Management Sub-Menu ------------------

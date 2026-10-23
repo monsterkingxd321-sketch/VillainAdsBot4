@@ -330,21 +330,130 @@ async def pytg_resume(pytg, chat_id):
 
 
 
-def to_small_caps(text: str) -> str:
-    """
-    Returns original text without modification since the user requested normal fonts.
-    """
+EMOJI_TO_SYMBOL = {
+    '🟢': '[+]',
+    '🔴': '[-]',
+    '❌': '[x]',
+    '✅': '[✓]',
+    '⚠️': '[!]',
+    '💡': '[*]',
+    '⚡': '[>>]',
+    '🚀': '[>>]',
+    '⏱️': '[~]',
+    '⏱': '[~]',
+    '⏳': '[..]',
+    '🔍': '[?]',
+    '📊': '[#]',
+    '⚙️': '[*]',
+    '⚙': '[*]',
+    '👑': '[#]',
+    '💎': '[*]',
+    '👤': '[::]',
+    '👥': '[::]',
+    '📱': '[#]',
+    '🤖': '[=]',
+    '🎧': '[~]',
+    '🎵': '[~]',
+    '🎙️': '[~]',
+    '🎙': '[~]',
+    '🎬': '[~]',
+    '▶️': '[>]',
+    '⏸️': '[||]',
+    '⏹️': '[■]',
+    '⏭️': '[>>]',
+    '🔇': '[-]',
+    '🔊': '[+]',
+    '➕': '[+]',
+    '➖': '[-]',
+    '🔙': '[<<]',
+    '🚪': '[x]',
+    '🗑️': '[-]',
+    '🗑': '[-]',
+    '🔄': '[~]',
+    '✉️': '[#]',
+    '✉': '[#]',
+    '👋': '[~]',
+    '💬': '[~]',
+    '📢': '[!]',
+    '📌': '[•]',
+    '🎁': '[*]',
+    '🎉': '[*]',
+    '💰': '[$]',
+    '💸': '[$]',
+    '💳': '[$]',
+    '🏦': '[$]',
+    '🪙': '[$]',
+    '🔐': '[*]',
+    '🔒': '[*]',
+    '📜': '[#]',
+    '🧾': '[#]',
+    '🛡️': '[#]',
+    '🛡': '[#]',
+    '🧪': '[*]',
+    '🖥️': '[#]',
+    '🖥': '[#]',
+    '🌐': '[*]',
+    '📡': '[*]',
+    '🖼️': '[#]',
+    '🖼': '[#]',
+    '✏️': '[/]',
+    '✏': '[/]',
+    '📝': '[/]',
+    '✍️': '[/]',
+    '✍': '[/]',
+    '🎮': '[*]',
+    '🧙': '[*]',
+    '🎟️': '[*]',
+    '🎟': '[*]',
+    '💾': '[#]',
+    '📂': '[#]',
+    '📤': '[^]',
+    '📥': '[v]',
+    '🔗': '[&]',
+    '🧘': '[::]',
+}
+
+def is_emoji_mode_enabled() -> bool:
+    """Returns True if emojis are enabled globally (default True)."""
+    try:
+        settings = database.get_global_settings() or {}
+        return settings.get("emoji_mode", True)
+    except Exception:
+        return True
+
+def convert_emojis_to_symbols(text: str) -> str:
+    """Replaces emojis with stylish ascii and unicode tech symbols and text badges."""
+    if not text or not isinstance(text, str):
+        return text
+    
+    # Contextual ON/OFF and status badges
+    text = re.sub(r'🟢\s*(?:On|ON|on)\b', '[ON]', text)
+    text = re.sub(r'🔴\s*(?:Off|OFF|off)\b', '[OFF]', text)
+    text = re.sub(r'🟢\s*(?:Online|ONLINE|online)\b', '[ONLINE]', text)
+    text = re.sub(r'🔴\s*(?:Offline|OFFLINE|offline|Stopped|stopped)\b', '[OFFLINE]', text)
+
+    for em, sym in EMOJI_TO_SYMBOL.items():
+        text = text.replace(em, sym)
+    # Generic replacement for any remaining emojis
+    text = re.sub(r'[\U00010000-\U0010ffff]', '•', text)
+    return text
+
+def apply_emoji_filter(text: str) -> str:
+    """Applies symbol conversion if emoji mode is toggled off."""
+    if not is_emoji_mode_enabled():
+        return convert_emojis_to_symbols(text)
     return text
 
 def styled_button(text: str, callback_data: str, style: str = "primary"):
     """
-    Creates a standard inline button.
+    Creates a standard inline button, respecting emoji toggle.
     """
+    final_text = apply_emoji_filter(text)
     try:
-        return Button.inline(text, data=callback_data, style=style)
+        return Button.inline(final_text, data=callback_data, style=style)
     except TypeError:
         # Standard Telethon fallback
-        btn = Button.inline(text, data=callback_data)
+        btn = Button.inline(final_text, data=callback_data)
         setattr(btn, "style", style)
         return btn
 
@@ -356,9 +465,13 @@ def format_html_message(text: str) -> str:
     Formats text into valid Telegram HTML entities with <blockquote> for card UI.
     Converts markdown blockquotes ('> ') to native Telegram <blockquote>...</blockquote> tags.
     Converts <b>bold</b> to <b>, `code` to <code>, and _italic_ to <i>.
+    Respects global emoji toggle mode.
     """
     if not text or not isinstance(text, str):
         return text
+
+    # Filter emojis if disabled
+    text = apply_emoji_filter(text)
 
     # Check for markdown blockquote lines
     has_md_quote = bool(re.search(r'(^|\n)>\s*', text))
