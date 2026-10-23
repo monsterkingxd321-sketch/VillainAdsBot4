@@ -478,7 +478,28 @@ async def main():
         t4.add_done_callback(background_tasks.discard)
     except Exception as mirror_err:
         logger.warning(f"Could not start the proxy mirror: {mirror_err}")
-    
+
+    # Optional lightweight HTTP health check server for cloud platforms (Render, Railway, Koyeb, Heroku)
+    # When deployed as a Web Service, platforms require listening on $PORT.
+    http_runner = None
+    port_env = os.getenv("PORT")
+    if port_env:
+        try:
+            from aiohttp import web
+            async def _health_handler(request):
+                return web.Response(text="Villain Ads Bot is running!", status=200)
+
+            http_app = web.Application()
+            http_app.router.add_get("/", _health_handler)
+            http_app.router.add_get("/health", _health_handler)
+            http_runner = web.AppRunner(http_app)
+            await http_runner.setup()
+            http_site = web.TCPSite(http_runner, "0.0.0.0", int(port_env))
+            await http_site.start()
+            print(f"[*] Health check HTTP server listening on port {port_env}", flush=True)
+        except Exception as http_err:
+            logger.warning(f"Failed to start HTTP health server on port {port_env}: {http_err}")
+
     try:
         # Keep the bot running and auto-reconnect if it disconnects
         while True:
@@ -490,6 +511,13 @@ async def main():
                 logger.error(f"Bot disconnected due to error: {e}. Retrying in 5 seconds...")
                 await asyncio.sleep(5)
     finally:
+        # Stop HTTP server if running
+        if http_runner:
+            try:
+                await http_runner.cleanup()
+            except Exception:
+                pass
+
         # Stop all background userbots gracefully
         await userbot_manager.stop_all_bots()
         
