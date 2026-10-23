@@ -256,27 +256,39 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
         
         final_thumb = local_thumb_path if (os.path.exists(local_thumb_path) and os.path.getsize(local_thumb_path) > 1000) else thumb_url
 
+        def _has_valid_video_stream(fpath: str) -> bool:
+            try:
+                import subprocess
+                cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type,width,height", "-of", "csv=s=x:p=0", fpath]
+                res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=5).decode().strip()
+                return ("video" in res or "x" in res) and len(res) > 0
+            except Exception:
+                return True
+
         # 2. Check if file already exists in downloads
         prefix = "audio" if download_type == "audio" else "video"
         ext = "mp3" if download_type == "audio" else "mp4"
         cached_file = os.path.join(DOWNLOAD_DIR, f"{vidid}_{prefix}.{ext}")
         if os.path.exists(cached_file) and os.path.getsize(cached_file) > 10000:
-            logger.info(f"Using cached file: {cached_file}")
-            return cached_file, title, duration_sec, final_thumb
+            if download_type != "video" or _has_valid_video_stream(cached_file):
+                logger.info(f"Using cached file: {cached_file}")
+                return cached_file, title, duration_sec, final_thumb
 
         # The youtube module caches as "<video_id>.mp3" / "<video_id>.mp4"
         plain_cached = os.path.join(DOWNLOAD_DIR, f"{vidid}.{ext}")
         if os.path.exists(plain_cached) and os.path.getsize(plain_cached) > 10000:
-            logger.info(f"Using cached file: {plain_cached}")
-            return plain_cached, title, duration_sec, final_thumb
+            if download_type != "video" or _has_valid_video_stream(plain_cached):
+                logger.info(f"Using cached file: {plain_cached}")
+                return plain_cached, title, duration_sec, final_thumb
 
         # Also check any file starting with vidid_prefix
         for fname in os.listdir(DOWNLOAD_DIR):
             if fname.startswith(f"{vidid}_{prefix}") and not fname.endswith(".jpg"):
                 full_p = os.path.join(DOWNLOAD_DIR, fname)
                 if os.path.getsize(full_p) > 10000:
-                    logger.info(f"Using cached file matching prefix: {full_p}")
-                    return full_p, title, duration_sec, final_thumb
+                    if download_type != "video" or _has_valid_video_stream(full_p):
+                        logger.info(f"Using cached file matching prefix: {full_p}")
+                        return full_p, title, duration_sec, final_thumb
 
         # 3. Primary Fast Direct Stream via Yuki API (with gateway failover)
         logger.info(f"Downloading {download_type} directly via Yuki API for: {title} ({vidid})...")
@@ -1944,6 +1956,23 @@ class UserBot:
             except Exception as unmute_err:
                 logger.warning(f"Could not auto-unmute stream on play: {unmute_err}")
                 utils.report_error(f"userbot.play_song.unmute:{self.session_id}", unmute_err)
+
+            # If playing video, ensure video is unstopped in group call status
+            if play_type == "video":
+                try:
+                    if hasattr(pytg, "_app") and hasattr(pytg._app, "set_call_status"):
+                        peer = await pytg._app.resolve_peer(self.session_id)
+                        await pytg._app.set_call_status(
+                            chat_id=actual_chat,
+                            muted_status=False,
+                            video_paused=False,
+                            video_stopped=False,
+                            presentation_paused=False,
+                            participant=peer
+                        )
+                        logger.info(f"Set call status video_stopped=False for {actual_chat}")
+                except Exception as vid_status_err:
+                    logger.debug(f"Video call status update note: {vid_status_err}")
             
             # Save playing status in MongoDB
             sess_data = database.get_session(self.session_id)
@@ -2607,6 +2636,10 @@ class UserBot:
                                     t, m, s, thumb, vid = await YouTube.details(query)
                                     if t:
                                         audio_title = t
+                                        try:
+                                            await prog.edit(f"<b>» 🎧 Playing :</b> <b>{audio_title}</b>")
+                                        except Exception:
+                                            pass
                                     if s:
                                         audio_duration = s
                                 except Exception as yt_err:
@@ -2652,13 +2685,6 @@ class UserBot:
                                     _preparing_chats.add(chat_id)
 
                             try:
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        f"<blockquote><b>» ⏳ Connecting To Voice Chat</b>\n\n"
-                                        f"🎙️ <i>Connecting To Voice Chat & Starting Stream Pipeline...</i></blockquote>"
-                                    )
-                                )
-                                
                                 # Cancel previous timer
                                 prev_timer = _track_timer_tasks.pop(chat_id, None)
                                 if prev_timer and not prev_timer.done():

@@ -463,6 +463,10 @@ def register_handlers(client):
                 t, m, s, thumb, vid = await YouTube.details(query)
                 if t:
                     audio_title = t
+                    try:
+                        await progress_msg.edit(f"<b>» 🎧 Playing :</b> <b>{audio_title}</b>")
+                    except Exception:
+                        pass
                 if s:
                     audio_duration = s
             except Exception as yt_err:

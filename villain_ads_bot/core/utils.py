@@ -422,24 +422,36 @@ def is_emoji_mode_enabled() -> bool:
         return True
 
 def convert_emojis_to_symbols(text: str) -> str:
-    """Replaces emojis with stylish ascii and unicode tech symbols and text badges."""
+    """
+    Strips emojis cleanly without adding weird ASCII symbols or brackets.
+    Handles statuses (e.g. 🟢 On -> On, 🔴 Off -> Off, Online, Offline).
+    """
     if not text or not isinstance(text, str):
         return text
     
-    # Contextual ON/OFF and status badges
-    text = re.sub(r'🟢\s*(?:On|ON|on)\b', '[ON]', text)
-    text = re.sub(r'🔴\s*(?:Off|OFF|off)\b', '[OFF]', text)
-    text = re.sub(r'🟢\s*(?:Online|ONLINE|online)\b', '[ONLINE]', text)
-    text = re.sub(r'🔴\s*(?:Offline|OFFLINE|offline|Stopped|stopped)\b', '[OFFLINE]', text)
+    # 1. Clean contextual ON/OFF & Online/Offline statuses first
+    text = re.sub(r'🟢\s*(?:On|ON|on)\b', 'On', text)
+    text = re.sub(r'🔴\s*(?:Off|OFF|off)\b', 'Off', text)
+    text = re.sub(r'🟢\s*(?:Online|ONLINE|online)\b', 'Online', text)
+    text = re.sub(r'🔴\s*(?:Offline|OFFLINE|offline|Stopped|stopped)\b', 'Offline', text)
+    text = re.sub(r'🟢\s*(?:Active|ACTIVE|active)\b', 'Active', text)
+    text = re.sub(r'🔴\s*(?:Inactive|INACTIVE|inactive)\b', 'Inactive', text)
 
-    for em, sym in EMOJI_TO_SYMBOL.items():
-        text = text.replace(em, sym)
-    # Generic replacement for any remaining emojis
-    text = re.sub(r'[\U00010000-\U0010ffff]', '•', text)
-    return text
+    # 2. Strip any remaining emojis completely (Unicode ranges + variation selectors)
+    emoji_pattern = re.compile(
+        r'[\U00010000-\U0010ffff\u2600-\u26ff\u2700-\u27bf\u2300-\u23ff\u2b50\u2b55\u200d\ufe0e\ufe0f]+'
+    )
+    text = emoji_pattern.sub('', text)
+
+    # 3. Clean up leftover double spaces and tidy lines
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    # Fix spaces right after opening tags or before closing tags if an emoji was stripped there
+    text = re.sub(r'(<b>|<i>|<code>|<blockquote>)\s+', r'\1', text)
+    text = re.sub(r'\s+(</b>|</i>|</code>|</blockquote>)', r'\1', text)
+    return text.strip()
 
 def apply_emoji_filter(text: str) -> str:
-    """Applies symbol conversion if emoji mode is toggled off."""
+    """Applies clean emoji stripping if emoji mode is toggled off."""
     if not is_emoji_mode_enabled():
         return convert_emojis_to_symbols(text)
     return text
