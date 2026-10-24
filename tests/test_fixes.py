@@ -227,9 +227,21 @@ def run_tests():
     assert welcome_to_send == ["Welcome 1", "Welcome 2", "Welcome 3"]
     print("  [PASS] Comma-separated multiple welcome messages sends all configured messages sequentially")
 
+    # 13. Test Auto-Chat Restricted to Groups Only & Instant Welcome Cache
+    assert hasattr(test_ub, "_welcomed_cache"), "UserBot must have _welcomed_cache for instant DM welcomes!"
+    assert hasattr(test_ub, "owner_id"), "UserBot must have owner_id attribute!"
+    
+    with open("villain_ads_bot/services/userbot.py", "r", encoding="utf-8") as f:
+        ub_code = f.read()
+    
+    assert "elif event.is_private:\n                    # Auto-reply / Auto-chat is strictly disabled in DMs" in ub_code or "is_reply_target = False" in ub_code, "Auto-reply must be disabled in private chats!"
+    assert "database.get_session_fresh" not in ub_code.split("# 3. Private message handling")[1].split("# 4. Auto-Reply")[0], "DM welcome path must not make blocking database.get_session_fresh calls!"
+    print("  [PASS] Auto-chat strictly restricted to groups & DM welcome is non-blocking and instant")
+
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     run_tests()
+
 
 

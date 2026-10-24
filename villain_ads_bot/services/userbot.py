@@ -1258,6 +1258,8 @@ class UserBot:
         
         # Caching attributes to resolve performance bottlenecks
         self.settings = {}
+        self.owner_id: Optional[int] = None
+        self._welcomed_cache: Set[int] = set()
         self.groups_cache = None
         self.groups_cache_time = 0.0
         # Only ONE broadcast round may run per account. Without this the
@@ -1305,6 +1307,14 @@ class UserBot:
             self.settings = sess_data.get("settings", {})
             if sess_data.get("phone"):
                 self.phone = sess_data.get("phone")
+            if sess_data.get("user_id"):
+                try:
+                    self.owner_id = int(sess_data.get("user_id"))
+                except Exception:
+                    self.owner_id = sess_data.get("user_id")
+            if not hasattr(self, "_welcomed_cache") or self._welcomed_cache is None:
+                self._welcomed_cache = set()
+            self._welcomed_cache.update(sess_data.get("stats", {}).get("welcomed_users", []))
             logger.info(f"Reloaded in-memory settings for userbot {self.session_id}")
             
             # Wake up broadcast loop immediately if settings were updated
@@ -2186,6 +2196,12 @@ class UserBot:
         self.settings = sess_data.get("settings", {})
         if sess_data.get("phone"):
             self.phone = sess_data.get("phone")
+        if sess_data.get("user_id"):
+            try:
+                self.owner_id = int(sess_data.get("user_id"))
+            except Exception:
+                self.owner_id = sess_data.get("user_id")
+        self._welcomed_cache = set(sess_data.get("stats", {}).get("welcomed_users", []))
         
         # Cross-platform session path normalization:
         # DB may contain Windows paths (e.g. F:\villainAdsbot4\user_data\...) when running on Linux/Docker,
@@ -3432,14 +3448,9 @@ class UserBot:
                             except Exception as add_err:
                                 logger.warning(f"Failed to auto-add contact {sender.id}: {add_err}")
 
-                # 3. Private message handling (Auto-Welcome)
+                # 3. Private message handling (Auto-Welcome: instant, non-blocking)
                 just_welcomed = False
-                sess_data = database.get_session_fresh(self.session_id)
-                if not sess_data and getattr(self, "phone", None):
-                    sess_data = database.get_session_fresh(self.phone)
-                if sess_data and "settings" in sess_data:
-                    self.settings = sess_data["settings"]
-                current_settings = self.settings
+                current_settings = self.settings or {}
 
                 if event.is_private and current_settings.get("auto_welcome"):
                     sender_id = getattr(event, "sender_id", None) or getattr(event, "chat_id", None)
@@ -3454,74 +3465,82 @@ class UserBot:
                             except Exception:
                                 pass
 
-                        sender = None
-                        try:
-                            sender = await event.get_sender()
-                        except Exception:
-                            pass
-                        if not sender:
-                            try:
-                                sender = await self.client.get_entity(sender_id)
-                            except Exception:
-                                pass
-
-                        owner_uid = sess_data.get("user_id") if sess_data else getattr(self, "owner_id", None)
-                        is_bot = bool(getattr(sender, "bot", False)) if sender else False
+                        owner_uid = getattr(self, "owner_id", None)
                         is_self = bool(self.me_id and sender_id == self.me_id)
                         is_owner = bool(owner_uid and (str(sender_id) == str(owner_uid)))
                         is_service = bool(sender_id in (777000, 42777, 42444))
 
-                        is_companion = False
-                        if owner_uid:
-                            try:
-                                from villain_ads_bot.services import userbot_manager
-                                user_bots = userbot_manager.get_running_userbots_for_owner(owner_uid)
-                                for ub in user_bots:
-                                    if getattr(ub, "me_id", None) and ub.me_id == sender_id:
-                                        is_companion = True
-                                        break
-                            except Exception:
-                                pass
+                        if not is_self and not is_owner and not is_service:
+                            if not hasattr(self, "_welcomed_cache") or self._welcomed_cache is None:
+                                self._welcomed_cache = set()
 
-                        if not is_bot and not is_self and not is_owner and not is_service and not is_companion:
-                            welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", []) if sess_data else []
-                            if sender_id not in welcomed_users:
-                                w_mode = current_settings.get("welcome_mode", "single")
-                                messages_to_send = utils.get_welcome_messages(current_settings)
-                                if messages_to_send:
-                                    # In multiple mode: send all configured welcome messages! In single mode: send first
-                                    welcome_to_send = messages_to_send if w_mode == "multiple" else [messages_to_send[0]]
-                                    welcome_sent = False
-                                    for welcome_msg in welcome_to_send:
-                                        processed_welcome = antispam.vary_message(
-                                            welcome_msg, group_id=None, tag=False)
-                                        processed_welcome = utils.normalize_text(processed_welcome)
-                                        try:
-                                            await asyncio.sleep(random.uniform(0.5, 1.2))
-                                            if not self.is_running:
+                            if sender_id not in self._welcomed_cache:
+                                is_companion = False
+                                if owner_uid:
+                                    try:
+                                        from villain_ads_bot.services import userbot_manager
+                                        user_bots = userbot_manager.get_running_userbots_for_owner(owner_uid)
+                                        for ub in user_bots:
+                                            if getattr(ub, "me_id", None) and ub.me_id == sender_id:
+                                                is_companion = True
                                                 break
-                                            try:
-                                                await event.reply(processed_welcome, parse_mode='html')
-                                            except Exception:
-                                                try:
-                                                    await event.reply(processed_welcome, parse_mode=None)
-                                                except Exception:
-                                                    await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
-                                            logger.info(f"Sent welcome message ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
-                                            welcome_sent = True
-                                            just_welcomed = True
-                                        except Exception as e:
-                                            logger.warning(f"Could not send welcome message to {sender_id}: {e}")
-                                    if welcome_sent:
-                                        welcomed_users.append(sender_id)
-                                        try:
-                                            database.add_welcomed_user(self.session_id, sender_id)
-                                            if getattr(self, "phone", None):
-                                                database.add_welcomed_user(self.phone, sender_id)
-                                        except Exception as db_save_err:
-                                            logger.debug(f"Failed to record welcomed_user: {db_save_err}")
+                                    except Exception:
+                                        pass
 
-                # 4. Auto-Reply / Auto-Chat (Works in Groups, Channels, and DMs)
+                                sender = getattr(event, "sender", None)
+                                if not sender:
+                                    try:
+                                        sender = await event.get_sender()
+                                    except Exception:
+                                        pass
+                                is_bot = bool(getattr(sender, "bot", False)) if sender else False
+
+                                if not is_bot and not is_companion:
+                                    # Cache immediately to prevent duplicate runs from rapid message/sticker bursts
+                                    self._welcomed_cache.add(sender_id)
+                                    w_mode = current_settings.get("welcome_mode", "single")
+                                    messages_to_send = utils.get_welcome_messages(current_settings)
+                                    if messages_to_send:
+                                        # In multiple mode: send all configured welcome messages sequentially
+                                        welcome_to_send = messages_to_send if w_mode == "multiple" else [messages_to_send[0]]
+                                        welcome_sent = False
+                                        for idx, welcome_msg in enumerate(welcome_to_send):
+                                            processed_welcome = antispam.vary_message(
+                                                welcome_msg, group_id=None, tag=False)
+                                            processed_welcome = utils.normalize_text(processed_welcome)
+                                            try:
+                                                if idx > 0:
+                                                    # Only brief delay between consecutive multiple messages
+                                                    await asyncio.sleep(0.3)
+                                                if not self.is_running:
+                                                    break
+                                                try:
+                                                    await event.reply(processed_welcome, parse_mode='html')
+                                                except Exception:
+                                                    try:
+                                                        await event.reply(processed_welcome, parse_mode=None)
+                                                    except Exception:
+                                                        await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
+                                                logger.info(f"Sent welcome message ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
+                                                welcome_sent = True
+                                                just_welcomed = True
+                                            except Exception as e:
+                                                logger.warning(f"Could not send welcome message to {sender_id}: {e}")
+
+                                        if welcome_sent:
+                                            # Async DB record via thread executor so it never blocks message loop
+                                            sid = self.session_id
+                                            phone_num = getattr(self, "phone", None)
+                                            def _persist_welcomed():
+                                                try:
+                                                    database.add_welcomed_user(sid, sender_id)
+                                                    if phone_num:
+                                                        database.add_welcomed_user(phone_num, sender_id)
+                                                except Exception as db_err:
+                                                    logger.debug(f"Failed to record welcomed_user: {db_err}")
+                                            asyncio.get_running_loop().run_in_executor(None, _persist_welcomed)
+
+                # 4. Auto-Reply / Auto-Chat (Strictly for Groups & Channels)
                 is_reply_target = False
 
                 # Ensure me_id and username are known
@@ -3567,39 +3586,8 @@ class UserBot:
 
                     is_reply_target = is_mentioned or is_reply_to_us
                 elif event.is_private:
-                    # In DMs, incoming messages from others are auto-chat targets unless just welcomed on this same message
-                    if not just_welcomed:
-                        sender_id = getattr(event, "sender_id", None) or getattr(event, "chat_id", None)
-                        sender = None
-                        try:
-                            sender = await event.get_sender()
-                        except Exception:
-                            pass
-                        if not sender and sender_id:
-                            try:
-                                sender = await self.client.get_entity(sender_id)
-                            except Exception:
-                                pass
-                        owner_uid = sess_data.get("user_id") if sess_data else getattr(self, "owner_id", None)
-                        is_bot = bool(getattr(sender, "bot", False)) if sender else False
-                        is_self = bool(self.me_id and sender_id == self.me_id)
-                        is_owner = bool(owner_uid and (str(sender_id) == str(owner_uid)))
-                        is_service = bool(sender_id in (777000, 42777, 42444))
-
-                        is_companion = False
-                        if owner_uid:
-                            try:
-                                from villain_ads_bot.services import userbot_manager
-                                user_bots = userbot_manager.get_running_userbots_for_owner(owner_uid)
-                                for ub in user_bots:
-                                    if getattr(ub, "me_id", None) and ub.me_id == sender_id:
-                                        is_companion = True
-                                        break
-                            except Exception:
-                                pass
-
-                        if sender_id and not is_bot and not is_self and not is_owner and not is_service and not is_companion:
-                            is_reply_target = True
+                    # Auto-reply / Auto-chat is strictly disabled in DMs (Groups/Channels only)
+                    is_reply_target = False
 
                 auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
 
@@ -3615,12 +3603,8 @@ class UserBot:
                         }
 
                     last_global = getattr(self, "_last_reply_ts", 0.0)
-                    if event.is_private:
-                        global_gap = float(current_settings.get("auto_reply_dm_gap", 2.0) or 2.0)
-                        chat_cooldown = 2.0
-                    else:
-                        global_gap = float(current_settings.get("auto_reply_global_gap", 10.0) or 10.0)
-                        chat_cooldown = 3.0
+                    global_gap = float(current_settings.get("auto_reply_global_gap", 10.0) or 10.0)
+                    chat_cooldown = 3.0
 
                     global_ok = (now - last_global) >= global_gap
 
