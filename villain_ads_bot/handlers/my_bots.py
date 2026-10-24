@@ -3556,7 +3556,8 @@ def register_handlers(client):
                 st["welcome_mode"] = "single"
                 st["auto_welcome"] = True
                 if "stats" in s and "welcomed_users" in s["stats"]:
-                    s["stats"]["welcomed_users"] = [u for u in s["stats"]["welcomed_users"] if u != user_id]
+                    if user_id not in s["stats"]["welcomed_users"]:
+                        s["stats"]["welcomed_users"].append(user_id)
                 utils.resolve_modes(st)
             for s in sessions:
                 database.save_session(s)
@@ -3578,7 +3579,8 @@ def register_handlers(client):
                 st["welcome_mode"] = "multiple"
                 st["auto_welcome"] = True
                 if "stats" in s and "welcomed_users" in s["stats"]:
-                    s["stats"]["welcomed_users"] = [u for u in s["stats"]["welcomed_users"] if u != user_id]
+                    if user_id not in s["stats"]["welcomed_users"]:
+                        s["stats"]["welcomed_users"].append(user_id)
                 utils.resolve_modes(st)
             for s in sessions:
                 database.save_session(s)
@@ -4108,7 +4110,8 @@ def register_handlers(client):
             sess["settings"]["welcome_mode"] = "single"
             sess["settings"]["auto_welcome"] = True
             if "stats" in sess and "welcomed_users" in sess["stats"]:
-                sess["stats"]["welcomed_users"] = [u for u in sess["stats"]["welcomed_users"] if u != user_id]
+                if user_id not in sess["stats"]["welcomed_users"]:
+                    sess["stats"]["welcomed_users"].append(user_id)
             utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
@@ -4125,7 +4128,8 @@ def register_handlers(client):
             sess["settings"]["welcome_mode"] = "multiple"
             sess["settings"]["auto_welcome"] = True
             if "stats" in sess and "welcomed_users" in sess["stats"]:
-                sess["stats"]["welcomed_users"] = [u for u in sess["stats"]["welcomed_users"] if u != user_id]
+                if user_id not in sess["stats"]["welcomed_users"]:
+                    sess["stats"]["welcomed_users"].append(user_id)
             utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)

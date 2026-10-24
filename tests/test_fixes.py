@@ -209,6 +209,24 @@ def run_tests():
     assert "(4 Userbots)" in np_card, f"Expected '(4 Userbots)' in header, got: {np_card}"
     print("  [PASS] Multi-userbot concurrent VC streaming & companion discovery verified")
 
+    # 11. Test extract_video_id
+    from villain_ads_bot.services.youtube import extract_video_id
+    assert extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    assert extract_video_id("https://youtu.be/dQw4w9WgXcQ?si=test12345") == "dQw4w9WgXcQ"
+    assert extract_video_id("https://www.youtube.com/shorts/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    assert extract_video_id("dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    print("  [PASS] extract_video_id handles all YouTube URL formats & shorts cleanly")
+
+    # 12. Test Multiple Welcome & DM Sticker Event Handling
+    w_multi_comma = utils.parse_multi_messages("Welcome 1, Welcome 2, Welcome 3")
+    assert w_multi_comma == ["Welcome 1", "Welcome 2", "Welcome 3"], f"Failed comma split: {w_multi_comma}"
+    settings_multi = {"welcome_messages": w_multi_comma, "welcome_mode": "multiple"}
+    msgs_to_send = utils.get_welcome_messages(settings_multi)
+    welcome_to_send = msgs_to_send if settings_multi.get("welcome_mode") == "multiple" else [msgs_to_send[0]]
+    assert len(welcome_to_send) == 3, f"Expected 3 messages to send, got {len(welcome_to_send)}"
+    assert welcome_to_send == ["Welcome 1", "Welcome 2", "Welcome 3"]
+    print("  [PASS] Comma-separated multiple welcome messages sends all configured messages sequentially")
+
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":

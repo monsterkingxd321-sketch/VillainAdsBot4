@@ -63,8 +63,20 @@ def time_to_seconds(time):
     return sum(int(x) * 60 ** i for i, x in enumerate(reversed(stringt.split(":"))))
 
 
+def extract_video_id(link: str) -> str:
+    if not link:
+        return ""
+    link = str(link).strip()
+    match = re.search(r"(?:v=|\/|vi\/|youtu\.be\/|\/v\/|\/embed\/|\/shorts\/|^)([a-zA-Z0-9_-]{11})", link)
+    if match:
+        return match.group(1)
+    if len(link) == 11 and re.match(r"^[a-zA-Z0-9_-]{11}$", link):
+        return link
+    return link.split("v=")[-1].split("&")[0].split("?")[0].strip()
+
+
 async def download_song(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = extract_video_id(link)
     if not video_id or len(video_id) < 3:
         return None
 
@@ -81,9 +93,10 @@ async def download_song(link: str) -> str:
 
     for gateway in gateways:
         try:
+            timeout = aiohttp.ClientTimeout(total=25, connect=5)
             async with aiohttp.ClientSession(headers={"Accept-Encoding": "gzip, deflate"}) as session:
                 stream_url = f"{gateway}/stream/{video_id}?key={key}&type=audio"
-                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                async with session.get(stream_url, timeout=timeout) as resp:
                     if resp.status == 200:
                         with open(file_path, "wb") as f:
                             async for chunk in resp.content.iter_chunked(131072):
@@ -96,29 +109,37 @@ async def download_song(link: str) -> str:
                 except Exception: pass
             continue
 
-    # Fallback to yt-dlp if Yuki API stream failed
-    try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': file_path,
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {'youtube': {'player_client': ['mweb', 'android']}},
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
-            return file_path
-    except Exception:
-        if os.path.exists(file_path):
-            try: os.remove(file_path)
-            except Exception: pass
+    # Non-blocking async yt-dlp fallback
+    def _dl_ytdlp():
+        try:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': file_path,
+                'quiet': True,
+                'no_warnings': True,
+                'nocheckcertificate': True,
+                'geo_bypass': True,
+                'extractor_args': {'youtube': {'player_client': ['mweb', 'android']}},
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+                return file_path
+        except Exception:
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+        return None
 
-    return None
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _dl_ytdlp)
+    except Exception:
+        return _dl_ytdlp()
 
 
 async def download_video(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = extract_video_id(link)
     if not video_id or len(video_id) < 3:
         return None
 
@@ -136,44 +157,54 @@ async def download_video(link: str) -> str:
     # 1. Try Yuki API stream endpoint
     for gateway in gateways:
         try:
+            timeout = aiohttp.ClientTimeout(total=45, connect=6)
             async with aiohttp.ClientSession(headers={"Accept-Encoding": "gzip, deflate"}) as session:
                 stream_url = f"{gateway}/stream/{video_id}?key={key}&type=video"
-                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
+                async with session.get(stream_url, timeout=timeout) as resp:
                     if resp.status == 200:
                         with open(file_path, "wb") as f:
                             async for chunk in resp.content.iter_chunked(131072):
                                 f.write(chunk)
                         if _is_valid_video_file(file_path):
                             return file_path
-                        # If Yuki returned audio data for type=video, discard it so yt-dlp can get real video
+                        # Discard if not valid video
                         if os.path.exists(file_path):
-                            os.remove(file_path)
+                            try: os.remove(file_path)
+                            except Exception: pass
         except Exception:
             if os.path.exists(file_path):
                 try: os.remove(file_path)
                 except Exception: pass
             continue
 
-    # 2. Resilient fallback to yt-dlp to download real 720p/360p video
-    try:
-        ydl_opts = {
-            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
-            'outtmpl': file_path,
-            'merge_output_format': 'mp4',
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {'youtube': {'player_client': ['mweb', 'android']}},
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
-        if _is_valid_video_file(file_path):
-            return file_path
-    except Exception:
-        if os.path.exists(file_path):
-            try: os.remove(file_path)
-            except Exception: pass
+    # 2. Resilient non-blocking fallback to yt-dlp to download real 720p/360p video
+    def _dl_video_ytdlp():
+        try:
+            ydl_opts = {
+                'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+                'outtmpl': file_path,
+                'merge_output_format': 'mp4',
+                'quiet': True,
+                'no_warnings': True,
+                'nocheckcertificate': True,
+                'geo_bypass': True,
+                'extractor_args': {'youtube': {'player_client': ['mweb', 'android']}},
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+            if _is_valid_video_file(file_path):
+                return file_path
+        except Exception:
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+        return None
 
-    return None
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _dl_video_ytdlp)
+    except Exception:
+        return _dl_video_ytdlp()
 
 
 class YouTubeAPI:

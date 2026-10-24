@@ -702,8 +702,8 @@ async def generate_silence() -> str:
     Requires zero external FFmpeg commands and never fails.
     """
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, "silence.wav")
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+    file_path = os.path.abspath(os.path.join(DOWNLOAD_DIR, "silence.wav"))
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 100000:
         return file_path
     try:
         import wave
@@ -711,7 +711,8 @@ async def generate_silence() -> str:
             f.setnchannels(1)
             f.setsampwidth(2)
             f.setframerate(48000)
-            f.writeframes(b'\x00' * (48000 * 2 * 3))
+            # 60 seconds of silent audio frames (48000 * 2 * 60 bytes)
+            f.writeframes(b'\x00' * (48000 * 2 * 60))
         logger.info(f"Generated silence.wav successfully at {file_path}")
     except Exception as e:
         logger.error(f"Failed to generate silence.wav: {e}")
@@ -1712,8 +1713,13 @@ class UserBot:
                             try:
                                 chat_id = getattr(update, "chat_id", None)
                                 if chat_id:
-                                    from villain_ads_bot.handlers.player import play_next_in_queue
-                                    await play_next_in_queue(chat_id)
+                                    from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players
+                                    if (chat_id in _chat_queues and _chat_queues[chat_id]) or chat_id in _active_chat_players:
+                                        from villain_ads_bot.handlers.player import play_next_in_queue
+                                        await play_next_in_queue(chat_id)
+                                    else:
+                                        # Idling in VC: re-stream silence so Telegram WebRTC stays active forever
+                                        await self.idle_in_vc(chat_id)
                             except Exception as e:
                                 logger.error(f"Error in handle_stream_update: {e}")
                 except Exception as reg_err:
@@ -1725,8 +1731,13 @@ class UserBot:
                         try:
                             chat_id = getattr(update, "chat_id", None)
                             if chat_id:
-                                from villain_ads_bot.handlers.player import play_next_in_queue
-                                await play_next_in_queue(chat_id)
+                                from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players
+                                if (chat_id in _chat_queues and _chat_queues[chat_id]) or chat_id in _active_chat_players:
+                                    from villain_ads_bot.handlers.player import play_next_in_queue
+                                    await play_next_in_queue(chat_id)
+                                else:
+                                    # Idling in VC: re-stream silence so Telegram WebRTC stays active forever
+                                    await self.idle_in_vc(chat_id)
                         except Exception as e:
                             logger.error(f"Error in on_stream_end: {e}")
                 except Exception as reg_err:
@@ -2671,7 +2682,24 @@ class UserBot:
                 if match:
                     sender_id = event.sender_id
                     sess = database.get_session(self.session_id)
-                    owner_uid = sess.get("user_id") if sess else None
+                    if not sess and getattr(self, "phone", None):
+                        sess = database.get_session(self.phone)
+                    if not sess:
+                        sess = database.get_session_fresh(self.session_id)
+                    if not sess and getattr(self, "phone", None):
+                        sess = database.get_session_fresh(self.phone)
+                    owner_uid = sess.get("user_id") if sess else getattr(self, "owner_id", None)
+                    
+                    if not owner_uid and sender_id:
+                        try:
+                            user_sessions = database.get_sessions(sender_id)
+                            if user_sessions:
+                                for s in user_sessions:
+                                    if s.get("phone") == self.phone or s.get("session_id") == self.session_id:
+                                        owner_uid = sender_id
+                                        break
+                        except Exception:
+                            pass
                     
                     me_id = getattr(self, "me_id", None)
                     if not me_id and self.client:
@@ -3414,41 +3442,84 @@ class UserBot:
                 current_settings = self.settings
 
                 if event.is_private and current_settings.get("auto_welcome"):
-                    sender = await event.get_sender()
-                    if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
-                        welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", []) if sess_data else []
-                        if sender.id not in welcomed_users:
-                            w_mode = current_settings.get("welcome_mode", "single")
-                            messages_to_send = utils.get_welcome_messages(current_settings)
-                            if messages_to_send:
-                                # In multiple (rotational) mode: pick one rotational message; in single mode: pick first
-                                welcome_to_send = [random.choice(messages_to_send)] if w_mode == "multiple" else [messages_to_send[0]]
-                                welcome_sent = False
-                                for welcome_msg in welcome_to_send:
-                                    processed_welcome = antispam.vary_message(
-                                        welcome_msg, group_id=None, tag=False)
-                                    processed_welcome = utils.normalize_text(processed_welcome)
-                                    try:
-                                        await asyncio.sleep(random.uniform(0.5, 1.5))
-                                        if not self.is_running:
-                                            break
+                    sender_id = getattr(event, "sender_id", None) or getattr(event, "chat_id", None)
+                    if sender_id:
+                        if not self.me_id and self.client:
+                            try:
+                                me = await self.client.get_me()
+                                if me:
+                                    self.me_id = me.id
+                                    if me.username:
+                                        self.username = me.username
+                            except Exception:
+                                pass
+
+                        sender = None
+                        try:
+                            sender = await event.get_sender()
+                        except Exception:
+                            pass
+                        if not sender:
+                            try:
+                                sender = await self.client.get_entity(sender_id)
+                            except Exception:
+                                pass
+
+                        owner_uid = sess_data.get("user_id") if sess_data else getattr(self, "owner_id", None)
+                        is_bot = bool(getattr(sender, "bot", False)) if sender else False
+                        is_self = bool(self.me_id and sender_id == self.me_id)
+                        is_owner = bool(owner_uid and (str(sender_id) == str(owner_uid)))
+                        is_service = bool(sender_id in (777000, 42777, 42444))
+
+                        is_companion = False
+                        if owner_uid:
+                            try:
+                                from villain_ads_bot.services import userbot_manager
+                                user_bots = userbot_manager.get_running_userbots_for_owner(owner_uid)
+                                for ub in user_bots:
+                                    if getattr(ub, "me_id", None) and ub.me_id == sender_id:
+                                        is_companion = True
+                                        break
+                            except Exception:
+                                pass
+
+                        if not is_bot and not is_self and not is_owner and not is_service and not is_companion:
+                            welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", []) if sess_data else []
+                            if sender_id not in welcomed_users:
+                                w_mode = current_settings.get("welcome_mode", "single")
+                                messages_to_send = utils.get_welcome_messages(current_settings)
+                                if messages_to_send:
+                                    # In multiple mode: send all configured welcome messages! In single mode: send first
+                                    welcome_to_send = messages_to_send if w_mode == "multiple" else [messages_to_send[0]]
+                                    welcome_sent = False
+                                    for welcome_msg in welcome_to_send:
+                                        processed_welcome = antispam.vary_message(
+                                            welcome_msg, group_id=None, tag=False)
+                                        processed_welcome = utils.normalize_text(processed_welcome)
                                         try:
-                                            await event.reply(processed_welcome, parse_mode='html')
-                                        except Exception:
-                                            await event.reply(processed_welcome, parse_mode=None)
-                                        logger.info(f"Sent welcome message ({w_mode} mode) to {sender.id} from userbot {self.session_id}")
-                                        welcome_sent = True
-                                        just_welcomed = True
-                                    except Exception as e:
-                                        logger.warning(f"Could not send welcome message to {sender.id}: {e}")
-                                if welcome_sent:
-                                    welcomed_users.append(sender.id)
-                                    try:
-                                        database.add_welcomed_user(self.session_id, sender.id)
-                                        if getattr(self, "phone", None):
-                                            database.add_welcomed_user(self.phone, sender.id)
-                                    except Exception as db_save_err:
-                                        logger.debug(f"Failed to record welcomed_user: {db_save_err}")
+                                            await asyncio.sleep(random.uniform(0.5, 1.2))
+                                            if not self.is_running:
+                                                break
+                                            try:
+                                                await event.reply(processed_welcome, parse_mode='html')
+                                            except Exception:
+                                                try:
+                                                    await event.reply(processed_welcome, parse_mode=None)
+                                                except Exception:
+                                                    await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
+                                            logger.info(f"Sent welcome message ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
+                                            welcome_sent = True
+                                            just_welcomed = True
+                                        except Exception as e:
+                                            logger.warning(f"Could not send welcome message to {sender_id}: {e}")
+                                    if welcome_sent:
+                                        welcomed_users.append(sender_id)
+                                        try:
+                                            database.add_welcomed_user(self.session_id, sender_id)
+                                            if getattr(self, "phone", None):
+                                                database.add_welcomed_user(self.phone, sender_id)
+                                        except Exception as db_save_err:
+                                            logger.debug(f"Failed to record welcomed_user: {db_save_err}")
 
                 # 4. Auto-Reply / Auto-Chat (Works in Groups, Channels, and DMs)
                 is_reply_target = False
@@ -3498,8 +3569,36 @@ class UserBot:
                 elif event.is_private:
                     # In DMs, incoming messages from others are auto-chat targets unless just welcomed on this same message
                     if not just_welcomed:
-                        sender = await event.get_sender()
-                        if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
+                        sender_id = getattr(event, "sender_id", None) or getattr(event, "chat_id", None)
+                        sender = None
+                        try:
+                            sender = await event.get_sender()
+                        except Exception:
+                            pass
+                        if not sender and sender_id:
+                            try:
+                                sender = await self.client.get_entity(sender_id)
+                            except Exception:
+                                pass
+                        owner_uid = sess_data.get("user_id") if sess_data else getattr(self, "owner_id", None)
+                        is_bot = bool(getattr(sender, "bot", False)) if sender else False
+                        is_self = bool(self.me_id and sender_id == self.me_id)
+                        is_owner = bool(owner_uid and (str(sender_id) == str(owner_uid)))
+                        is_service = bool(sender_id in (777000, 42777, 42444))
+
+                        is_companion = False
+                        if owner_uid:
+                            try:
+                                from villain_ads_bot.services import userbot_manager
+                                user_bots = userbot_manager.get_running_userbots_for_owner(owner_uid)
+                                for ub in user_bots:
+                                    if getattr(ub, "me_id", None) and ub.me_id == sender_id:
+                                        is_companion = True
+                                        break
+                            except Exception:
+                                pass
+
+                        if sender_id and not is_bot and not is_self and not is_owner and not is_service and not is_companion:
                             is_reply_target = True
 
                 auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
@@ -3561,7 +3660,10 @@ class UserBot:
                                 try:
                                     await event.reply(processed_reply, parse_mode='html')
                                 except Exception:
-                                    await event.reply(processed_reply, parse_mode=None)
+                                    try:
+                                        await event.reply(processed_reply, parse_mode=None)
+                                    except Exception:
+                                        await self.client.send_message(event.chat_id, processed_reply, parse_mode='html')
                                 logger.info(f"Auto-replied ({ar_mode} mode) in chat {event.chat_id} for userbot {self.session_id}")
                             except Exception as reply_err:
                                 logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
