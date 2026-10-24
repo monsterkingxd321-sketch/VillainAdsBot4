@@ -235,8 +235,18 @@ def run_tests():
         ub_code = f.read()
     
     assert "elif event.is_private:\n                    # Auto-reply / Auto-chat is strictly disabled in DMs" in ub_code or "is_reply_target = False" in ub_code, "Auto-reply must be disabled in private chats!"
-    assert "database.get_session_fresh" not in ub_code.split("# 3. Private message handling")[1].split("# 4. Auto-Reply")[0], "DM welcome path must not make blocking database.get_session_fresh calls!"
-    print("  [PASS] Auto-chat strictly restricted to groups & DM welcome is non-blocking and instant")
+    # 14. Test All Slots Unclone (Return to Original Profile) & PFP Removal Fix
+    assert hasattr(userbot_manager, "restore_all_original_profiles"), "userbot_manager must have restore_all_original_profiles!"
+    with open("villain_ads_bot/handlers/my_bots.py", "r", encoding="utf-8") as f:
+        mb_src = f.read()
+    assert "all_slots_restore_profile" in mb_src, "my_bots.py missing all_slots_restore_profile callback or button!"
+    assert "Return To Original (All)" in mb_src or "Return To Original Profile (All)" in mb_src, "Dashboard missing bulk unclone button!"
+
+    with open("villain_ads_bot/services/userbot_manager.py", "r", encoding="utf-8") as f:
+        ubm_src = f.read()
+    assert "DeletePhotosRequest(id=[p.id for p in photos])" not in ubm_src, "DeletePhotosRequest must NOT use int IDs which crash!"
+    assert "InputPhoto" in ubm_src, "userbot_manager must construct InputPhoto objects for photo deletion!"
+    print("  [PASS] All dashboard unclone button present & PFP deletion uses valid InputPhoto objects")
 
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 

@@ -407,10 +407,19 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         ])
         
         # Row 3: Profile & Timing Settings
-        rows.append([
-            ("btn_clone_profile", f"clone_profile_{phone}"),
-            ("btn_change_name", f"change_name_{phone}")
-        ])
+        if sess and ("original_first_name" in sess or sess.get("is_cloned") or "cloned_name" in sess):
+            rows.append([
+                ("btn_clone_profile", f"clone_profile_{phone}"),
+                ("🔄 Return To Original Profile", f"restore_profile_{phone}", None, "success")
+            ])
+            rows.append([
+                ("btn_change_name", f"change_name_{phone}")
+            ])
+        else:
+            rows.append([
+                ("btn_clone_profile", f"clone_profile_{phone}"),
+                ("btn_change_name", f"change_name_{phone}")
+            ])
         rows.append([
             ("btn_set_interval", f"set_interval_{phone}")
         ])
@@ -592,9 +601,12 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
             utils.styled_button(f"💬 Tag Auto-Reply (All): {reply_state_display}", "all_slots_toggle_reply", style="primary"),
             utils.styled_button(f"👥 Auto-Contact (All): {add_contact_state_display}", "all_slots_toggle_add_contact", style="primary")
         ],
-        # Row 3: Clone Profile (All)
+        # Row 3: Clone Profile (All) & Unclone (All)
         [
             utils.styled_button("👤 Clone Profile (All)", "all_slots_clone_profile", style="primary"),
+            utils.styled_button("🔄 Return To Original (All)", "all_slots_restore_profile", style="success")
+        ],
+        [
             utils.styled_button("✏️ Change Name (All)", "all_slots_change_name", style="primary")
         ],
         # Row 4: Timing & Help
@@ -1673,12 +1685,45 @@ def register_handlers(client):
             [
                 utils.styled_button("🖼️ Clone Photo Only", "all_slots_clone_opt_photo", style="primary")
             ],
+            [
+                utils.styled_button("🔄 Return To Original Profile (All)", "all_slots_restore_profile", style="success")
+            ],
             [utils.styled_button("🔙 Cancel", "menu_all_slots", style="danger")]
         ]
         try:
             await event.edit(text, buttons=buttons)
         except Exception:
             await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern="^all_slots_restore_profile$"))
+    async def all_slots_restore_profile_callback(event):
+        user_id = _admin_impersonation.get(event.sender_id, event.sender_id)
+        sessions = get_effective_sessions(event.sender_id)
+        running_phones = [s["phone"] for s in sessions if userbot_manager.is_bot_running(s["phone"])]
+        if not running_phones:
+            await event.answer("⚠️ Start at least one userbot first!", alert=True)
+            return
+
+        progress_msg = await event.reply(
+            f"<blockquote><b>» ⏳ Restoring Original Profiles (Uncloning) On {len(running_phones)} Userbots...</b></blockquote>",
+            parse_mode="html"
+        )
+
+        success_count, total_count, _ = await userbot_manager.restore_all_original_profiles(
+            user_id, fetch_all=is_system_all_mode(event.sender_id)
+        )
+
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
+
+        flash = (
+            f"<blockquote><b>» 🔄 Profile Unclone / Restoration Results</b>\n\n"
+            f"• Restored Original Profiles On <b>{success_count}/{total_count}</b> Running Userbots!\n"
+            f"• Cloned photos removed & original profile details restored.</blockquote>"
+        )
+        await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(event.sender_id))
 
     @client.on(events.CallbackQuery(pattern=r"^all_slots_clone_opt_(complete|name|bio|photo)$"))
     async def all_slots_clone_opt_callback(event):

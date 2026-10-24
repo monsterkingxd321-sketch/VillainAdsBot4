@@ -936,6 +936,7 @@ async def enforce_branding(session_id: str) -> bool:
 async def restore_original_profile(session_id: str) -> tuple:
     """
     Restores the userbot's original profile (first_name, last_name, about/bio, and photo).
+    Removes any cloned profile photos/videos and re-uploads the backed-up original photo if one existed.
     """
     bot = find_running_bot(session_id)
     if not bot or not bot.is_running:
@@ -945,57 +946,95 @@ async def restore_original_profile(session_id: str) -> tuple:
         return False, "Userbot client is not connected."
         
     sess_data = database.get_session(session_id)
-    if not sess_data or "original_first_name" not in sess_data:
-        return False, "No original profile backup found. You must clone a profile first."
+    if not sess_data and getattr(bot, "phone", None):
+        sess_data = database.get_session(bot.phone)
+        
+    has_backup = bool(
+        sess_data and (
+            "original_first_name" in sess_data or
+            sess_data.get("is_cloned") or
+            sess_data.get("cloned_name") or
+            sess_data.get("has_original_photo")
+        )
+    )
+    if not sess_data or not has_backup:
+        return False, "No cloned profile or backup found for this userbot."
         
     try:
         from telethon.tl.functions.account import UpdateProfileRequest
-        from telethon.tl.functions.photos import UploadProfilePhotoRequest
+        from telethon.tl.functions.photos import UploadProfilePhotoRequest, DeletePhotosRequest
+        from telethon.tl.types import InputPhoto
         
-        orig_first = sess_data.get("original_first_name", "")
+        orig_first = sess_data.get("original_first_name") or sess_data.get("branding_base_name") or sess_data.get("name") or "User"
         orig_last = sess_data.get("original_last_name", "")
         orig_bio = sess_data.get("original_about", "")
         
-        # Restore name and bio
-        await client(UpdateProfileRequest(
-            first_name=orig_first,
-            last_name=orig_last,
-            about=orig_bio
-        ))
+        # 1. Restore name and bio
+        try:
+            await client(UpdateProfileRequest(
+                first_name=orig_first,
+                last_name=orig_last,
+                about=orig_bio
+            ))
+        except Exception as up_err:
+            logger.warning(f"Failed to update profile name/bio for {session_id}: {up_err}")
         
-        # Restore photo or video if it exists
-        orig_photo_path = os.path.join(config.USER_DATA_DIR, f"original_photo_{session_id}.jpg")
-        orig_avatar_mp4 = os.path.join(config.USER_DATA_DIR, f"original_avatar_{session_id}.mp4")
-        orig_avatar_jpg = os.path.join(config.USER_DATA_DIR, f"original_avatar_{session_id}.jpg")
+        # 2. Delete all current cloned profile photos/videos using valid InputPhoto objects
+        try:
+            current_photos = await client.get_profile_photos('me', limit=100)
+            if current_photos:
+                input_photos = []
+                for p in current_photos:
+                    if hasattr(p, 'id') and hasattr(p, 'access_hash') and hasattr(p, 'file_reference'):
+                        input_photos.append(InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference))
+                    else:
+                        try:
+                            from telethon import utils as tutils
+                            inp = tutils.get_input_photo(p)
+                            if inp:
+                                input_photos.append(inp)
+                        except Exception:
+                            pass
+                if input_photos:
+                    await client(DeletePhotosRequest(id=input_photos))
+                    logger.info(f"Successfully deleted {len(input_photos)} cloned profile photo(s) for {session_id}")
+        except Exception as del_err:
+            logger.warning(f"Failed to delete cloned profile photos for {session_id}: {del_err}")
+        
+        # 3. Restore original photo/video if it existed
+        clean_sid = str(session_id).lstrip('+')
+        plus_sid = f"+{clean_sid}"
+        photo_candidates = [
+            sess_data.get("original_photo_path"),
+            os.path.join(config.USER_DATA_DIR, f"original_avatar_{session_id}.mp4"),
+            os.path.join(config.USER_DATA_DIR, f"original_avatar_{session_id}.jpg"),
+            os.path.join(config.USER_DATA_DIR, f"original_photo_{session_id}.jpg"),
+            os.path.join(config.USER_DATA_DIR, f"original_avatar_{clean_sid}.mp4"),
+            os.path.join(config.USER_DATA_DIR, f"original_avatar_{clean_sid}.jpg"),
+            os.path.join(config.USER_DATA_DIR, f"original_photo_{clean_sid}.jpg"),
+            os.path.join(config.USER_DATA_DIR, f"original_avatar_{plus_sid}.mp4"),
+            os.path.join(config.USER_DATA_DIR, f"original_avatar_{plus_sid}.jpg"),
+            os.path.join(config.USER_DATA_DIR, f"original_photo_{plus_sid}.jpg"),
+        ]
         
         restore_file = None
-        stored_photo = sess_data.get("original_photo_path")
-        for cand in (stored_photo, orig_avatar_mp4, orig_avatar_jpg, orig_photo_path):
+        for cand in photo_candidates:
             if cand and os.path.exists(cand):
                 restore_file = cand
                 break
                 
-        if sess_data.get("has_original_photo") and restore_file:
+        if sess_data.get("has_original_photo") and restore_file and os.path.exists(restore_file):
             try:
                 uploaded = await client.upload_file(restore_file)
                 if restore_file.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')):
                     await client(UploadProfilePhotoRequest(video=uploaded, video_start_ts=0.0))
                 else:
                     await client(UploadProfilePhotoRequest(file=uploaded))
+                logger.info(f"Successfully re-uploaded original profile photo {restore_file} for {session_id}")
             except Exception as e:
                 logger.warning(f"Failed to restore original profile photo/video: {e}")
-        else:
-            # If they didn't have a photo originally, remove current profile photo
-            try:
-                from telethon.tl.functions.photos import DeletePhotosRequest
-                photos = await client.get_profile_photos('me')
-                if photos:
-                    # DeletePhotosRequest expects photo IDs, not Photo objects.
-                    await client(DeletePhotosRequest(id=[p.id for p in photos]))
-            except Exception as e:
-                logger.warning(f"Failed to remove cloned profile photo: {e}")
                 
-        # Update session details
+        # 4. Update session details in database
         sess_data["name"] = f"{orig_first} {orig_last}".strip() or "User"
         sess_data["original_name"] = sess_data["name"]
         sess_data["original_bio"] = orig_bio
@@ -1018,11 +1057,12 @@ async def restore_original_profile(session_id: str) -> tuple:
         bot.name = sess_data["name"]
         
         # Clean up local backup file
-        if os.path.exists(orig_photo_path):
-            try:
-                os.remove(orig_photo_path)
-            except Exception:
-                pass
+        for cand in photo_candidates:
+            if cand and os.path.exists(cand):
+                try:
+                    os.remove(cand)
+                except Exception:
+                    pass
                 
         # Re-apply branding if enabled, since original profile has been restored
         try:
@@ -1037,6 +1077,28 @@ async def restore_original_profile(session_id: str) -> tuple:
     except Exception as e:
         logger.error(f"Error restoring original profile: {e}")
         return False, f"Error: {e}"
+
+
+async def restore_all_original_profiles(user_id: int, fetch_all: bool = False) -> tuple:
+    """
+    Restores original profile details (unclone) across all running userbots for the user.
+    Returns (success_count: int, total_count: int, results: list)
+    """
+    sessions = database.get_all_sessions() if fetch_all else database.get_sessions(user_id)
+    running_phones = [s["phone"] for s in sessions if is_bot_running(s["phone"])]
+    if not running_phones:
+        return 0, 0, []
+
+    async def _restore_one(p):
+        try:
+            ok, msg = await restore_original_profile(p)
+            return ok, p, msg
+        except Exception as err:
+            return False, p, str(err)
+
+    results = await asyncio.gather(*[_restore_one(p) for p in running_phones], return_exceptions=True)
+    success_count = sum(1 for r in results if not isinstance(r, Exception) and r[0])
+    return success_count, len(running_phones), results
 
 def reload_bot_settings(session_id: str):
     """
