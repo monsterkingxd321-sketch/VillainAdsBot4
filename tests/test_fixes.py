@@ -112,6 +112,14 @@ def run_tests():
     assert '"btn_help"' not in my_bots_code, "btn_help is still present in my_bots.py!"
     print("  [PASS] Help button removed from all dashboards (How to use retained)")
 
+    # 7. Broadcast Now buttons removed
+    assert "styled_button(\"📢 Broadcast Now\"" not in my_bots_code
+    assert "styled_button(\"\\U0001f4e2 Broadcast Now\"" not in my_bots_code
+    assert "styled_button(\"📢 Broadcast Now (All)\"" not in my_bots_code
+    assert 'f"broadcast_now_{phone}"' not in my_bots_code
+    assert '"all_slots_broadcast_now", style=' not in my_bots_code
+    print("  [PASS] Broadcast Now buttons completely removed from all menus")
+
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":

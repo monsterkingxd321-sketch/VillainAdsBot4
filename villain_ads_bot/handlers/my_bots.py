@@ -657,8 +657,7 @@ async def render_broadcast_menu(event, phone: str, user_id: int):
             utils.styled_button("📚 Set Multiple Messages", f"set_multi_msg_{phone}", style="primary")
         ],
         [
-            utils.styled_button(f"🔄 Mode : {mode.upper()}", f"toggle_broadcast_mode_{phone}", style="primary"),
-            utils.styled_button("📢 Broadcast Now", f"broadcast_now_{phone}", style="success")
+            utils.styled_button(f"🔄 Mode : {mode.upper()}", f"toggle_broadcast_mode_{phone}", style="primary")
         ],
         [
             utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="danger")
@@ -850,9 +849,6 @@ def register_handlers(client):
         buttons = [
             [
                 utils.styled_button("\U0001f4dd Set Message", f"set_broadcast_{phone}", style="primary"),
-            ],
-            [
-                utils.styled_button("\U0001f4e2 Broadcast Now", f"broadcast_now_{phone}", style="success"),
             ],
             [
                 utils.styled_button("\u23f1\ufe0f Run Timer", f"set_run_timer_{phone}", style="primary"),
@@ -1158,16 +1154,6 @@ def register_handlers(client):
             trigger="test",
         )
 
-        if sent:
-            buttons = [[utils.styled_button("📢 Broadcast To All Groups", f"broadcast_now_{phone}", style="success")]]
-            try:
-                await event.respond(
-                    "<blockquote><b>✅ Looks good?</b>\n\n"
-                    f"{ui.help_hint('Tap below to send it to every group.')}</blockquote>",
-                    buttons=buttons, parse_mode="html"
-                )
-            except Exception:
-                pass
 
     @client.on(events.CallbackQuery(pattern=r"^spam_status_(.+)$"))
     async def spam_status_callback(event):
@@ -1231,122 +1217,11 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern=r"^broadcast_now_(.+)$"))
     async def broadcast_now_callback(event):
-        """Sends one broadcast round right now with a live progress message."""
-        phone = event.pattern_match.group(1).strip()
-        user_id = event.sender_id
-
-        bot_obj = userbot_manager.find_running_bot(phone)
-        if not bot_obj or not bot_obj.is_running:
-            await event.answer("⚠️ The userbot must be running to broadcast.", alert=True)
-            return
-
-        sess = database.get_session(phone)
-        settings = (sess or {}).get("settings", {}) or {}
-        if not (settings.get("broadcast_msg") or settings.get("broadcast_messages")):
-            await event.answer("⚠️ No broadcast message is set for this userbot.", alert=True)
-            return
-
-        progress = await event.respond(
-            "📢 <b>Broadcast starting...</b>\n\n⏳ <i>Preparing the group list…</i>",
-            parse_mode="html"
-        )
-        try:
-            stats = await bot_obj.broadcast_round(progress_msg=progress, force=True)
-        finally:
-            pass
-
-        total = stats.get("total", 0)
-        sent = stats.get("sent", 0)
-        failed = stats.get("failed", 0)
-        remaining = max(0, total - sent - failed)
-
-        summary = (
-            f"📢 <b>Broadcast Complete</b>\n\n"
-            f"✅ <b>Sent :</b> <code>{sent}</code> / <code>{total}</code>\n"
-            f"❌ <b>Failed :</b> <code>{failed}</code>\n"
-            f"⏳ <b>Remaining :</b> <code>{remaining}</code>\n"
-            f"⏱️ <b>Took :</b> <code>{stats.get('elapsed', 0)}s</code>"
-        )
-        # The owner also gets the report in his private chat.
-        await _send_broadcast_report(phone, stats, trigger="auto")
-        if stats.get("flood_waits"):
-            summary += (
-                f"\n⏸️ <b>Flood waits :</b> <code>{stats['flood_waits']}</code> "
-                f"(<code>{stats.get('wait_total', 0)}s</code> waited)"
-            )
-        if remaining:
-            summary += (
-                f"\n\n💡 <i>{remaining} group(s) were not reached. Run it again to continue.</i>"
-            )
-
-        try:
-            await progress.edit(summary, parse_mode="html")
-        except Exception:
-            await event.respond(summary, parse_mode="html")
+        await event.answer("⚠️ 'Broadcast Now' has been removed. Use 'Auto Broadcast' toggle.", alert=True)
 
     @client.on(events.CallbackQuery(pattern="^all_slots_broadcast_now$"))
     async def all_slots_broadcast_now_callback(event):
-        """Sends one broadcast round on every running userbot at once."""
-        user_id = _admin_impersonation.get(event.sender_id, event.sender_id)
-        sessions = get_effective_sessions(event.sender_id)
-        if not sessions:
-            await event.answer("⚠️ No userbot slots found.", alert=True)
-            return
-
-        running = [s for s in sessions if userbot_manager.is_bot_running(s.get("phone"))]
-        if not running:
-            await event.answer("⚠️ None of your userbots are running.", alert=True)
-            return
-
-        progress = await event.respond(
-            f"📢 <b>Broadcasting on {len(running)} userbot(s)...</b>\n\n⏳ <i>Starting…</i>",
-            parse_mode="html"
-        )
-
-        total_sent = 0
-        total_failed = 0
-        total_groups = 0
-        total_flood = 0
-
-        async def _one(s):
-            nonlocal total_sent, total_failed, total_groups, total_flood
-            bot_obj = userbot_manager.find_running_bot(s.get("phone"))
-            if not bot_obj:
-                return
-            try:
-                stats = await bot_obj.broadcast_round(force=True)
-            except Exception as e:
-                logger.warning(f"Broadcast failed for {s.get('phone')}: {e}")
-                return
-            total_sent += stats.get("sent", 0)
-            total_failed += stats.get("failed", 0)
-            total_groups += stats.get("total", 0)
-            total_flood += stats.get("flood_waits", 0)
-
-        for s in running:
-            await _one(s)
-            try:
-                await progress.edit(
-                    f"📢 <b>Broadcasting on {len(running)} userbot(s)...</b>\n\n"
-                    f"✅ <b>Sent :</b> <code>{total_sent}</code> / <code>{total_groups}</code>\n"
-                    f"❌ <b>Failed :</b> <code>{total_failed}</code>\n"
-                    f"⏸️ <b>Flood waits :</b> <code>{total_flood}</code>",
-                    parse_mode="html"
-                )
-            except Exception:
-                pass
-
-        summary = (
-            f"📢 <b>Broadcast Complete (All Slots)</b>\n\n"
-            f"🤖 <b>Userbots :</b> <code>{len(running)}</code>\n"
-            f"✅ <b>Sent :</b> <code>{total_sent}</code> / <code>{total_groups}</code>\n"
-            f"❌ <b>Failed :</b> <code>{total_failed}</code>\n"
-            f"⏸️ <b>Flood waits :</b> <code>{total_flood}</code>"
-        )
-        try:
-            await progress.edit(summary, parse_mode="html")
-        except Exception:
-            await event.respond(summary, parse_mode="html")
+        await event.answer("⚠️ 'Broadcast Now' has been removed. Use 'Auto Broadcast' toggle.", alert=True)
 
     @client.on(events.CallbackQuery(pattern=r"^vc_join_all_(.+)$"))
     async def vc_join_all_callback(event):
@@ -2049,8 +1924,7 @@ def register_handlers(client):
                 utils.styled_button("📚 Set Multiple Messages (All)", "all_slots_set_multi_msg", style="primary")
             ],
             [
-                utils.styled_button(f"🔄 Mode : {mode.upper()} (All)", "all_slots_toggle_broadcast_mode", style="primary"),
-                utils.styled_button("📢 Broadcast Now (All)", "all_slots_broadcast_now", style="success")
+                utils.styled_button(f"🔄 Mode : {mode.upper()} (All)", "all_slots_toggle_broadcast_mode", style="primary")
             ],
             [
                 utils.styled_button("🔙 Back To Dashboard", "menu_all_slots", style="danger")
