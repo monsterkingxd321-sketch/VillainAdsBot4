@@ -242,28 +242,72 @@ def save_session(session_data: Dict[str, Any]):
     # SNAPSHOT - the document must not change while the write is pending.
     snapshot = _copy_doc(session_data)
 
-    # Update cache
+    # Update cache for all variations (with/without '+')
     sid = snapshot.get("session_id")
     phone = snapshot.get("phone")
-    if sid:
-        _cached_sessions[str(sid)] = {'data': _copy_doc(snapshot), 'time': time.time()}
-    if phone:
-        _cached_sessions[str(phone)] = {'data': _copy_doc(snapshot), 'time': time.time()}
+    for identifier in (sid, phone):
+        if identifier:
+            s_str = str(identifier).strip()
+            _cached_sessions[s_str] = {'data': _copy_doc(snapshot), 'time': time.time()}
+            alt = s_str.lstrip("+") if s_str.startswith("+") else f"+{s_str}"
+            _cached_sessions[alt] = {'data': _copy_doc(snapshot), 'time': time.time()}
 
     if _db is not None:
         try:
-            _db.sessions.update_one(
-                {"session_id": snapshot["session_id"]},
-                {"$set": snapshot},
-                upsert=True
-            )
+            doc_id = snapshot.get("_id")
+            update_data = {k: v for k, v in snapshot.items() if k != "_id"}
+            if doc_id:
+                _db.sessions.update_one(
+                    {"_id": doc_id},
+                    {"$set": update_data},
+                    upsert=True
+                )
+            else:
+                filters = []
+                if sid:
+                    sid_s = str(sid).strip()
+                    filters.extend([{"session_id": sid_s}, {"session_id": sid_s.lstrip("+")}, {"session_id": f"+{sid_s.lstrip('+')}"}])
+                if phone:
+                    p_s = str(phone).strip()
+                    filters.extend([{"phone": p_s}, {"phone": p_s.lstrip("+")}, {"phone": f"+{p_s.lstrip('+')}"}])
+                filter_q = {"$or": filters} if filters else {"session_id": str(sid or phone)}
+                _db.sessions.update_one(
+                    filter_q,
+                    {"$set": update_data},
+                    upsert=True
+                )
         except Exception as e:
             logger.error(f"save_session({snapshot.get('session_id')}) failed: {e}")
         finally:
-            # The session list cache may only be dropped AFTER the write
-            # landed - otherwise a stale copy is read back and written again,
-            # which reverted the user's broadcast message.
             _cached_get_sessions.clear()
+
+def add_welcomed_user(session_id: str, user_id: int):
+    """
+    Safely adds user_id to stats.welcomed_users in MongoDB WITHOUT touching settings!
+    This completely prevents race conditions where saving stats reverts newly updated messages.
+    """
+    if not session_id or not user_id:
+        return
+    session_id_str = str(session_id).strip()
+    alt = session_id_str.lstrip("+") if session_id_str.startswith("+") else f"+{session_id_str}"
+    
+    # Update cache if present
+    for k in (session_id_str, alt):
+        cached = _cached_sessions.get(k)
+        if cached and 'data' in cached:
+            w_users = cached['data'].setdefault("stats", {}).setdefault("welcomed_users", [])
+            if user_id not in w_users:
+                w_users.append(user_id)
+                
+    if _db is not None:
+        try:
+            _db.sessions.update_one(
+                {"$or": [{"session_id": session_id_str}, {"phone": session_id_str}, {"session_id": alt}, {"phone": alt}]},
+                {"$addToSet": {"stats.welcomed_users": user_id}}
+            )
+        except Exception as e:
+            logger.debug(f"add_welcomed_user note: {e}")
+
 
 def delete_session(session_id: str):
     global _cached_get_sessions

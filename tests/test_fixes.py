@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.abspath("."))
 
 from villain_ads_bot.core import utils
+from villain_ads_bot.data import database
 
 def run_tests():
     print("=" * 60)
@@ -131,9 +132,29 @@ def run_tests():
 
     from villain_ads_bot.services import youtube as yt
     assert hasattr(yt, "_is_valid_video_file"), "youtube.py missing _is_valid_video_file!"
-    print("  [PASS] VC infinite loop silence and video verification active")
+    # 9. Real-time message update verification and race condition prevention
+    assert hasattr(database, "add_welcomed_user"), "database missing add_welcomed_user function!"
+    reload_src = inspect.getsource(UserBot.reload_settings)
+    assert "get_session_fresh" in reload_src, "reload_settings must read fresh session bypassing cache!"
+    
+    test_ub = UserBot("test_session_id")
+    assert hasattr(test_ub, "phone"), "UserBot must have phone attribute for lookup!"
+    
+    # Verify save_session caches both with and without '+'
+    test_sess = {
+        "session_id": "+919999988888",
+        "phone": "+919999988888",
+        "user_id": 12345,
+        "settings": {"broadcast_msg": "Fresh New Message"}
+    }
+    database.save_session(test_sess)
+    assert "+919999988888" in database._cached_sessions
+    assert "919999988888" in database._cached_sessions
+    assert database._cached_sessions["919999988888"]["data"]["settings"]["broadcast_msg"] == "Fresh New Message"
+    print("  [PASS] Real-time message update, fresh sync & cache cross-invalidation active")
 
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     run_tests()
+

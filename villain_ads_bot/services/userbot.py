@@ -1236,6 +1236,7 @@ async def restore_branding(client: TelegramClient, session_data: dict):
 class UserBot:
     def __init__(self, session_id: str):
         self.session_id = session_id
+        self.phone: Optional[str] = None
         self.client: Optional[TelegramClient] = None
         self.me_id: Optional[int] = None
         self._name = ""
@@ -1294,21 +1295,21 @@ class UserBot:
 
     def reload_settings(self):
         """
-        Reloads userbot settings from MongoDB into memory and restarts the broadcast task.
+        Reloads userbot settings directly from MongoDB into memory and wakes up the broadcast loop.
         """
-        sess_data = database.get_session(self.session_id)
+        sess_data = database.get_session_fresh(self.session_id)
+        if not sess_data and getattr(self, "phone", None):
+            sess_data = database.get_session_fresh(self.phone)
         if sess_data:
             self.settings = sess_data.get("settings", {})
+            if sess_data.get("phone"):
+                self.phone = sess_data.get("phone")
             logger.info(f"Reloaded in-memory settings for userbot {self.session_id}")
             
             # Wake up broadcast loop immediately if settings were updated
             if hasattr(self, "_wake_broadcast") and self._wake_broadcast is not None:
                 self._wake_broadcast.set()
 
-            # The broadcast loop re-reads the settings on every round, so it
-            # does NOT have to be restarted. Restarting it cancelled a round
-            # that was in flight and immediately started a new one -> every
-            # group received the message TWICE.
             if self.is_running and self.broadcast_task is None:
                 self.broadcast_task = asyncio.create_task(self.broadcast_loop())
                 logger.info(f"Started the broadcast loop for userbot {self.session_id}.")
@@ -2172,6 +2173,8 @@ class UserBot:
             
         # Initialize in-memory settings
         self.settings = sess_data.get("settings", {})
+        if sess_data.get("phone"):
+            self.phone = sess_data.get("phone")
         
         # Cross-platform session path normalization:
         # DB may contain Windows paths (e.g. F:\villainAdsbot4\user_data\...) when running on Linux/Docker,
@@ -3321,15 +3324,17 @@ class UserBot:
 
                 # 3. Private message handling (Auto-Welcome)
                 just_welcomed = False
-                sess_data = database.get_session(self.session_id)
-                current_settings = sess_data.get("settings", {}) if sess_data else self.settings
+                sess_data = database.get_session_fresh(self.session_id)
+                if not sess_data and getattr(self, "phone", None):
+                    sess_data = database.get_session_fresh(self.phone)
                 if sess_data and "settings" in sess_data:
                     self.settings = sess_data["settings"]
+                current_settings = self.settings
 
                 if event.is_private and current_settings.get("auto_welcome"):
                     sender = await event.get_sender()
                     if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
-                        welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", [])
+                        welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", []) if sess_data else []
                         if sender.id not in welcomed_users:
                             w_mode = current_settings.get("welcome_mode", "single")
                             messages_to_send = utils.get_welcome_messages(current_settings)
@@ -3357,9 +3362,11 @@ class UserBot:
                                 if welcome_sent:
                                     welcomed_users.append(sender.id)
                                     try:
-                                        database.save_session(sess_data)
+                                        database.add_welcomed_user(self.session_id, sender.id)
+                                        if getattr(self, "phone", None):
+                                            database.add_welcomed_user(self.phone, sender.id)
                                     except Exception as db_save_err:
-                                        logger.debug(f"Failed to save welcomed_user to DB: {db_save_err}")
+                                        logger.debug(f"Failed to record welcomed_user: {db_save_err}")
 
                 # 4. Auto-Reply / Auto-Chat (Works in Groups, Channels, and DMs)
                 is_reply_target = False
@@ -3553,8 +3560,17 @@ class UserBot:
                     continue
                 # A manual broadcast (force) always runs, even when the
                 # automatic broadcast is switched off.
-                if not force and not settings.get("auto_spam") and progress_msg is None:
+                if not force and not self.settings.get("auto_spam") and progress_msg is None:
                     break
+
+                # Dynamic refresh: pick up newly configured broadcast messages in real-time!
+                try:
+                    dyn_msgs = utils.get_broadcast_messages(self.settings)
+                    dyn_msgs = [m for m in dyn_msgs if m and str(m).strip()]
+                    if dyn_msgs:
+                        messages = dyn_msgs
+                except Exception:
+                    pass
 
                 current_msg = random.choice(messages)
                 # Send the exact message configured by user.
@@ -3755,9 +3771,13 @@ class UserBot:
                 # from the dashboard apply immediately (even if the reload
                 # bridge was not triggered).
                 try:
-                    fresh = database.get_session(self.session_id)
+                    fresh = database.get_session_fresh(self.session_id)
+                    if not fresh and getattr(self, "phone", None):
+                        fresh = database.get_session_fresh(self.phone)
                     if fresh and "settings" in fresh:
                         self.settings = fresh["settings"]
+                        if fresh.get("phone"):
+                            self.phone = fresh.get("phone")
                 except Exception as sync_err:
                     logger.debug(f"Broadcast settings sync failed for {self.session_id}: {sync_err}")
 

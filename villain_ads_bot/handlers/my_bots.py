@@ -2946,6 +2946,7 @@ def register_handlers(client):
             settings["broadcast_mode"] = new_mode
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
+            userbot_manager.reload_bot_settings(sess.get("session_id", phone))
             
         await render_broadcast_menu(event, phone, user_id)
 
@@ -3009,6 +3010,7 @@ def register_handlers(client):
             settings["welcome_mode"] = new_mode
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
+            userbot_manager.reload_bot_settings(sess.get("session_id", phone))
             
         await render_welcome_menu(event, phone, user_id)
 
@@ -4072,6 +4074,7 @@ def register_handlers(client):
             utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
+            userbot_manager.reload_bot_settings(sess.get("session_id", phone))
             flash = "<blockquote><b>» ✉️ Broadcast Message Updated Successfully!</b>\n\n<i>✅ Single mode + Auto Broadcast enabled.</i></blockquote>"
             
         elif action == "WAITING_FOR_RUN_TIMER":
@@ -4109,6 +4112,7 @@ def register_handlers(client):
             utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
+            userbot_manager.reload_bot_settings(sess.get("session_id", phone))
             flash = "<blockquote><b>» 👋 Welcome Message Updated Successfully!</b>\n\n<i>✅ Single mode + Auto Welcome enabled.</i></blockquote>"
             
         # 2.b Multiple Welcome Messages
@@ -4125,6 +4129,7 @@ def register_handlers(client):
             utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
+            userbot_manager.reload_bot_settings(sess.get("session_id", phone))
             flash = "<blockquote><b>» 👋 Multiple Welcome Messages Updated Successfully!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Welcome enabled.</i></blockquote>"
             
         # 2.5 Join VC Link
