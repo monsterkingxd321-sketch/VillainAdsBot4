@@ -120,6 +120,19 @@ def run_tests():
     assert '"all_slots_broadcast_now", style=' not in my_bots_code
     print("  [PASS] Broadcast Now buttons completely removed from all menus")
 
+    # 8. VC connection persistence and video stream fixes
+    assert "-stream_loop -1" in vc_src, "join_voice_chat missing -stream_loop -1 for continuous presence!"
+    assert hasattr(UserBot, "idle_in_vc"), "UserBot missing idle_in_vc method!"
+    idle_src = inspect.getsource(UserBot.idle_in_vc)
+    assert "-stream_loop -1" in idle_src, "idle_in_vc missing -stream_loop -1!"
+    
+    stop_song_src = inspect.getsource(UserBot.stop_song)
+    assert "idle_in_vc" in stop_song_src, "stop_song does not call idle_in_vc when leave_vc=False!"
+
+    from villain_ads_bot.services import youtube as yt
+    assert hasattr(yt, "_is_valid_video_file"), "youtube.py missing _is_valid_video_file!"
+    print("  [PASS] VC infinite loop silence and video verification active")
+
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":

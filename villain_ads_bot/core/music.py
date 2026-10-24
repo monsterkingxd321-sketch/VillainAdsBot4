@@ -35,9 +35,9 @@ def get_configured_credentials() -> tuple:
     if not key:
         try:
             import os
-            key = (os.environ.get("MEOW_API_KEY") or "").strip() or None
+            key = (os.environ.get("MEOW_API_KEY") or "").strip() or "yuki_8641adadf64870f3065dd502c8ee30f1"
         except Exception:
-            key = None
+            key = "yuki_8641adadf64870f3065dd502c8ee30f1"
 
     return url.rstrip("/"), key, backup.rstrip("/")
 

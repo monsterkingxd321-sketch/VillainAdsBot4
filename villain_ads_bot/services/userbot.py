@@ -299,9 +299,15 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
         except Exception as api_err:
             logger.warning(f"Yuki API primary download error: {api_err}")
 
-        # Fallback Strategy: Fast local download via yt-dlp if API stream was unavailable
-        if not downloaded_file or not os.path.exists(downloaded_file) or os.path.getsize(downloaded_file) < 5000:
-            logger.info(f"Yuki API stream missed, falling back to yt-dlp engine for: {title} ({vidid})...")
+        # Fallback Strategy: Fast local download via yt-dlp if API stream was unavailable or invalid
+        need_fallback = (
+            not downloaded_file or 
+            not os.path.exists(downloaded_file) or 
+            os.path.getsize(downloaded_file) < 5000 or
+            (download_type == "video" and not _has_valid_video_stream(downloaded_file))
+        )
+        if need_fallback:
+            logger.info(f"Yuki API stream missed or missing video track, falling back to yt-dlp engine for: {title} ({vidid})...")
             def _dl_sync():
                 # Strategy 1: mweb + tv_embedded + android
                 try:
@@ -1504,7 +1510,9 @@ class UserBot:
                     silence_file = await generate_silence()
                     if silence_file and os.path.exists(silence_file):
                         try:
-                            await self._safe_play(pytg, full_chat_id, MediaStream(silence_file))
+                            # Stream looped silence infinitely so Telegram never disconnects the WebRTC connection!
+                            stream = MediaStream(silence_file, ffmpeg_parameters="-stream_loop -1")
+                            await self._safe_play(pytg, full_chat_id, stream)
                             joined = True
                         except Exception as join_err:
                             logger.debug(f"Initial silence stream play note: {join_err}")
@@ -1814,17 +1822,41 @@ class UserBot:
             utils.report_error(f"userbot.unmute_mic:{self.session_id}", e)
             return False, "Failed to unmute the microphone."
 
-    async def stop_song(self, chat_id: Optional[int] = None) -> tuple:
+    async def idle_in_vc(self, chat_id: Optional[int] = None) -> bool:
+        """
+        Keeps the userbot connected in the voice chat using an infinite silent audio stream.
+        This ensures Telegram never times out the WebRTC connection or drops the userbot.
+        """
+        target_chat = chat_id or self.current_vc_chat_id
+        if not target_chat:
+            return False
+        try:
+            silence_file = await generate_silence()
+            if not silence_file or not os.path.exists(silence_file):
+                return False
+            pytg = await self.get_pytgcalls()
+            stream = MediaStream(silence_file, ffmpeg_parameters="-stream_loop -1")
+            await self._safe_play(pytg, target_chat, stream)
+            try:
+                await utils.pytg_mute(pytg, target_chat)
+            except Exception:
+                pass
+            self.is_muted = True
+            self.joined_vcs.add(target_chat)
+            self.current_vc_chat_id = target_chat
+            logger.info(f"Userbot {self.session_id} successfully idling in VC {target_chat}")
+            return True
+        except Exception as e:
+            logger.debug(f"idle_in_vc note for {target_chat}: {e}")
+            return False
+
+    async def stop_song(self, chat_id: Optional[int] = None, leave_vc: bool = False) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
         if not target_chat:
             return False, "Not in a Voice Chat."
         try:
             from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
-            # 4.3 - the cleanup ran AFTER the "is running" check, so a stopped
-            # userbot never cleared the queue, the card or the timer.
             _chat_queues.pop(target_chat, None)
-            # The "Now Playing" card is removed from the chat as well, so a
-            # stopped song never leaves a stale player card behind.
             stale = _active_chat_players.pop(target_chat, None)
             if stale:
                 try:
@@ -1837,32 +1869,27 @@ class UserBot:
                 prev_timer.cancel()
 
             if not self.is_running:
-                # The userbot is already stopped - the cleanup above is done.
                 return True, "Playback stopped."
 
             pytg = await self.get_pytgcalls()
-            try:
-                await self._safe_leave(pytg, target_chat)
-                logger.info(f"Userbot {self.session_id} left VC {target_chat} after stop.")
-            except Exception as leave_err:
-                err_str = str(leave_err).lower()
-                if "not in a group call" in err_str or "not_in" in err_str or "no active" in err_str:
-                    logger.info(f"Userbot {self.session_id} was already not in VC {target_chat}.")
-                else:
-                    logger.warning(f"leave call error: {leave_err} — falling back to silence+mute")
-                    try:
-                        silence_file = await generate_silence()
-                        await self._safe_play(pytg, target_chat, MediaStream(silence_file))
-                        await utils.pytg_mute(pytg, target_chat)
-                        self.is_muted = True
-                    except Exception:
-                        pass
+            if leave_vc:
+                try:
+                    await self._safe_leave(pytg, target_chat)
+                    logger.info(f"Userbot {self.session_id} left VC {target_chat} after stop.")
+                except Exception as leave_err:
+                    logger.debug(f"leave call error: {leave_err}")
+                self.joined_vcs.discard(target_chat)
+                if target_chat == self.current_vc_chat_id:
+                    self.current_vc_chat_id = None
+                    self.current_vc_link = None
+            else:
+                # Keep userbot connected in VC without leaving!
+                await self.idle_in_vc(target_chat)
 
-            # Update in-memory VC state
-            self.joined_vcs.discard(target_chat)
-            if target_chat == self.current_vc_chat_id:
-                self.current_vc_chat_id = None
-                self.current_vc_link = None
+            return True, "Playback stopped."
+        except Exception as e:
+            logger.warning(f"Error in stop_song: {e}")
+            return False, f"Error: {e}"
             self.is_muted = False
 
             # Clear MongoDB status
@@ -2853,7 +2880,7 @@ class UserBot:
                             
                             dur_track = song_info.get("duration", 30) or 30
                             async def ub_track_auto_timer():
-                                await asyncio.sleep(dur_track + 2)
+                                await asyncio.sleep(max(dur_track + 30, 300))
                                 await play_next_in_queue(chat_id)
                             _track_timer_tasks[chat_id] = asyncio.create_task(ub_track_auto_timer())
                             

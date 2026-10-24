@@ -257,7 +257,7 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         
     queue = _chat_queues.get(chat_id, [])
     if not queue:
-        # No more songs in queue — cleanly stop the stream
+        # No more songs in queue — cleanly stop the stream while keeping userbot in VC
         _chat_queues.pop(chat_id, None)
         active_sess = _active_chat_players.pop(chat_id, None)
         # The finished song's card must not stay in the chat.
@@ -266,7 +266,7 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         if active_sess and active_sess.get("bot"):
             bot = active_sess["bot"]
             try:
-                await bot.stop_song(chat_id)
+                await bot.stop_song(chat_id, leave_vc=False)
             except Exception:
                 pass
         return
@@ -625,10 +625,10 @@ def register_handlers(client):
             "is_muted": False
         }
         
-        # Start auto-advance queue timer
+        # Start auto-advance queue timer as safety watchdog only (PyTgCalls StreamEnded handles true finish)
         dur = song_info.get("duration", 30) or 30
         async def track_auto_timer():
-            await asyncio.sleep(dur + 2)
+            await asyncio.sleep(max(dur + 30, 300))
             await play_next_in_queue(chat_id, client)
             
         _track_timer_tasks[chat_id] = asyncio.create_task(track_auto_timer())

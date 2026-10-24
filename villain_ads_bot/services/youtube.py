@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover
     pass
 
 API_URL = os.environ.get("MEOW_API_URL", "https://music.yukiapi.site")
-API_KEY = os.environ.get("MEOW_API_KEY", "YOUR_API_KEY") # 🔑 Get Key: @MeowApiRobot On Telegram
+API_KEY = os.environ.get("MEOW_API_KEY", "yuki_8641adadf64870f3065dd502c8ee30f1")
 
 DOWNLOAD_DIR = "downloads"
 
@@ -31,6 +31,31 @@ try:
         DOWNLOAD_DIR = _config.DOWNLOADS_DIR
 except Exception:
     pass
+
+
+def _get_credentials():
+    try:
+        from villain_ads_bot.core import music as _music
+        from villain_ads_bot import config as _config
+        url, key, backup = _music.get_configured_credentials()
+        active_key = key or getattr(_config, "YUKI_API_KEY", None) or API_KEY
+        primary = url or API_URL
+        backup_url = backup or getattr(_config, "YUKI_BACKUP_API_URL", "https://play.yukiapi.site")
+        return primary.rstrip("/"), active_key, backup_url.rstrip("/")
+    except Exception:
+        return API_URL, API_KEY, "https://play.yukiapi.site"
+
+
+def _is_valid_video_file(fpath: str) -> bool:
+    if not os.path.exists(fpath) or os.path.getsize(fpath) < 10000:
+        return False
+    try:
+        import subprocess
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type,width,height", "-of", "csv=s=x:p=0", fpath]
+        res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=5).decode().strip()
+        return ("video" in res or "x" in res) and len(res) > 0
+    except Exception:
+        return False
 
 
 def time_to_seconds(time):
@@ -49,26 +74,47 @@ async def download_song(link: str) -> str:
     if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
         return file_path
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            stream_url = f"{API_URL}/stream/{video_id}?key={API_KEY}&type=audio&quality=128"
-            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
+    primary, key, backup = _get_credentials()
+    gateways = [primary]
+    if backup and backup not in gateways:
+        gateways.append(backup)
 
+    for gateway in gateways:
+        try:
+            async with aiohttp.ClientSession(headers={"Accept-Encoding": "gzip, deflate"}) as session:
+                stream_url = f"{gateway}/stream/{video_id}?key={key}&type=audio"
+                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                    if resp.status == 200:
+                        with open(file_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(131072):
+                                f.write(chunk)
+                        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+                            return file_path
+        except Exception:
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+            continue
+
+    # Fallback to yt-dlp if Yuki API stream failed
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': file_path,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['mweb', 'android']}},
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
         if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
             return file_path
-        return None
     except Exception:
         if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
+            try: os.remove(file_path)
+            except Exception: pass
+
+    return None
 
 
 async def download_video(link: str) -> str:
@@ -79,29 +125,55 @@ async def download_video(link: str) -> str:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
 
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+    if _is_valid_video_file(file_path):
         return file_path
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            stream_url = f"{API_URL}/stream/{video_id}?key={API_KEY}&type=video&quality=480"
-            async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
+    primary, key, backup = _get_credentials()
+    gateways = [primary]
+    if backup and backup not in gateways:
+        gateways.append(backup)
 
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+    # 1. Try Yuki API stream endpoint
+    for gateway in gateways:
+        try:
+            async with aiohttp.ClientSession(headers={"Accept-Encoding": "gzip, deflate"}) as session:
+                stream_url = f"{gateway}/stream/{video_id}?key={key}&type=video"
+                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
+                    if resp.status == 200:
+                        with open(file_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(131072):
+                                f.write(chunk)
+                        if _is_valid_video_file(file_path):
+                            return file_path
+                        # If Yuki returned audio data for type=video, discard it so yt-dlp can get real video
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+        except Exception:
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+            continue
+
+    # 2. Resilient fallback to yt-dlp to download real 720p/360p video
+    try:
+        ydl_opts = {
+            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+            'outtmpl': file_path,
+            'merge_output_format': 'mp4',
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['mweb', 'android']}},
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        if _is_valid_video_file(file_path):
             return file_path
-        return None
     except Exception:
         if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
+            try: os.remove(file_path)
+            except Exception: pass
+
+    return None
 
 
 class YouTubeAPI:
