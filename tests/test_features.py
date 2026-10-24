@@ -167,27 +167,42 @@ print("AUTOMATIC MESSAGE MODE  (the bug the owner reported)")
 print("=" * 66)
 
 s = {"broadcast_msg": "single default", "broadcast_messages": ["A", "B", "C"], "broadcast_mode": "single"}
-check("broadcast uses the multiple list", utils.get_broadcast_messages(s) == ["A", "B", "C"])
-check("the broadcast mode is corrected", utils.resolve_modes(s)["broadcast_mode"] == "multiple")
+check("broadcast in single mode uses single message", utils.get_broadcast_messages(s) == ["single default"])
+check("the broadcast single mode is preserved", utils.resolve_modes(s)["broadcast_mode"] == "single")
+
+s2 = {"broadcast_msg": "single default", "broadcast_messages": ["A", "B", "C"], "broadcast_mode": "multiple"}
+check("broadcast in multiple mode uses multiple list", utils.get_broadcast_messages(s2) == ["A", "B", "C"])
+check("the broadcast multiple mode is preserved", utils.resolve_modes(s2)["broadcast_mode"] == "multiple")
 
 s = {"welcome_msg": "single default", "welcome_messages": ["W1", "W2"], "welcome_mode": "single"}
-check("welcome uses the multiple list", utils.get_welcome_messages(s) == ["W1", "W2"])
-check("the welcome mode is corrected", utils.resolve_modes(s)["welcome_mode"] == "multiple")
+check("welcome in single mode uses single message", utils.get_welcome_messages(s) == ["single default"])
+check("the welcome single mode is preserved", utils.resolve_modes(s)["welcome_mode"] == "single")
+
+s2 = {"welcome_msg": "single default", "welcome_messages": ["W1", "W2"], "welcome_mode": "multiple"}
+check("welcome in multiple mode uses multiple list", utils.get_welcome_messages(s2) == ["W1", "W2"])
+check("the welcome multiple mode is preserved", utils.resolve_modes(s2)["welcome_mode"] == "multiple")
 
 s = {"auto_reply_msg": "r", "auto_reply_messages": ["R1", "R2", "R3"], "auto_reply_mode": "single"}
-check("auto reply uses the multiple list", utils.get_auto_reply_messages(s) == ["R1", "R2", "R3"])
-check("the auto reply mode is corrected", utils.resolve_modes(s)["auto_reply_mode"] == "multiple")
+check("auto reply in single mode uses single message", utils.get_auto_reply_messages(s) == ["r"])
+check("the auto reply single mode is preserved", utils.resolve_modes(s)["auto_reply_mode"] == "single")
+
+s2 = {"auto_reply_msg": "r", "auto_reply_messages": ["R1", "R2", "R3"], "auto_reply_mode": "multiple"}
+check("auto reply in multiple mode uses multiple list", utils.get_auto_reply_messages(s2) == ["R1", "R2", "R3"])
+check("the auto reply multiple mode is preserved", utils.resolve_modes(s2)["auto_reply_mode"] == "multiple")
 
 s = {"broadcast_msg": "only one", "broadcast_messages": [], "broadcast_mode": "multiple"}
-check("a single message stays single", utils.resolve_modes(s)["broadcast_mode"] == "single")
-check("a single message is used", utils.get_broadcast_messages(s) == ["only one"])
+check("missing multi list falls back safely to single message", utils.get_broadcast_messages(s) == ["only one"])
 
 s = {"broadcast_messages": ["X", "Y"], "broadcast_mode": "single"}
-check("a list without a single message still works",
+check("a list without a single message still falls back to available messages",
       utils.get_broadcast_messages(s) == ["X", "Y"])
 
 s = {"broadcast_msg": "  ", "broadcast_messages": []}
 check("empty messages are dropped", utils.get_broadcast_messages(s) == [])
+
+check("parse_multi_messages with pipes", utils.parse_multi_messages("M1 | M2 | M3") == ["M1", "M2", "M3"])
+check("parse_multi_messages with commas", utils.parse_multi_messages("M1, M2, M3") == ["M1", "M2", "M3"])
+check("parse_multi_messages with newlines", utils.parse_multi_messages("M1\nM2\nM3") == ["M1", "M2", "M3"])
 
 # ══════════════════════════════════════════════════════════════════════════
 print()

@@ -187,7 +187,7 @@ TRANSLATIONS = {
         "help_toggle_add_contact": "ℹ️ Auto add users to contacts on group mention/reply.",
         "btn_set_multi_welcome": "👋 Set Multi-Welcome",
         "help_set_multi_welcome": "ℹ️ Set multiple welcome messages (separated by commas).",
-        "prompt_multi_welcome": "<blockquote><b>» 👋 Set Multi-Welcome</b>\n\nSend Your Multiple Welcome Messages Separated By A Pipe Character (<code>|</code>):\n\n<i>Example:</i> <code>Welcome message 1 | Welcome message 2</code></blockquote>",
+        "prompt_multi_welcome": "<blockquote><b>» 👋 Set Multi-Welcome</b>\n\nSend Your Multiple Welcome Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines:\n\n<i>Example:</i> <code>Welcome message 1 | Welcome message 2</code></blockquote>",
         "multi_welcome_updated": "<blockquote><b>» ✅ Multi-Welcome Updated</b>\n\nMultiple Welcome Messages Updated Successfully!</blockquote>",
         "btn_del_custom": "Custom Delay ⏱️"
     },

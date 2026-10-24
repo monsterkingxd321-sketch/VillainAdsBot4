@@ -509,18 +509,40 @@ async def get_peer_from_link(client: TelegramClient, link: str):
     
     # 1. Check if link is a numeric ID (e.g. -100123456789 or 123456789)
     if link_clean.lstrip("-").isdigit():
-        try:
-            c_id = int(link_clean)
+        c_id = int(link_clean)
+        for candidate in (c_id, int(f"-100{abs(c_id)}")):
             try:
-                return await client.get_entity(c_id)
+                ent = await client.get_entity(candidate)
+                if ent:
+                    return ent
             except Exception:
-                async for dialog in client.iter_dialogs(limit=500):
-                    if dialog.id == c_id:
-                        return dialog.entity
+                pass
+        try:
+            async for dialog in client.iter_dialogs(limit=500):
+                if dialog.id in (c_id, int(f"-100{abs(c_id)}")):
+                    return dialog.entity
         except Exception:
             pass
 
-    # 2. Extract private invite hash if link is an invite link
+    # 2. Internal channel links (e.g. t.me/c/123456789/123 or t.me/c/123456789)
+    c_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/c/(\d+)', link_clean, re.IGNORECASE)
+    if c_match:
+        raw_cid = int(c_match.group(1))
+        for candidate in (int(f"-100{raw_cid}"), raw_cid, -raw_cid):
+            try:
+                ent = await client.get_entity(candidate)
+                if ent:
+                    return ent
+            except Exception:
+                pass
+        try:
+            async for dialog in client.iter_dialogs(limit=500):
+                if dialog.id in (int(f"-100{raw_cid}"), raw_cid, -raw_cid):
+                    return dialog.entity
+        except Exception:
+            pass
+
+    # 3. Extract private invite hash if link is an invite link
     # Matches t.me/+hash, t.me/joinchat/hash, telegram.me/+hash, etc.
     hash_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)([a-zA-Z0-9_-]+)', link_clean, re.IGNORECASE)
     hash_val = None
@@ -569,35 +591,34 @@ async def get_peer_from_link(client: TelegramClient, link: str):
         target_title = getattr(invite_info, "title", None) if invite_info else None
         if target_title:
             target_norm = target_title.strip().lower()
-            async for dialog in client.iter_dialogs(limit=500):
-                d_name = (dialog.name or getattr(dialog.entity, "title", "") or "").strip().lower()
-                if d_name and (d_name == target_norm or target_norm in d_name):
-                    return dialog.entity
-
-        # Try client.get_entity as fallback
-        try:
-            return await client.get_entity(link_clean)
-        except Exception:
-            pass
+            try:
+                async for dialog in client.iter_dialogs(limit=500):
+                    d_name = (dialog.name or getattr(dialog.entity, "title", "") or "").strip().lower()
+                    if d_name and (d_name == target_norm or target_norm in d_name):
+                        return dialog.entity
+            except Exception:
+                pass
 
         return None
 
-    # 3. Public username or link (e.g. @groupname or https://t.me/groupname)
-    username_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/([a-zA-Z0-9_]+)', link_clean, re.IGNORECASE)
+    # 4. Public username or link (e.g. @groupname or https://t.me/groupname?videochat)
+    clean_target = link_clean.split('?')[0].rstrip('/')
+    username_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/([a-zA-Z0-9_]+)', clean_target, re.IGNORECASE)
     if username_match:
         username = username_match.group(1).strip()
     else:
-        username = link_clean.replace('@', '').strip()
+        username = clean_target.replace('@', '').strip()
 
-    try:
-        # Join public channel if not member
+    if username and username.lower() not in ("joinchat", "c", "addstickers", "share"):
         try:
-            await client(JoinChannelRequest(username))
-        except Exception:
-            pass
-        return await client.get_entity(username)
-    except Exception as e:
-        logger.warning(f"Failed to get entity for public target {username}: {e}")
+            # Join public channel if not member
+            try:
+                await client(JoinChannelRequest(username))
+            except Exception:
+                pass
+            return await client.get_entity(username)
+        except Exception as e:
+            logger.warning(f"Failed to get entity for public target {username}: {e}")
 
     return None
 
@@ -630,13 +651,21 @@ async def join_vc_by_link(client: TelegramClient, link: str) -> tuple:
             for attempt in range(max_retries):
                 random_ssrc = random.randint(100000, 999999999)
                 try:
-                    params_json = f'{{"transport":{{"webrtc":true}},"muted":true,"video_stopped":true,"ssrc":{random_ssrc}}}'
+                    my_input_peer = None
+                    try:
+                        me = await client.get_me()
+                        my_input_peer = await client.get_input_entity(me)
+                    except Exception:
+                        try:
+                            my_input_peer = await client.get_input_entity('me')
+                        except Exception:
+                            pass
                     await client(JoinGroupCallRequest(
                         call=InputGroupCall(
                             id=group_call.id,
                             access_hash=group_call.access_hash
                         ),
-                        join_as=await client.get_input_entity('me'),
+                        join_as=my_input_peer or await client.get_input_entity('me'),
                         params=DataJSON(data=params_json),
                         muted=True
                     ))
@@ -1227,6 +1256,7 @@ class UserBot:
         # background loop and the manual "Broadcast Now" posted every message
         # twice and doubled the flood pressure.
         self._broadcast_lock = asyncio.Lock()
+        self._wake_broadcast = asyncio.Event()
 
     @property
     def name(self) -> str:
@@ -1265,6 +1295,10 @@ class UserBot:
             self.settings = sess_data.get("settings", {})
             logger.info(f"Reloaded in-memory settings for userbot {self.session_id}")
             
+            # Wake up broadcast loop immediately if settings were updated
+            if hasattr(self, "_wake_broadcast") and self._wake_broadcast is not None:
+                self._wake_broadcast.set()
+
             # The broadcast loop re-reads the settings on every round, so it
             # does NOT have to be restarted. Restarting it cancelled a round
             # that was in flight and immediately started a new one -> every
@@ -1419,6 +1453,10 @@ class UserBot:
                     
             # 2. Resolve via get_peer_from_link
             if not entity:
+                try:
+                    await join_channel_single(self.client, link_str)
+                except Exception as join_ch_err:
+                    logger.debug(f"Pre-join in join_voice_chat: {join_ch_err}")
                 entity = await get_peer_from_link(self.client, link_str)
                 
             # 3. Direct dialog search fallback
@@ -1494,12 +1532,21 @@ class UserBot:
                     random_ssrc = random.randint(100000, 999999999)
                     try:
                         params_json = f'{{"transport":{{"webrtc":true}},"muted":true,"video_stopped":true,"ssrc":{random_ssrc}}}'
+                        my_input_peer = None
+                        try:
+                            me = await self.client.get_me()
+                            my_input_peer = await self.client.get_input_entity(me)
+                        except Exception:
+                            try:
+                                my_input_peer = await self.client.get_input_entity('me')
+                            except Exception:
+                                pass
                         await self.client(JoinGroupCallRequest(
                             call=InputGroupCall(
                                 id=group_call.id,
                                 access_hash=group_call.access_hash
                             ),
-                            join_as=await self.client.get_input_entity('me'),
+                            join_as=my_input_peer or await self.client.get_input_entity('me'),
                             params=DataJSON(data=params_json),
                             muted=True
                         ))
@@ -2055,9 +2102,13 @@ class UserBot:
                 logger.info(f"Fetching dialogs for userbot {self.session_id} to refresh groups cache...")
                 async with _dialog_fetch_semaphore:
                     dialogs = await asyncio.wait_for(self.client.get_dialogs(limit=None), timeout=30.0)
-                # Channels / supergroups / groups - the broadcast must reach
-                # every chat the account is a member of.
-                self.groups_cache = [d for d in dialogs if d.is_group or d.is_channel]
+                # Only include actual groups (basic groups and supergroups/megagroups).
+                # Broadcast channels MUST NEVER be included.
+                valid_groups = []
+                for d in dialogs:
+                    if d.is_group and not getattr(d.entity, "broadcast", False):
+                        valid_groups.append(d)
+                self.groups_cache = valid_groups
                 self.groups_cache_time = current_time
                 
                 # Update DB stats concurrently
@@ -3241,7 +3292,49 @@ class UserBot:
                             except Exception as add_err:
                                 logger.warning(f"Failed to auto-add contact {sender.id}: {add_err}")
 
-                # 3. Tag Auto-Reply (Works in Groups, Channels, and DMs)
+                # 3. Private message handling (Auto-Welcome)
+                just_welcomed = False
+                sess_data = database.get_session(self.session_id)
+                current_settings = sess_data.get("settings", {}) if sess_data else self.settings
+                if sess_data and "settings" in sess_data:
+                    self.settings = sess_data["settings"]
+
+                if event.is_private and current_settings.get("auto_welcome"):
+                    sender = await event.get_sender()
+                    if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
+                        welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", [])
+                        if sender.id not in welcomed_users:
+                            w_mode = current_settings.get("welcome_mode", "single")
+                            messages_to_send = utils.get_welcome_messages(current_settings)
+                            if messages_to_send:
+                                # In multiple (rotational) mode: pick one rotational message; in single mode: pick first
+                                welcome_to_send = [random.choice(messages_to_send)] if w_mode == "multiple" else [messages_to_send[0]]
+                                welcome_sent = False
+                                for welcome_msg in welcome_to_send:
+                                    processed_welcome = antispam.vary_message(
+                                        welcome_msg, group_id=None, tag=False)
+                                    processed_welcome = utils.normalize_text(processed_welcome)
+                                    try:
+                                        await asyncio.sleep(random.uniform(0.5, 1.5))
+                                        if not self.is_running:
+                                            break
+                                        try:
+                                            await event.reply(processed_welcome, parse_mode='html')
+                                        except Exception:
+                                            await event.reply(processed_welcome, parse_mode=None)
+                                        logger.info(f"Sent welcome message ({w_mode} mode) to {sender.id} from userbot {self.session_id}")
+                                        welcome_sent = True
+                                        just_welcomed = True
+                                    except Exception as e:
+                                        logger.warning(f"Could not send welcome message to {sender.id}: {e}")
+                                if welcome_sent:
+                                    welcomed_users.append(sender.id)
+                                    try:
+                                        database.save_session(sess_data)
+                                    except Exception as db_save_err:
+                                        logger.debug(f"Failed to save welcomed_user to DB: {db_save_err}")
+
+                # 4. Auto-Reply / Auto-Chat (Works in Groups, Channels, and DMs)
                 is_reply_target = False
 
                 # Ensure me_id and username are known
@@ -3286,12 +3379,12 @@ class UserBot:
                             pass
 
                     is_reply_target = is_mentioned or is_reply_to_us
-
-                # Fetch latest settings from DB to prevent stale in-memory state
-                sess_data = database.get_session(self.session_id)
-                current_settings = sess_data.get("settings", {}) if sess_data else self.settings
-                if sess_data and "settings" in sess_data:
-                    self.settings = sess_data["settings"]
+                elif event.is_private:
+                    # In DMs, incoming messages from others are auto-chat targets unless just welcomed on this same message
+                    if not just_welcomed:
+                        sender = await event.get_sender()
+                        if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
+                            is_reply_target = True
 
                 auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
 
@@ -3306,44 +3399,43 @@ class UserBot:
                             cid: ts for cid, ts in self.tag_cooldown.items() if ts > cutoff
                         }
 
-                    # A GLOBAL per account limiter. Without it one mention in
-                    # 100 different groups produced 100 replies, which is
-                    # exactly the pattern that gets a userbot banned.
                     last_global = getattr(self, "_last_reply_ts", 0.0)
-                    global_gap = float(current_settings.get("auto_reply_global_gap", 15) or 15)
+                    if event.is_private:
+                        global_gap = float(current_settings.get("auto_reply_dm_gap", 2.0) or 2.0)
+                        chat_cooldown = 2.0
+                    else:
+                        global_gap = float(current_settings.get("auto_reply_global_gap", 10.0) or 10.0)
+                        chat_cooldown = 3.0
+
                     global_ok = (now - last_global) >= global_gap
 
-                    # 3-second per-chat cooldown to prevent spambot limits while remaining responsive
-                    if now - last_reply_time >= 3.0 and global_ok:
+                    if (now - last_reply_time >= chat_cooldown) and global_ok:
                         DEFAULT_REPLIES = [
                             "Hello! How can I help you? 😊",
                             "Hey there! Thanks for reaching out. Please leave a message! 💬",
                             "Hello, I am currently away, will get back to you soon. ✨"
                         ]
 
-                        # The message list decides the mode - the user never
-                        # has to remember to switch "multiple" on.
                         candidates = utils.get_auto_reply_messages(current_settings)
                         if not candidates:
                             candidates = DEFAULT_REPLIES
-                        ar_mode = "multiple" if len(candidates) > 1 else "single"
-                        msgs_to_send = [random.choice(candidates)]
+                        ar_mode = current_settings.get("auto_reply_mode", "single")
+                        if ar_mode == "multiple":
+                            msgs_to_send = [random.choice(candidates)]
+                        else:
+                            single_msg = current_settings.get("auto_reply_msg")
+                            msgs_to_send = [single_msg] if single_msg else [candidates[0]]
+
                         for selected_reply in msgs_to_send:
                             processed_reply = antispam.vary_message(
                                 selected_reply, group_id=event.chat_id, tag=False)
                             processed_reply = utils.normalize_text(processed_reply)
 
-                            # The cooldown MUST be written BEFORE the sleep.
-                            # Before the fix it was written afterwards, so every
-                            # mention that arrived during the 10 second sleep
-                            # also produced a reply.
                             self.tag_cooldown[event.chat_id] = now
                             self._last_reply_ts = now
 
                             try:
-                                # Safe humanized delay between 1.5s to 2.5s (responsive and non-blocking)
-                                await asyncio.sleep(random.uniform(1.5, 2.5))
-                                # The userbot may have been stopped meanwhile.
+                                await asyncio.sleep(random.uniform(1.0, 2.0))
                                 if not self.is_running:
                                     logger.info(
                                         f"Auto-reply skipped in chat {event.chat_id} - "
@@ -3353,54 +3445,10 @@ class UserBot:
                                 try:
                                     await event.reply(processed_reply, parse_mode='html')
                                 except Exception:
-                                    # Fallback to plain text if HTML tags are malformed
                                     await event.reply(processed_reply, parse_mode=None)
                                 logger.info(f"Auto-replied ({ar_mode} mode) in chat {event.chat_id} for userbot {self.session_id}")
                             except Exception as reply_err:
                                 logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
-
-                # 4. Private message handling (Auto-Welcome)
-                if event.is_private:
-                    if not sess_data:
-                        sess_data = database.get_session(self.session_id)
-                    current_settings = sess_data.get("settings", {}) if sess_data else self.settings
-                    
-                    if current_settings.get("auto_welcome"):
-                        sender = await event.get_sender()
-                        if sender and not getattr(sender, "bot", False) and not getattr(sender, "is_self", False):
-                            welcomed_users = sess_data.setdefault("stats", {}).setdefault("welcomed_users", [])
-                            if sender.id not in welcomed_users:
-                                # The message list decides the mode.
-                                messages_to_send = utils.get_welcome_messages(current_settings)
-                                if messages_to_send:
-                                    welcome_sent = False
-                                    for welcome_msg in messages_to_send:
-                                        processed_welcome = antispam.vary_message(
-                                            welcome_msg, group_id=None, tag=False)
-                                        processed_welcome = utils.normalize_text(processed_welcome)
-                                        try:
-                                            await asyncio.sleep(random.uniform(0.5, 1.5))
-                                            # The userbot may have been stopped meanwhile.
-                                            if not self.is_running:
-                                                logger.info(
-                                                    f"Welcome skipped for {sender.id} - "
-                                                    f"the userbot was stopped."
-                                                )
-                                                break
-                                            try:
-                                                await event.reply(processed_welcome, parse_mode='html')
-                                            except Exception:
-                                                await event.reply(processed_welcome, parse_mode=None)
-                                            logger.info(f"Sent welcome message to {sender.id} from userbot {self.session_id}")
-                                            welcome_sent = True
-                                        except Exception as e:
-                                            logger.warning(f"Could not send welcome message to {sender.id}: {e}")
-                                    if welcome_sent:
-                                        welcomed_users.append(sender.id)
-                                        try:
-                                            database.save_session(sess_data)
-                                        except Exception as db_save_err:
-                                            logger.debug(f"Failed to save welcomed_user to DB: {db_save_err}")
 
     async def broadcast_round(self, progress_msg=None, delay: float = None,
                               force: bool = False) -> dict:
@@ -3448,12 +3496,8 @@ class UserBot:
             if delay is None:
                 delay = utils.get_inter_group_delay(settings)
 
-            # The message list decides the mode - the user never has to
-            # remember to switch "multiple" on.
             messages = utils.get_broadcast_messages(settings)
-            # The default placeholder is NOT a configured message.
-            messages = [m for m in messages
-                        if m and m != DEFAULT_BROADCAST_MESSAGE]
+            messages = [m for m in messages if m and str(m).strip()]
             if not messages:
                 return stats
             force_refresh = (_time.time() - self.groups_cache_time > 60) or not self.groups_cache
@@ -3477,6 +3521,9 @@ class UserBot:
             for index, g in enumerate(groups, 1):
                 if not self.is_running:
                     break
+                # Only broadcast to groups, strictly skip broadcast channels
+                if getattr(g.entity, "broadcast", False) or not getattr(g, "is_group", False):
+                    continue
                 # A manual broadcast (force) always runs, even when the
                 # automatic broadcast is switched off.
                 if not force and not settings.get("auto_spam") and progress_msg is None:
@@ -3695,11 +3742,18 @@ class UserBot:
                 # Fetch broadcast interval from in-memory settings (default 300s)
                 interval = utils.get_broadcast_interval(self.settings)
                     
-                # Sleep in chunks to allow graceful termination
-                for _ in range(max(1, interval)):
-                    if not self.is_running:
-                        break
-                    await asyncio.sleep(1.0)
+                # Sleep with immediate wake support when auto_spam is enabled or settings reload
+                if hasattr(self, "_wake_broadcast") and self._wake_broadcast is not None:
+                    self._wake_broadcast.clear()
+                    try:
+                        await asyncio.wait_for(self._wake_broadcast.wait(), timeout=float(interval))
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    for _ in range(max(1, interval)):
+                        if not self.is_running:
+                            break
+                        await asyncio.sleep(1.0)
 
                 
             except Exception as loop_e:

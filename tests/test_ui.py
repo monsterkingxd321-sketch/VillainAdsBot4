@@ -1,4 +1,6 @@
 """Validates the HTML of every screen that was upgraded to the premium UI."""
+import os, sys
+sys.path.insert(0, os.path.abspath("."))
 from villain_ads_bot.core import ui
 
 SCREENS = {

@@ -168,65 +168,114 @@ def _clean_list(values) -> list:
     return out
 
 
+def parse_multi_messages(raw_text: str) -> list:
+    """
+    Parses user input into a list of messages.
+    Supports pipe (|), comma (,), and newline (\\n) separators.
+    """
+    if not raw_text:
+        return []
+    raw = str(raw_text).strip()
+    if "|" in raw:
+        items = raw.split("|")
+    elif "\n" in raw and "," not in raw:
+        items = raw.split("\n")
+    elif "," in raw:
+        items = raw.split(",")
+    else:
+        items = raw.split("\n")
+    cleaned = []
+    for m in items:
+        s = m.strip().strip(",\r\n\t ").strip()
+        if s:
+            cleaned.append(s)
+    return cleaned
+
+
 def get_broadcast_messages(settings: dict) -> list:
     """
-    Returns the list of broadcast messages that must be used.
-
-    If more than one message is configured the "multiple" mode is used
-    automatically - the mode flag is only a display helper, never the source
-    of truth.
+    Returns the list of broadcast messages according to broadcast_mode ('single' or 'multiple').
+    Falls back gracefully if the selected mode's list is empty.
     """
     settings = settings or {}
+    mode = settings.get("broadcast_mode", "single")
     multiple = _clean_list(settings.get("broadcast_messages"))
     single = _clean_list(settings.get("broadcast_msg"))
-    if len(multiple) > 1:
-        return multiple
-    if multiple and not single:
-        return multiple
-    if single:
-        return [single[0]]
-    return multiple[:1]
+    if mode == "multiple":
+        if multiple:
+            return multiple
+        if single:
+            return single
+        return []
+    else:
+        if single:
+            return [single[0]]
+        if multiple:
+            return multiple
+        return []
 
 
 def get_welcome_messages(settings: dict) -> list:
-    """Returns the welcome messages (auto multiple-mode)."""
+    """
+    Returns the list of welcome messages according to welcome_mode ('single' or 'multiple').
+    Falls back gracefully if the selected mode's list is empty.
+    """
     settings = settings or {}
+    mode = settings.get("welcome_mode", "single")
     multiple = _clean_list(settings.get("welcome_messages"))
     single = _clean_list(settings.get("welcome_msg"))
-    if len(multiple) > 1:
-        return multiple
-    if multiple and not single:
-        return multiple
-    if single:
-        return [single[0]]
-    return multiple[:1]
+    if mode == "multiple":
+        if multiple:
+            return multiple
+        if single:
+            return single
+        return []
+    else:
+        if single:
+            return [single[0]]
+        if multiple:
+            return multiple
+        return []
 
 
 def get_auto_reply_messages(settings: dict) -> list:
-    """Returns the tag auto-reply messages (auto multiple-mode)."""
+    """
+    Returns the list of auto reply messages according to auto_reply_mode ('single' or 'multiple').
+    Falls back gracefully if the selected mode's list is empty.
+    """
     settings = settings or {}
+    mode = settings.get("auto_reply_mode", "single")
     multiple = _clean_list(settings.get("auto_reply_messages")) or _clean_list(settings.get("tag_messages"))
     single = _clean_list(settings.get("auto_reply_msg"))
-    if len(multiple) > 1:
-        return multiple
-    if multiple and not single:
-        return multiple
-    if single:
-        return [single[0]]
-    return multiple[:1]
+    if mode == "multiple":
+        if multiple:
+            return multiple
+        if single:
+            return single
+        return []
+    else:
+        if single:
+            return [single[0]]
+        if multiple:
+            return multiple
+        return []
 
 
 def resolve_modes(settings: dict) -> dict:
     """
-    Keeps the *_mode flags in sync with the actual data and returns them.
-
-    The flags are only used for the UI - the runtime always derives the
-    behaviour from the message lists itself.
+    Ensures the *_mode flags exist in settings.
+    Respects existing user-configured modes and only defaults missing ones.
     """
     settings = settings or {}
-    settings["broadcast_mode"] = "multiple" if len(get_broadcast_messages(settings)) > 1 else "single"
-    settings["welcome_mode"] = "multiple" if len(get_welcome_messages(settings)) > 1 else "single"
-    settings["auto_reply_mode"] = "multiple" if len(get_auto_reply_messages(settings)) > 1 else "single"
+    if "broadcast_mode" not in settings or settings["broadcast_mode"] not in ("single", "multiple"):
+        multiple = _clean_list(settings.get("broadcast_messages"))
+        settings["broadcast_mode"] = "multiple" if len(multiple) > 1 else "single"
+    if "welcome_mode" not in settings or settings["welcome_mode"] not in ("single", "multiple"):
+        multiple = _clean_list(settings.get("welcome_messages"))
+        settings["welcome_mode"] = "multiple" if len(multiple) > 1 else "single"
+    if "auto_reply_mode" not in settings or settings["auto_reply_mode"] not in ("single", "multiple"):
+        multiple = _clean_list(settings.get("auto_reply_messages")) or _clean_list(settings.get("tag_messages"))
+        settings["auto_reply_mode"] = "multiple" if len(multiple) > 1 else "single"
     return settings
 
 

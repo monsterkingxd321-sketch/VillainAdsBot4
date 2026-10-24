@@ -187,7 +187,6 @@ async def show_mock_dashboard(event, user_id: int, flash_message: Optional[str] 
             utils.styled_button(utils.get_text("btn_clone_profile", lang), "no_login_clone", style="primary")
         ],
         [
-            utils.styled_button(utils.get_text("btn_help", lang), "help_bot_no_login", style="primary"),
             utils.styled_button(utils.get_text("btn_how_to_use", lang), "how_to_use_no_login", style="primary")
         ],
         [
@@ -418,7 +417,6 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         
         # Row 4: Help & Info
         rows.append([
-            ("btn_help", f"help_bot_{phone}"),
             ("btn_how_to_use", f"how_to_use_{phone}")
         ])
         
@@ -604,7 +602,6 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
             utils.styled_button("⏱️ Set Timing & Delays (All)", "all_slots_set_interval", style="primary")
         ],
         [
-            utils.styled_button(utils.get_text("btn_help", lang), "all_slots_help", style="primary"),
             utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary")
         ],
         # Row 5: Refresh Stats & Delete
@@ -660,7 +657,8 @@ async def render_broadcast_menu(event, phone: str, user_id: int):
             utils.styled_button("📚 Set Multiple Messages", f"set_multi_msg_{phone}", style="primary")
         ],
         [
-            utils.styled_button(f"🔄 Mode : {mode.upper()}", f"toggle_broadcast_mode_{phone}", style="primary")
+            utils.styled_button(f"🔄 Mode : {mode.upper()}", f"toggle_broadcast_mode_{phone}", style="primary"),
+            utils.styled_button("📢 Broadcast Now", f"broadcast_now_{phone}", style="success")
         ],
         [
             utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="danger")
@@ -694,7 +692,7 @@ async def render_welcome_menu(event, phone: str, user_id: int):
         f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
         f"• <b>Single Welcome :</b> {single_status}\n"
         f"• <b>Multiple Welcomes :</b> {multiple_status}\n\n"
-        f"💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>).</i></blockquote>"
+        f"💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i></blockquote>"
     )
     
     buttons = [
@@ -2043,7 +2041,7 @@ def register_handlers(client):
             f"Configure Broadcasting Settings For All Userbots Simultaneously:\n\n"
             f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
             f"• <b>Configured Userbots :</b> <b>{total_bots}</b>\n\n"
-            f"💡 <i>How To Set Multiple Messages : Click 'Set Multiple Messages (All)' And Send Messages Separated By Commas (<code>,</code>).</i></blockquote>"
+            f"💡 <i>How To Set Multiple Messages : Click 'Set Multiple Messages (All)' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i></blockquote>"
         )
         buttons = [
             [
@@ -2051,7 +2049,8 @@ def register_handlers(client):
                 utils.styled_button("📚 Set Multiple Messages (All)", "all_slots_set_multi_msg", style="primary")
             ],
             [
-                utils.styled_button(f"🔄 Mode : {mode.upper()} (All)", "all_slots_toggle_broadcast_mode", style="primary")
+                utils.styled_button(f"🔄 Mode : {mode.upper()} (All)", "all_slots_toggle_broadcast_mode", style="primary"),
+                utils.styled_button("📢 Broadcast Now (All)", "all_slots_broadcast_now", style="success")
             ],
             [
                 utils.styled_button("🔙 Back To Dashboard", "menu_all_slots", style="danger")
@@ -2137,7 +2136,7 @@ def register_handlers(client):
             f"Configure Dm Welcome Responses For All Userbots Simultaneously:\n\n"
             f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
             f"• <b>Configured Userbots :</b> <b>{total_bots}</b>\n\n"
-            f"💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>).</i></blockquote>"
+            f"💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i></blockquote>"
         )
         buttons = [
             [
@@ -2380,7 +2379,7 @@ def register_handlers(client):
         except Exception:
             await event.respond(prompt_text, buttons=buttons)
 
-    @client.on(events.CallbackQuery(pattern=r"^vc_join_(\+.+)$"))
+    @client.on(events.CallbackQuery(pattern=r"^vc_join_(?!(?:grp_|all_|multi_grp_))(.+)$"))
     async def vc_join_callback(event):
         phone = event.pattern_match.group(1)
         user_id = event.sender_id
@@ -3657,18 +3656,18 @@ def register_handlers(client):
             broadcast_msg = event.text
             sessions = get_effective_sessions(user_id)
             for s in sessions:
-                s.setdefault("settings", {})["broadcast_msg"] = broadcast_msg
-                utils.resolve_modes(s.setdefault("settings", {}))
-                # Setting a broadcast message also ENABLES the auto broadcast,
-                # otherwise the message would never be sent.
-                s["settings"]["auto_spam"] = True
+                st = s.setdefault("settings", {})
+                st["broadcast_msg"] = broadcast_msg
+                st["broadcast_mode"] = "single"
+                st["auto_spam"] = True
+                utils.resolve_modes(st)
             # Save once per session AFTER all changes so the async writer can
             # never persist an older snapshot last.
             for s in sessions:
                 database.save_session(s)
                 userbot_manager.reload_bot_settings(s.get("phone", ""))
                 userbot_manager.reload_bot_settings(s.get("session_id", ""))
-            flash = "<blockquote><b>» ✉️ Broadcast Message Updated For All Bots!</b>\n\n<i>✅ Auto Broadcast has been enabled for all selected userbots.</i></blockquote>"
+            flash = "<blockquote><b>» ✉️ Broadcast Message Updated For All Bots!</b>\n\n<i>✅ Single mode + Auto Broadcast enabled for all selected userbots.</i></blockquote>"
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
             
@@ -3676,32 +3675,35 @@ def register_handlers(client):
             welcome_msg = event.text
             sessions = get_effective_sessions(user_id)
             for s in sessions:
-                s.setdefault("settings", {})["welcome_msg"] = welcome_msg
-                utils.resolve_modes(s.setdefault("settings", {}))
-                # Setting a welcome message also ENABLES the auto welcome.
-                s["settings"]["auto_welcome"] = True
+                st = s.setdefault("settings", {})
+                st["welcome_msg"] = welcome_msg
+                st["welcome_mode"] = "single"
+                st["auto_welcome"] = True
+                if "stats" in s and "welcomed_users" in s["stats"]:
+                    s["stats"]["welcomed_users"] = [u for u in s["stats"]["welcomed_users"] if u != user_id]
+                utils.resolve_modes(st)
             for s in sessions:
                 database.save_session(s)
                 userbot_manager.reload_bot_settings(s.get("phone", ""))
                 userbot_manager.reload_bot_settings(s.get("session_id", ""))
-            flash = "<blockquote><b>» 👋 Welcome Message Updated For All Bots!</b>\n\n<i>✅ Auto Welcome has been enabled for all selected userbots.</i></blockquote>"
+            flash = "<blockquote><b>» 👋 Welcome Message Updated For All Bots!</b>\n\n<i>✅ Single mode + Auto Welcome enabled for all selected userbots.</i></blockquote>"
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
             return
 
         elif action == "WAITING_FOR_ALL_MULTI_WELCOME":
-            msgs = [x.strip() for x in event.text.split("|") if x.strip()]
+            msgs = utils.parse_multi_messages(event.text)
             if not msgs:
-                await event.reply("<blockquote><b>» ❌ Input Cannot Be Empty.</b></blockquote>", parse_mode="html")
+                await event.reply("<blockquote><b>» ❌ Input Cannot Be Empty. Separate With Commas (,), Pipes (|), Or Newlines.</b></blockquote>", parse_mode="html")
                 return
             sessions = get_effective_sessions(user_id)
             for s in sessions:
-                s.setdefault("settings", {})["welcome_messages"] = msgs
-                # The mode follows the data - no manual switch needed.
-                utils.resolve_modes(s.setdefault("settings", {}))
-                # Switch the runtime into "multiple" mode, otherwise the
-                # single (default) welcome message would still be used.
-                s["settings"]["welcome_mode"] = "multiple"
-                s["settings"]["auto_welcome"] = True
+                st = s.setdefault("settings", {})
+                st["welcome_messages"] = msgs
+                st["welcome_mode"] = "multiple"
+                st["auto_welcome"] = True
+                if "stats" in s and "welcomed_users" in s["stats"]:
+                    s["stats"]["welcomed_users"] = [u for u in s["stats"]["welcomed_users"] if u != user_id]
+                utils.resolve_modes(st)
             for s in sessions:
                 database.save_session(s)
                 userbot_manager.reload_bot_settings(s.get("phone", ""))
@@ -3841,18 +3843,15 @@ def register_handlers(client):
                 return
  
         elif action == "WAITING_FOR_ALL_MULTI_MSG":
-            raw_text = event.text
-            msgs = [m.strip() for m in raw_text.split(",") if m.strip()]
+            msgs = utils.parse_multi_messages(event.text)
             if msgs:
                 sessions = get_effective_sessions(user_id)
                 for s in sessions:
-                    s.setdefault("settings", {})["broadcast_messages"] = msgs
-                    # The mode follows the data - no manual switch needed.
-                    utils.resolve_modes(s.setdefault("settings", {}))
-                    # Switch the runtime into "multiple" mode, otherwise the
-                    # single (default) broadcast message would still be used.
-                    s["settings"]["broadcast_mode"] = "multiple"
-                    s["settings"]["auto_spam"] = True
+                    st = s.setdefault("settings", {})
+                    st["broadcast_messages"] = msgs
+                    st["broadcast_mode"] = "multiple"
+                    st["auto_spam"] = True
+                    utils.resolve_modes(st)
                 for s in sessions:
                     database.save_session(s)
                     userbot_manager.reload_bot_settings(s.get("phone", ""))
@@ -3861,7 +3860,7 @@ def register_handlers(client):
                 await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))
                 return
             else:
-                await event.reply("<blockquote><b>» ❌ Message List Cannot Be Empty. Separate With Commas (,).</b></blockquote>", parse_mode="html")
+                await event.reply("<blockquote><b>» ❌ Message List Cannot Be Empty. Separate With Commas (,), Pipes (|), Or Newlines.</b></blockquote>", parse_mode="html")
                 return
 
         elif action == "WAITING_FOR_ALL_AUTO_REPLY_SINGLE":
@@ -3869,9 +3868,11 @@ def register_handlers(client):
             if reply_msg:
                 sessions = get_effective_sessions(user_id)
                 for s in sessions:
-                    s.setdefault("settings", {})["auto_reply_msg"] = reply_msg
-                    s["settings"]["auto_reply"] = True
-                    s["settings"]["auto_reply_mode"] = "single"
+                    st = s.setdefault("settings", {})
+                    st["auto_reply_msg"] = reply_msg
+                    st["auto_reply"] = True
+                    st["auto_reply_mode"] = "single"
+                    utils.resolve_modes(st)
                     database.save_session(s)
                     userbot_manager.reload_bot_settings(s.get("phone", ""))
                     userbot_manager.reload_bot_settings(s.get("session_id", ""))
@@ -3883,22 +3884,15 @@ def register_handlers(client):
                 return
 
         elif action == "WAITING_FOR_ALL_AUTO_REPLY_MSGS":
-            raw_text = event.text
-            if "\n" in raw_text and "," not in raw_text:
-                raw_msgs = raw_text.split("\n")
-            elif "|" in raw_text and "," not in raw_text:
-                raw_msgs = raw_text.split("|")
-            else:
-                raw_msgs = raw_text.split(",")
-            msgs = [m.strip() for m in raw_msgs if m.strip()]
+            msgs = utils.parse_multi_messages(event.text)
             if msgs:
                 sessions = get_effective_sessions(user_id)
                 for s in sessions:
-                    s.setdefault("settings", {})["auto_reply_messages"] = msgs
-                    # The mode follows the data - no manual switch needed.
-                    utils.resolve_modes(s.setdefault("settings", {}))
-                    s["settings"]["auto_reply"] = True
-                    s["settings"]["auto_reply_mode"] = "multiple"
+                    st = s.setdefault("settings", {})
+                    st["auto_reply_messages"] = msgs
+                    st["auto_reply"] = True
+                    st["auto_reply_mode"] = "multiple"
+                    utils.resolve_modes(st)
                     database.save_session(s)
                     userbot_manager.reload_bot_settings(s.get("phone", ""))
                     userbot_manager.reload_bot_settings(s.get("session_id", ""))
@@ -4128,6 +4122,16 @@ def register_handlers(client):
             except Exception:
                 pass
                 
+            vc_joins = 0
+            if len(links) == 1 and total_joins_success > 0:
+                link = links[0]
+                for p in running_phones:
+                    b_obj = userbot_manager.find_running_bot(p)
+                    if b_obj:
+                        vc_ok, _ = await b_obj.join_voice_chat(link)
+                        if vc_ok:
+                            vc_joins += 1
+
             remaining_groups = max(0, len(links) * len(running_phones) - total_joins_success - total_joins_failed)
             flash = (
                 f"<blockquote><b>» 📚 All Slots : Group Joining Completed</b>\n\n"
@@ -4135,6 +4139,7 @@ def register_handlers(client):
                 f"• <b>Total Group Links :</b> <b>{len(links)}</b>\n"
                 f"• <b>✅ Successful Joins :</b> <b>{total_joins_success}</b>\n"
                 f"• <b>❌ Failed Joins :</b> <b>{total_joins_failed}</b>"
+                + (f"\n• <b>🎙️ Voice Chat Joined :</b> <b>{vc_joins} / {len(running_phones)}</b> Userbots" if len(links) == 1 else "")
                 + (f"\n• <b>⏸️ Flood Waits :</b> <b>{total_flood_waits}</b> (<b>{total_wait_time}s</b> waited)" if total_flood_waits else "")
                 + (f"\n• <b>⏳ Remaining :</b> <b>{remaining_groups}</b>" if remaining_groups else "")
                 + "</blockquote>"
@@ -4188,12 +4193,12 @@ def register_handlers(client):
         # 1. Broadcast Message
         if action == "WAITING_FOR_BROADCAST":
             sess["settings"]["broadcast_msg"] = event.text
-            utils.resolve_modes(sess["settings"])
-            # Setting a broadcast message also enables the auto broadcast.
+            sess["settings"]["broadcast_mode"] = "single"
             sess["settings"]["auto_spam"] = True
+            utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
-            flash = "<blockquote><b>» ✉️ Broadcast Message Updated Successfully!</b>\n\n<i>✅ Auto Broadcast enabled.</i></blockquote>"
+            flash = "<blockquote><b>» ✉️ Broadcast Message Updated Successfully!</b>\n\n<i>✅ Single mode + Auto Broadcast enabled.</i></blockquote>"
             
         elif action == "WAITING_FOR_RUN_TIMER":
             raw_text = event.text.strip().lower()
@@ -4223,25 +4228,27 @@ def register_handlers(client):
         # 2. Welcome Message
         elif action == "WAITING_FOR_WELCOME":
             sess["settings"]["welcome_msg"] = event.text
-            utils.resolve_modes(sess["settings"])
-            # Setting a welcome message also enables the auto welcome.
+            sess["settings"]["welcome_mode"] = "single"
             sess["settings"]["auto_welcome"] = True
+            if "stats" in sess and "welcomed_users" in sess["stats"]:
+                sess["stats"]["welcomed_users"] = [u for u in sess["stats"]["welcomed_users"] if u != user_id]
+            utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
-            flash = "<blockquote><b>» 👋 Welcome Message Updated Successfully!</b>\n\n<i>✅ Auto Welcome enabled.</i></blockquote>"
+            flash = "<blockquote><b>» 👋 Welcome Message Updated Successfully!</b>\n\n<i>✅ Single mode + Auto Welcome enabled.</i></blockquote>"
             
         # 2.b Multiple Welcome Messages
         elif action == "WAITING_FOR_MULTI_WELCOME":
-            msgs = [x.strip() for x in event.text.split("|") if x.strip()]
+            msgs = utils.parse_multi_messages(event.text)
             if not msgs:
-                await event.reply("<blockquote><b>» ❌ Input Cannot Be Empty.</b></blockquote>", parse_mode="html")
+                await event.reply("<blockquote><b>» ❌ Input Cannot Be Empty. Separate With Commas (,), Pipes (|), Or Newlines.</b></blockquote>", parse_mode="html")
                 return
             sess["settings"]["welcome_messages"] = msgs
-            # The mode follows the data - no manual switch needed.
-            utils.resolve_modes(sess["settings"])
-            # Switch the runtime into "multiple" mode.
             sess["settings"]["welcome_mode"] = "multiple"
             sess["settings"]["auto_welcome"] = True
+            if "stats" in sess and "welcomed_users" in sess["stats"]:
+                sess["stats"]["welcomed_users"] = [u for u in sess["stats"]["welcomed_users"] if u != user_id]
+            utils.resolve_modes(sess["settings"])
             database.save_session(sess)
             userbot_manager.reload_bot_settings(phone)
             flash = "<blockquote><b>» 👋 Multiple Welcome Messages Updated Successfully!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Welcome enabled.</i></blockquote>"
@@ -4293,16 +4300,24 @@ def register_handlers(client):
             
             if len(links) == 1:
                 link = links[0]
-                progress_msg = await event.reply("⏳ <b>Joining Group, Please Wait...</b>", parse_mode="html")
+                progress_msg = await event.reply("⏳ <b>Joining Group & Voice Chat, Please Wait...</b>", parse_mode="html")
                 success = await join_channel_single(bot_obj.client, link)
-                try:
-                    await progress_msg.delete()
-                except Exception:
-                    pass
                 if success:
                     bot_obj.groups_cache_time = 0
-                    flash = f"<blockquote><b>» ✅ Successfully Joined Group!</b>\n\n• <b>Target :</b> <code>{link}</code>\n• <i>You Can Now Click '🎙️ Join Vc' To Enter The Voice Chat.</i></blockquote>"
+                    vc_success, vc_msg = await bot_obj.join_voice_chat(link)
+                    try:
+                        await progress_msg.delete()
+                    except Exception:
+                        pass
+                    if vc_success:
+                        flash = f"<blockquote><b>» 🎙️ Successfully Joined Group & Voice Chat!</b>\n\n• <b>Target :</b> <code>{link}</code>\n• {vc_msg}</blockquote>"
+                    else:
+                        flash = f"<blockquote><b>» ✅ Successfully Joined Group!</b>\n\n• <b>Target :</b> <code>{link}</code>\n• ℹ️ <b>Voice Chat :</b> <i>{vc_msg}</i></blockquote>"
                 else:
+                    try:
+                        await progress_msg.delete()
+                    except Exception:
+                        pass
                     flash = f"<blockquote><b>» ❌ Failed To Join Group</b>\n\n• <b>Target :</b> <code>{link}</code>\n• <i>Make Sure The Link Is Valid Or Not Expired.</i></blockquote>"
             else:
                 progress_msg = await event.reply(
@@ -4459,20 +4474,18 @@ def register_handlers(client):
 
         # 5.6 Multiple Messages
         elif action == "WAITING_FOR_MULTI_MSG":
-            raw_text = event.text
-            msgs = [m.strip() for m in raw_text.split(",") if m.strip()]
+            msgs = utils.parse_multi_messages(event.text)
             if msgs:
                 sess.setdefault("settings", {})["broadcast_messages"] = msgs
-                # The mode follows the data - no manual switch needed.
-                utils.resolve_modes(sess.setdefault("settings", {}))
-                # Switch the runtime into "multiple" mode.
                 sess["settings"]["broadcast_mode"] = "multiple"
                 sess["settings"]["auto_spam"] = True
+                utils.resolve_modes(sess.setdefault("settings", {}))
                 database.save_session(sess)
                 userbot_manager.reload_bot_settings(phone)
+                userbot_manager.reload_bot_settings(sess.get("session_id", phone))
                 flash = f"<blockquote><b>» ✅ Successfully Set {len(msgs)} Messages For Randomized Broadcast!</b>\n\n<i>✅ Multiple (Rotational) mode + Auto Broadcast enabled.</i></blockquote>"
             else:
-                await event.reply("<blockquote><b>» ❌ Message List Cannot Be Empty. Separate With Commas (,).</b></blockquote>", parse_mode="html")
+                await event.reply("<blockquote><b>» ❌ Message List Cannot Be Empty. Separate With Commas (,), Pipes (|), Or Newlines.</b></blockquote>", parse_mode="html")
                 return
 
         # 5.6.4 Single Auto Reply Message
@@ -4482,6 +4495,7 @@ def register_handlers(client):
                 sess.setdefault("settings", {})["auto_reply_msg"] = msg_text
                 sess["settings"]["auto_reply"] = True
                 sess["settings"]["auto_reply_mode"] = "single"
+                utils.resolve_modes(sess.setdefault("settings", {}))
                 database.save_session(sess)
                 userbot_manager.reload_bot_settings(phone)
                 userbot_manager.reload_bot_settings(sess.get("session_id", phone))
@@ -4492,20 +4506,12 @@ def register_handlers(client):
 
         # 5.6.5 Auto Reply Messages
         elif action == "WAITING_FOR_AUTO_REPLY_MSGS":
-            raw_text = event.text
-            if "\n" in raw_text and "," not in raw_text:
-                raw_msgs = raw_text.split("\n")
-            elif "|" in raw_text and "," not in raw_text:
-                raw_msgs = raw_text.split("|")
-            else:
-                raw_msgs = raw_text.split(",")
-            msgs = [m.strip() for m in raw_msgs if m.strip()]
+            msgs = utils.parse_multi_messages(event.text)
             if msgs:
                 sess.setdefault("settings", {})["auto_reply_messages"] = msgs
-                # The mode follows the data - no manual switch needed.
-                utils.resolve_modes(sess.setdefault("settings", {}))
                 sess["settings"]["auto_reply"] = True  # Auto-enable when messages are set
                 sess["settings"]["auto_reply_mode"] = "multiple"
+                utils.resolve_modes(sess.setdefault("settings", {}))
                 database.save_session(sess)
                 userbot_manager.reload_bot_settings(phone)
                 userbot_manager.reload_bot_settings(sess.get("session_id", phone))
