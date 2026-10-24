@@ -2845,15 +2845,45 @@ class UserBot:
                                     return
                             finally:
                                 _preparing_chats.discard(chat_id)
+
+                            # Stream concurrently on all companion userbots of this owner that are joined in this voice chat
+                            companion_bots = []
+                            try:
+                                from villain_ads_bot.services import userbot_manager
+                                if owner_uid:
+                                    companion_bots = userbot_manager.get_running_userbots_for_owner(
+                                        owner_uid, chat_id=chat_id, exclude_bot=self
+                                    )
+                            except Exception as comp_err:
+                                logger.debug(f"Companion bot lookup note: {comp_err}")
+
+                            if companion_bots and song_info.get("file_path"):
+                                local_fp = song_info["file_path"]
+                                async def _stream_companion(c_bot):
+                                    try:
+                                        await c_bot.play_song(
+                                            query="",
+                                            play_type=play_type,
+                                            chat_id=chat_id,
+                                            local_file=local_fp,
+                                            title=song_info.get("title"),
+                                            duration=song_info.get("duration", 30)
+                                        )
+                                        logger.info(f"Companion userbot {c_bot.session_id} streaming in VC {chat_id}")
+                                    except Exception as c_err:
+                                        logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
+
+                                asyncio.create_task(asyncio.gather(*[_stream_companion(cb) for cb in companion_bots], return_exceptions=True))
                                 
                             title = song_info.get("title", "Unknown Track")
                             duration = song_info.get("duration", 0)
                             mins, secs = divmod(duration, 60)
                             dur_str = f"{mins:02d}:{secs:02d}" if duration > 0 else "Live Stream"
                             mode_emoji = "🎬 Video Stream" if play_type == "video" else "🎙️ Audio Stream"
+                            bot_count_str = f" ({len(companion_bots) + 1} Userbots)" if companion_bots else ""
                             
                             np_text = utils.format_html_message(
-                                f"<blockquote><b>» 🎵 Now Streaming</b>\n\n"
+                                f"<blockquote><b>» 🎵 Now Streaming{bot_count_str}</b>\n\n"
                                 f"<b>📌 Title :</b> <b>{title}</b>\n"
                                 f"<b>⏱️ Duration :</b> <code>{dur_str}</code>\n"
                                 f"<b>🎧 Mode :</b> <b>{mode_emoji}</b>\n"
@@ -2875,6 +2905,7 @@ class UserBot:
                             
                             _active_chat_players[chat_id] = {
                                 "bot": self,
+                                "companion_bots": companion_bots,
                                 "song_info": song_info,
                                 "msg_id": None,
                                 "is_paused": False,
@@ -2951,6 +2982,12 @@ class UserBot:
                                 prev_timer.cancel()
 
                             if not queue_list:
+                                stale_cb = old_p.get("companion_bots", []) if old_p else []
+                                for cb in stale_cb:
+                                    try:
+                                        await cb.stop_song(chat_id, leave_vc=False)
+                                    except Exception:
+                                        pass
                                 await self.stop_song(chat_id)
                                 prog = await event.respond(
                                     utils.format_html_message(
@@ -3095,6 +3132,17 @@ class UserBot:
                             try:
                                 pytg = await self.get_pytgcalls()
                                 await pytg.pause_stream(chat_id)
+                                
+                                # Synchronize pause across companion userbots in this chat
+                                from villain_ads_bot.handlers.player import _active_chat_players
+                                active_info = _active_chat_players.get(chat_id, {})
+                                for cb in active_info.get("companion_bots", []):
+                                    try:
+                                        cb_pytg = await cb.get_pytgcalls()
+                                        await cb_pytg.pause_stream(chat_id)
+                                    except Exception:
+                                        pass
+
                                 await prog.edit(
                                     utils.format_html_message(
                                         "<blockquote><b>» ⏸️ Playback Paused</b>\n\n"
@@ -3118,6 +3166,17 @@ class UserBot:
                             try:
                                 pytg = await self.get_pytgcalls()
                                 await pytg.resume_stream(chat_id)
+
+                                # Synchronize resume across companion userbots in this chat
+                                from villain_ads_bot.handlers.player import _active_chat_players
+                                active_info = _active_chat_players.get(chat_id, {})
+                                for cb in active_info.get("companion_bots", []):
+                                    try:
+                                        cb_pytg = await cb.get_pytgcalls()
+                                        await cb_pytg.resume_stream(chat_id)
+                                    except Exception:
+                                        pass
+
                                 await prog.edit(
                                     utils.format_html_message(
                                         "<blockquote><b>» ▶️ Playback Resumed</b>\n\nStream Resumed Successfully.</blockquote>"
@@ -3135,6 +3194,7 @@ class UserBot:
                             from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
                             
                             old_p = _active_chat_players.get(chat_id)
+                            companion_bots = old_p.get("companion_bots", []) if old_p else []
                             if old_p and old_p.get("msg_id"):
                                 try:
                                     from villain_ads_bot.handlers.player import _main_bot
@@ -3156,6 +3216,12 @@ class UserBot:
                                     "<blockquote><b>» ⏳ Stopping Stream</b>\n\nStopping Voice Chat Stream...</blockquote>"
                                 )
                             )
+                            for cb in companion_bots:
+                                try:
+                                    await cb.stop_song(chat_id, leave_vc=False)
+                                except Exception:
+                                    pass
+
                             success, msg = await self.stop_song(chat_id)
                             if success:
                                 await prog.edit(
@@ -3183,6 +3249,14 @@ class UserBot:
                                 )
                             )
                             success, msg = await self.mute_mic(chat_id)
+                            from villain_ads_bot.handlers.player import _active_chat_players
+                            active_info = _active_chat_players.get(chat_id, {})
+                            for cb in active_info.get("companion_bots", []):
+                                try:
+                                    await cb.mute_mic(chat_id)
+                                except Exception:
+                                    pass
+
                             await prog.edit(
                                 utils.format_html_message(
                                     "<blockquote><b>» 🔇 Mic Muted</b>\n\nUserbot Microphone Has Been Turned <b>Off</b>.</blockquote>"
@@ -3201,6 +3275,14 @@ class UserBot:
                                 )
                             )
                             success, msg = await self.unmute_mic(chat_id)
+                            from villain_ads_bot.handlers.player import _active_chat_players
+                            active_info = _active_chat_players.get(chat_id, {})
+                            for cb in active_info.get("companion_bots", []):
+                                try:
+                                    await cb.unmute_mic(chat_id)
+                                except Exception:
+                                    pass
+
                             await prog.edit(
                                 utils.format_html_message(
                                     "<blockquote><b>» 🔊 Mic Unmuted</b>\n\nUserbot Microphone Has Been Turned <b>On</b>.</blockquote>"

@@ -171,6 +171,18 @@ def get_sessions(user_id: Optional[int] = None, include_bytes: bool = False) -> 
             return [_copy_doc(d) for d in data]
 
     projection = None if include_bytes else {"session_bytes": 0}
+    if _db is None:
+        # Fallback to cached sessions in memory when offline/unit tests
+        matching = []
+        seen = set()
+        for c in _cached_sessions.values():
+            d = c.get("data")
+            if d and id(d) not in seen:
+                seen.add(id(d))
+                if user_id is None or str(d.get("user_id")) == str(user_id):
+                    matching.append(_copy_doc(d))
+        return matching
+
     if user_id is not None:
         query = {"user_id": {"$in": [int(user_id), str(user_id)]}}
     else:
@@ -195,6 +207,16 @@ def get_session(session_id: str, include_bytes: bool = False) -> Optional[Dict[s
             # A COPY - the cached object must never be handed out, otherwise
             # two code paths mutate each other's "copy" silently.
             return _copy_doc(cached['data'])
+
+    if _db is None:
+        cached = _cached_sessions.get(session_id_str)
+        if cached:
+            return _copy_doc(cached['data'])
+        alt = session_id_str.lstrip("+") if session_id_str.startswith("+") else f"+{session_id_str}"
+        cached_alt = _cached_sessions.get(alt)
+        if cached_alt:
+            return _copy_doc(cached_alt['data'])
+        return None
             
     projection = None if include_bytes else {"session_bytes": 0}
     sess = _db.sessions.find_one({"session_id": session_id_str}, projection)
@@ -222,6 +244,9 @@ def get_session_fresh(session_id: str, include_bytes: bool = False) -> Optional[
     if not session_id:
         return None
     session_id_str = str(session_id).strip()
+    if _db is None:
+        return get_session(session_id, include_bytes=include_bytes)
+
     projection = None if include_bytes else {"session_bytes": 0}
     sess = _db.sessions.find_one({"session_id": session_id_str}, projection)
     if not sess:

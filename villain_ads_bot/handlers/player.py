@@ -146,10 +146,25 @@ async def get_or_start_userbot_for_chat(user_id: int, chat_id: Optional[int] = N
     # 1. Check user's own connected accounts first
     user_sessions = database.get_sessions(user_id) if user_id else []
     if user_sessions:
+        # Prioritize any running userbot that is ALREADY inside this chat / VC
+        if chat_id:
+            for s in user_sessions:
+                for ident in (s.get("phone"), s.get("session_id")):
+                    if ident:
+                        b = userbot_manager.find_running_bot(ident)
+                        if b and b.is_running and b.client and b.client.is_connected():
+                            in_vc = (getattr(b, "current_vc_chat_id", None) == chat_id or 
+                                     chat_id in getattr(b, "joined_vcs", set()))
+                            if in_vc:
+                                return b, ""
+
+        # Pick any running userbot belonging to this user
         for s in user_sessions:
-            phone = s["phone"]
-            if userbot_manager.is_bot_running(phone):
-                return userbot_manager._running_bots[phone], ""
+            for ident in (s.get("phone"), s.get("session_id")):
+                if ident:
+                    b = userbot_manager.find_running_bot(ident)
+                    if b and b.is_running and b.client and b.client.is_connected():
+                        return b, ""
                 
         # If not running in memory, auto-start the user's first available account
         first_session = user_sessions[0]
@@ -204,7 +219,7 @@ def build_now_playing_markup(chat_id: int, is_paused: bool = False, is_muted: bo
     ]
 
 
-def format_now_playing_text(song_info: dict, requester_name: str, requester_id: int, stream_type: str = "Audio") -> str:
+def format_now_playing_text(song_info: dict, requester_name: str, requester_id: int, stream_type: str = "Audio", bot_count: int = 1) -> str:
     """
     Renders the rich Now Playing markdown text with Telegram blockquotes.
     """
@@ -219,10 +234,11 @@ def format_now_playing_text(song_info: dict, requester_name: str, requester_id: 
     ub_display = f"@{ub_username}" if ub_username else f"`{song_info.get('userbot_id', '')}`"
     
     mode_emoji = "🎬 Video Stream" if stream_type.lower() == "video" else "🎙️ Audio Stream"
+    bot_header_extra = f" ({bot_count} Userbots)" if bot_count > 1 else ""
     
     req_name_safe = html.escape(requester_name)
     text = (
-        f"<blockquote><b>» 🎵 Now Streaming</b>\n\n"
+        f"<blockquote><b>» 🎵 Now Streaming{bot_header_extra}</b>\n\n"
         f"<b>📌 Title :</b> <b>{title_safe}</b>\n"
         f"<b>⏱️ Duration :</b> <code>{dur_str}</code>\n"
         f"<b>🎧 Mode :</b> <b>{mode_emoji}</b>\n"
@@ -263,12 +279,17 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         # The finished song's card must not stay in the chat.
         if active_sess:
             await _delete_card_by_session(active_sess, chat_id)
-        if active_sess and active_sess.get("bot"):
-            bot = active_sess["bot"]
-            try:
-                await bot.stop_song(chat_id, leave_vc=False)
-            except Exception:
-                pass
+            for cb in active_sess.get("companion_bots", []):
+                try:
+                    await cb.stop_song(chat_id, leave_vc=False)
+                except Exception:
+                    pass
+            if active_sess.get("bot"):
+                bot = active_sess["bot"]
+                try:
+                    await bot.stop_song(chat_id, leave_vc=False)
+                except Exception:
+                    pass
         return
         
     next_item = queue.pop(0)
@@ -309,8 +330,40 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
             pass
         return
         
+    companion_bots = []
+    try:
+        prev_companions = active_sess.get("companion_bots", []) if active_sess else []
+        if prev_companions:
+            companion_bots = [cb for cb in prev_companions if cb.is_running]
+        else:
+            owner_uid = getattr(bot_obj, "owner_id", None) or requester_id
+            if owner_uid:
+                companion_bots = userbot_manager.get_running_userbots_for_owner(
+                    owner_uid, chat_id=chat_id, exclude_bot=bot_obj
+                )
+    except Exception as comp_err:
+        logger.debug(f"Companion bot lookup error in queue advance: {comp_err}")
+
+    if companion_bots and song_info.get("file_path"):
+        local_fp = song_info["file_path"]
+        async def _stream_companion_next(c_bot):
+            try:
+                await c_bot.play_song(
+                    query="",
+                    play_type=play_type,
+                    chat_id=chat_id,
+                    local_file=local_fp,
+                    title=song_info.get("title"),
+                    duration=song_info.get("duration", 30)
+                )
+                logger.info(f"Companion userbot {c_bot.session_id} streaming next track in VC {chat_id}")
+            except Exception as c_err:
+                logger.warning(f"Companion userbot {c_bot.session_id} next stream error: {c_err}")
+
+        asyncio.create_task(asyncio.gather(*[_stream_companion_next(cb) for cb in companion_bots], return_exceptions=True))
+
     thumb_enabled = database.get_thumbnail_setting(chat_id)
-    np_text = format_now_playing_text(song_info, requester_name, requester_id, stream_type=play_type)
+    np_text = format_now_playing_text(song_info, requester_name, requester_id, stream_type=play_type, bot_count=len(companion_bots) + 1)
     buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
     thumb_file = song_info.get("thumb")
 
@@ -362,6 +415,7 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
 
     _active_chat_players[chat_id] = {
         "bot": bot_obj,
+        "companion_bots": companion_bots,
         "song_info": song_info,
         "msg_id": sent_msg.id if sent_msg else None,
         "is_paused": False,
@@ -588,10 +642,39 @@ def register_handlers(client):
             # session is registered. Before this there was a window in
             # which a second .play could start a second stream.
             _preparing_chats.discard(chat_id)
+
+        # Stream concurrently on all companion userbots of this owner that are joined in this voice chat
+        companion_bots = []
+        try:
+            owner_uid = getattr(bot_obj, "owner_id", None) or user_id
+            if owner_uid:
+                companion_bots = userbot_manager.get_running_userbots_for_owner(
+                    owner_uid, chat_id=chat_id, exclude_bot=bot_obj
+                )
+        except Exception as comp_err:
+            logger.debug(f"Companion bot lookup error in play_command: {comp_err}")
+
+        if companion_bots and song_info.get("file_path"):
+            local_fp = song_info["file_path"]
+            async def _stream_companion_play(c_bot):
+                try:
+                    await c_bot.play_song(
+                        query="",
+                        play_type=play_type,
+                        chat_id=chat_id,
+                        local_file=local_fp,
+                        title=song_info.get("title"),
+                        duration=song_info.get("duration", 30)
+                    )
+                    logger.info(f"Companion userbot {c_bot.session_id} streaming in VC {chat_id}")
+                except Exception as c_err:
+                    logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
+
+            asyncio.create_task(asyncio.gather(*[_stream_companion_play(cb) for cb in companion_bots], return_exceptions=True))
             
         # 5. Render Now Playing Card
         thumb_enabled = database.get_thumbnail_setting(chat_id)
-        np_text = format_now_playing_text(song_info, requester_name, user_id, stream_type=play_type)
+        np_text = format_now_playing_text(song_info, requester_name, user_id, stream_type=play_type, bot_count=len(companion_bots) + 1)
         buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
         
         thumb_file = song_info.get("thumb")
@@ -619,6 +702,7 @@ def register_handlers(client):
         # Store active player session
         _active_chat_players[chat_id] = {
             "bot": bot_obj,
+            "companion_bots": companion_bots,
             "song_info": song_info,
             "msg_id": sent_msg.id if sent_msg else None,
             "is_paused": False,
@@ -655,6 +739,11 @@ def register_handlers(client):
             stale = _active_chat_players.pop(chat_id, None)
             if stale:
                 await _delete_card_by_session(stale, chat_id)
+                for cb in stale.get("companion_bots", []):
+                    try:
+                        await cb.stop_song(chat_id, leave_vc=False)
+                    except Exception:
+                        pass
             bot_obj, _ = await get_or_start_userbot_for_chat(user_id, chat_id)
             if bot_obj:
                 await bot_obj.stop_song(chat_id)
@@ -983,6 +1072,13 @@ def register_handlers(client):
             try:
                 pytg = await bot_obj.get_pytgcalls()
                 await utils.pytg_pause(pytg, chat_id)
+                active_info = _active_chat_players.get(chat_id, {})
+                for cb in active_info.get("companion_bots", []):
+                    try:
+                        cb_pytg = await cb.get_pytgcalls()
+                        await utils.pytg_pause(cb_pytg, chat_id)
+                    except Exception:
+                        pass
                 await event.answer("⏸️ Playback Paused.")
                 buttons = build_now_playing_markup(chat_id, is_paused=True, is_muted=bot_obj.is_muted)
                 await event.edit(buttons=buttons)
@@ -994,6 +1090,13 @@ def register_handlers(client):
             try:
                 pytg = await bot_obj.get_pytgcalls()
                 await utils.pytg_resume(pytg, chat_id)
+                active_info = _active_chat_players.get(chat_id, {})
+                for cb in active_info.get("companion_bots", []):
+                    try:
+                        cb_pytg = await cb.get_pytgcalls()
+                        await utils.pytg_resume(cb_pytg, chat_id)
+                    except Exception:
+                        pass
                 await event.answer("▶️ Playback Resumed.")
                 buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=bot_obj.is_muted)
                 await event.edit(buttons=buttons)
@@ -1010,6 +1113,11 @@ def register_handlers(client):
             stale = _active_chat_players.pop(chat_id, None)
             if stale:
                 await _delete_card_by_session(stale, chat_id)
+                for cb in stale.get("companion_bots", []):
+                    try:
+                        await cb.stop_song(chat_id, leave_vc=False)
+                    except Exception:
+                        pass
             success, msg = await bot_obj.stop_song(chat_id)
             if success:
                 await event.answer("⏹️ Playback Stopped.")
@@ -1047,6 +1155,12 @@ def register_handlers(client):
 
         elif action == "mute":
             success, msg = await bot_obj.mute_mic(chat_id)
+            active_info = _active_chat_players.get(chat_id, {})
+            for cb in active_info.get("companion_bots", []):
+                try:
+                    await cb.mute_mic(chat_id)
+                except Exception:
+                    pass
             await event.answer(msg if success else "❌ Could not mute the microphone.", alert=not success)
             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=True)
             try:
@@ -1056,6 +1170,12 @@ def register_handlers(client):
 
         elif action == "unmute":
             success, msg = await bot_obj.unmute_mic(chat_id)
+            active_info = _active_chat_players.get(chat_id, {})
+            for cb in active_info.get("companion_bots", []):
+                try:
+                    await cb.unmute_mic(chat_id)
+                except Exception:
+                    pass
             await event.answer(msg if success else "❌ Could not unmute the microphone.", alert=not success)
             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
             try:

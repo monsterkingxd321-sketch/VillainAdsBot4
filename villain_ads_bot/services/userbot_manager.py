@@ -149,6 +149,39 @@ def is_bot_running(session_id: str) -> bool:
         return True
     return False
 
+
+def get_running_userbots_for_owner(owner_id: int, chat_id: Optional[int] = None, exclude_bot=None) -> list:
+    """
+    Returns all running UserBot instances belonging to owner_id.
+    If chat_id is provided, prioritizes bots connected or joined in chat_id's voice chat.
+    If all bots are in VC or user has <= 10 bots, companion bots are returned for concurrent VC streaming.
+    """
+    from villain_ads_bot.data import database
+    matching_bots = []
+    seen_ids = set()
+    if exclude_bot is not None:
+        seen_ids.add(id(exclude_bot))
+        
+    sessions = database.get_sessions(owner_id) if owner_id else []
+    for s in sessions:
+        for ident in (s.get("phone"), s.get("session_id")):
+            if ident:
+                bot = find_running_bot(ident)
+                if bot and bot.is_running and id(bot) not in seen_ids:
+                    seen_ids.add(id(bot))
+                    matching_bots.append(bot)
+                    break
+                    
+    if chat_id and matching_bots:
+        in_vc = [
+            b for b in matching_bots
+            if (chat_id in getattr(b, "joined_vcs", set()) or getattr(b, "current_vc_chat_id", None) == chat_id)
+        ]
+        if in_vc:
+            return in_vc
+
+    return matching_bots
+
 async def start_all_running_bots():
     """
     Resumes all UserBots that are marked as 'running' in the database (e.g. after a manager reboot).

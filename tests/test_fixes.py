@@ -151,10 +151,67 @@ def run_tests():
     assert "+919999988888" in database._cached_sessions
     assert "919999988888" in database._cached_sessions
     assert database._cached_sessions["919999988888"]["data"]["settings"]["broadcast_msg"] == "Fresh New Message"
-    print("  [PASS] Real-time message update, fresh sync & cache cross-invalidation active")
+    # 10. Multi-userbot concurrent VC streaming & synchronized controls verification
+    from villain_ads_bot.services import userbot_manager
+    from villain_ads_bot.handlers import player
+
+    assert hasattr(userbot_manager, "get_running_userbots_for_owner"), "userbot_manager missing get_running_userbots_for_owner!"
+    
+    # Mock multiple running bots for owner 99999
+    bot1 = UserBot("bot1_session")
+    bot1.owner_id = 99999
+    bot1.phone = "+919999900001"
+    bot1.is_running = True
+    bot1.joined_vcs = {-1001234567890}
+
+    bot2 = UserBot("bot2_session")
+    bot2.owner_id = 99999
+    bot2.phone = "+919999900002"
+    bot2.is_running = True
+    bot2.joined_vcs = {-1001234567890}
+
+    bot3 = UserBot("bot3_session")
+    bot3.owner_id = 99999
+    bot3.phone = "+919999900003"
+    bot3.is_running = True
+    bot3.joined_vcs = {-1001234567890}
+
+    bot4 = UserBot("bot4_session")
+    bot4.owner_id = 99999
+    bot4.phone = "+919999900004"
+    bot4.is_running = True
+    bot4.joined_vcs = {-1001234567890}
+
+    # Register in userbot_manager
+    userbot_manager._running_bots[bot1.phone] = bot1
+    userbot_manager._running_bots[bot2.phone] = bot2
+    userbot_manager._running_bots[bot3.phone] = bot3
+    userbot_manager._running_bots[bot4.phone] = bot4
+
+    # Mock database sessions for owner 99999
+    for b in (bot1, bot2, bot3, bot4):
+        database.save_session({
+            "session_id": b.session_id,
+            "phone": b.phone,
+            "user_id": 99999,
+            "settings": {}
+        })
+
+    # Test get_running_userbots_for_owner finds the 3 companion bots when excluding bot1
+    companions = userbot_manager.get_running_userbots_for_owner(99999, chat_id=-1001234567890, exclude_bot=bot1)
+    assert len(companions) == 3, f"Expected 3 companion bots, got {len(companions)}"
+    assert bot1 not in companions, "exclude_bot must not be in companion bots!"
+    assert all(cb in [bot2, bot3, bot4] for cb in companions)
+
+    # Test format_now_playing_text with multiple bots
+    sample_song = {"title": "Villain Anthem", "duration": 180, "userbot_name": "VillainBot"}
+    np_card = player.format_now_playing_text(sample_song, "OwnerUser", 99999, stream_type="audio", bot_count=4)
+    assert "(4 Userbots)" in np_card, f"Expected '(4 Userbots)' in header, got: {np_card}"
+    print("  [PASS] Multi-userbot concurrent VC streaming & companion discovery verified")
 
     print("\nALL FIXES VERIFIED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     run_tests()
+
 
