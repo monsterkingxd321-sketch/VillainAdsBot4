@@ -19,9 +19,9 @@ def get_configured_credentials() -> tuple:
 
     Priority: admin panel (MongoDB) -> .env / environment -> defaults.
     """
-    url = "https://music.yukiapi.site"
+    url = "https://api.shrutibots.in"
     key = None
-    backup = "https://play.yukiapi.site"
+    backup = "https://music.yukiapi.site"
 
     try:
         from villain_ads_bot.data import database
@@ -35,9 +35,9 @@ def get_configured_credentials() -> tuple:
     if not key:
         try:
             import os
-            key = (os.environ.get("MEOW_API_KEY") or "").strip() or "yuki_8641adadf64870f3065dd502c8ee30f1"
+            key = (os.environ.get("SHRUTI_API_KEY") or os.environ.get("MEOW_API_KEY") or "").strip() or "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
         except Exception:
-            key = "yuki_8641adadf64870f3065dd502c8ee30f1"
+            key = "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
 
     return url.rstrip("/"), key, backup.rstrip("/")
 

@@ -294,14 +294,14 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                         logger.info(f"Using cached file matching prefix: {full_p}")
                         return full_p, title, duration_sec, final_thumb
 
-        # 3. Primary Fast Direct Stream via Yuki API (with gateway failover)
-        logger.info(f"Downloading {download_type} directly via Yuki API for: {title} ({vidid})...")
+        # 3. Primary Fast Direct Stream via ShrutiAPI (with gateway failover)
+        logger.info(f"Downloading {download_type} directly via ShrutiAPI for: {title} ({vidid})...")
         downloaded_file = None
         try:
             from villain_ads_bot.core import music as _music
             downloaded_file = await _music.download_with_failover(download_type, youtube_url)
         except Exception as api_err:
-            logger.warning(f"Yuki API primary download error: {api_err}")
+            logger.warning(f"ShrutiAPI primary download error: {api_err}")
 
         # Fallback Strategy: Fast local download via yt-dlp if API stream was unavailable or invalid
         need_fallback = (
@@ -311,7 +311,7 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
             (download_type == "video" and not _has_valid_video_stream(downloaded_file))
         )
         if need_fallback:
-            logger.info(f"Yuki API stream missed or missing video track, falling back to yt-dlp engine for: {title} ({vidid})...")
+            logger.info(f"ShrutiAPI stream missed or missing video track, falling back to yt-dlp engine for: {title} ({vidid})...")
             def _dl_sync():
                 cookie_file = _get_cookie_file()
                 # Strategy 1: android + tv_embedded + android_creator

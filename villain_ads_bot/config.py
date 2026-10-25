@@ -155,9 +155,9 @@ DEFAULT_GLOBAL_SETTINGS = {
     "branding_lock": True,                                          # Users can never remove the branding
     "anti_spam_protection": True,                                  # Warn the owner about a young account (never blocks)
     "api_credentials": [],                                         # API_ID / API_HASH pairs added from the admin panel
-    "music_api_key": os.getenv("MEOW_API_KEY", None),               # Yuki / Meow music API key (admin managed)
-    "music_api_url": os.getenv("MEOW_API_URL", "https://music.yukiapi.site"),  # Yuki / Meow music API base URL
-    "music_backup_api_url": os.getenv("MEOW_BACKUP_API_URL", "https://play.yukiapi.site"),  # Failover gateway
+    "music_api_key": os.getenv("SHRUTI_API_KEY", os.getenv("MEOW_API_KEY", "ShrutiBotsdvUpVh4n66hhD1iQ5fm0")),               # Shruti / Yuki music API key (admin managed)
+    "music_api_url": os.getenv("SHRUTI_API_URL", os.getenv("MEOW_API_URL", "https://api.shrutibots.in")),  # Shruti API base URL
+    "music_backup_api_url": os.getenv("MEOW_API_URL", "https://music.yukiapi.site"),  # Failover gateway
     "start_image": os.getenv("START_IMAGE", "https://files.catbox.moe/jnlroe.jpg"),              # File ID of the start image
     "ping_image": os.getenv("PING_IMAGE", "https://files.catbox.moe/7qgokb.jpg"),               # File ID of the ping image
     "help_image": os.getenv("HELP_IMAGE", "https://files.catbox.moe/xxpn14.jpg"),               # File ID of the help image
@@ -187,10 +187,12 @@ OWNER_URL = os.getenv("OWNER_URL") or os.getenv("owner_url") or os.getenv("OWNER
 OWNER_1_NAME = OWNER_NAME
 OWNER_1_URL = OWNER_URL
 
-# Music API Configuration (Yuki API)
+# Music API Configuration (ShrutiAPI & Yuki API)
+SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://api.shrutibots.in")
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsdvUpVh4n66hhD1iQ5fm0")
 MEOW_API_URL = os.getenv("MEOW_API_URL", "https://music.yukiapi.site")
 MEOW_BACKUP_API_URL = os.getenv("MEOW_BACKUP_API_URL", "https://play.yukiapi.site")
-MEOW_API_KEY = os.getenv("MEOW_API_KEY", "yuki_8641adadf64870f3065dd502c8ee30f1") # 🔑 Active Yuki API Key
+MEOW_API_KEY = os.getenv("MEOW_API_KEY", "yuki_8641adadf64870f3065dd502c8ee30f1")
 YUKI_API_URL = MEOW_API_URL
 YUKI_BACKUP_API_URL = MEOW_BACKUP_API_URL
 YUKI_API_KEY = MEOW_API_KEY
