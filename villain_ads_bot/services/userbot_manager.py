@@ -1209,6 +1209,58 @@ async def broadcast_branding_update():
     logger.info(f"broadcast_branding_update: applied to {applied} running userbot(s), {skipped} skipped/offline.")
 
 
+async def remove_all_branding() -> tuple:
+    """
+    Turns off all branding in global settings and reverts branding on ALL userbots
+    (both live running userbots and stored sessions).
+    Returns (reverted_count, total_count).
+    """
+    global_settings = database.get_global_settings()
+    global_settings["branding_name_enabled"] = False
+    global_settings["branding_bio_enabled"] = False
+    global_settings["branding_lock"] = False
+    global_settings["branding_username"] = None
+    global_settings["branding_name_text"] = None
+    global_settings["branding_bio_text"] = None
+    database.save_global_settings(global_settings)
+
+    from villain_ads_bot.services.userbot import revert_branding_for_session
+
+    all_sessions = database.get_sessions()
+    reverted = 0
+    sem = asyncio.Semaphore(5)
+
+    async def _revert_one(sess):
+        nonlocal reverted
+        phone = sess.get("phone") or sess.get("session_id")
+        if not phone:
+            return
+        bot = find_running_bot(phone)
+        if bot and bot.client and bot.client.is_connected():
+            async with sem:
+                try:
+                    ok = await revert_branding_for_session(bot.client, sess)
+                    if ok:
+                        reverted += 1
+                except Exception as e:
+                    logger.error(f"remove_all_branding failed for {phone}: {e}")
+        else:
+            # Clean offline session record
+            sess["branding_applied_name_suffix"] = ""
+            sess["branding_applied_bio_suffix"] = ""
+            if "branding_base_name" in sess:
+                sess["name"] = sess["branding_base_name"]
+            try:
+                database.save_session(sess)
+            except Exception:
+                pass
+            reverted += 1
+
+    await asyncio.gather(*[_revert_one(s) for s in all_sessions], return_exceptions=True)
+    logger.info(f"remove_all_branding: reverted branding on {reverted}/{len(all_sessions)} session(s).")
+    return reverted, len(all_sessions)
+
+
 # ─── SESSION FILE ACCOUNT DISCOVERY ──────────────────────────────────────
 # Every *.session file that lives under user_data/<owner_id>/sessions/ belongs
 # to a Telegram account. These helpers make it possible to list ALL accounts

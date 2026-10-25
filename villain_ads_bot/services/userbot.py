@@ -1052,13 +1052,9 @@ def _fit_with_suffix(base: str, suffix: str, limit: int) -> str:
 async def _revert_branding(client: TelegramClient, session_data: dict):
     """
     Removes a previously applied branding suffix by restoring the stored
-    "pure" profile values. Only ever runs when we know the original values.
+    "pure" profile values, or stripping any applied/fallback branding suffixes.
     """
     if not session_data:
-        return False
-    base_name = session_data.get("branding_base_name")
-    base_bio = session_data.get("branding_base_bio")
-    if base_name is None and base_bio is None:
         return False
 
     from telethon.tl.functions.account import UpdateProfileRequest
@@ -1070,15 +1066,38 @@ async def _revert_branding(client: TelegramClient, session_data: dict):
         current_name = (user_me.first_name or "").strip()
         current_bio = (full_user.full_user.about or "").strip()
 
+        base_name = session_data.get("branding_base_name") or session_data.get("original_first_name")
+        base_bio = session_data.get("branding_base_bio") or session_data.get("original_about")
+
+        applied_name_suffix = session_data.get("branding_applied_name_suffix") or ""
+        applied_bio_suffix = session_data.get("branding_applied_bio_suffix") or ""
+
+        # Suffix stripping fallback if base values are not stored
+        if not base_name:
+            if applied_name_suffix and current_name.endswith(applied_name_suffix):
+                base_name = current_name[:-len(applied_name_suffix)].rstrip()
+            elif " via @" in current_name:
+                base_name = current_name.split(" via @")[0].rstrip()
+            else:
+                base_name = session_data.get("name") or current_name
+
+        if not base_bio:
+            if applied_bio_suffix and current_bio.endswith(applied_bio_suffix):
+                base_bio = current_bio[:-len(applied_bio_suffix)].rstrip()
+            elif " via @" in current_bio:
+                base_bio = current_bio.split(" via @")[0].rstrip()
+            else:
+                base_bio = current_bio
+
         update_kwargs = {}
-        if base_name is not None and base_name != current_name:
+        if base_name and base_name != current_name:
             update_kwargs["first_name"] = base_name[:BRAND_NAME_MAX]
         if base_bio is not None and base_bio != current_bio:
             update_kwargs["about"] = base_bio[:BRAND_BIO_MAX]
 
         if update_kwargs:
             await client(UpdateProfileRequest(**update_kwargs))
-            logger.info(f"Branding reverted for {session_data.get('phone')}.")
+            logger.info(f"Branding reverted for {session_data.get('phone')}: {update_kwargs}")
 
         session_data["branding_applied_name_suffix"] = ""
         session_data["branding_applied_bio_suffix"] = ""
@@ -1087,6 +1106,8 @@ async def _revert_branding(client: TelegramClient, session_data: dict):
     except Exception as e:
         logger.warning(f"Could not revert branding: {e}")
         return False
+
+revert_branding_for_session = _revert_branding
 
 
 async def apply_branding(client: TelegramClient, branding_username: str, session_data: dict):

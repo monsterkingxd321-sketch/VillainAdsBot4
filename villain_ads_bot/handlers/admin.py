@@ -123,10 +123,6 @@ async def show_admin_panel(event, user_id: int):
         ],
         [
             utils.styled_button(utils.get_text("btn_set_lg", lang), "admin_set_lg", style="primary"),
-            utils.styled_button(utils.get_text("btn_set_bu", lang), "admin_set_bu", style="primary")
-        ],
-        [
-            utils.styled_button(utils.get_text("btn_set_bd", lang), "admin_set_bd", style="primary"),
             utils.styled_button("🖼️ Manage Images & Ui", "admin_manage_images", style="primary")
         ],
         [
@@ -4057,6 +4053,24 @@ def register_handlers(client):
             await event.answer("❌ Failed to apply branding.", alert=True)
         await show_branding_settings(event, user_id)
 
+    @client.on(events.CallbackQuery(pattern=r"^admin_remove_branding_now$"))
+    async def admin_remove_branding_now_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+
+        await event.answer("⏳ Removing branding from all userbots...", alert=False)
+        from villain_ads_bot.services import userbot_manager
+        try:
+            reverted, total = await userbot_manager.remove_all_branding()
+            await event.answer(f"✅ Branding removed from {reverted}/{total} userbots!", alert=True)
+        except Exception as e:
+            logger.error(f"Manual branding remove failed: {e}")
+            utils.report_error("admin_remove_branding_now", e)
+            await event.answer("❌ Failed to remove branding.", alert=True)
+        await show_branding_settings(event, user_id)
+
 
 async def show_branding_settings(event, user_id: int):
     user = database.get_user(user_id)
@@ -4102,7 +4116,8 @@ async def show_branding_settings(event, user_id: int):
             utils.styled_button("🔒 Toggle Branding Lock", "admin_tgl_brand_lock_opt", style="primary")
         ],
         [
-            utils.styled_button("🚀 Apply To All Userbots", "admin_apply_branding_now", style="success")
+            utils.styled_button("🚀 Apply To All Userbots", "admin_apply_branding_now", style="success"),
+            utils.styled_button("🗑️ Remove All Branding", "admin_remove_branding_now", style="danger")
         ],
         [
             utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")
