@@ -3552,13 +3552,31 @@ def register_handlers(client):
                 
             progress_msg = await event.reply(f"<blockquote><b>» ⏳ Joining Voice Chat On {len(running_phones)} Userbots...</b></blockquote>", parse_mode="html")
             
+            resolved_chat_id = None
+            for p in running_phones:
+                b_obj = userbot_manager.find_running_bot(p)
+                if b_obj and b_obj.client:
+                    try:
+                        from villain_ads_bot.services.userbot import get_peer_from_link
+                        ent = await get_peer_from_link(b_obj.client, link)
+                        if ent:
+                            import telethon.utils as tu
+                            resolved_chat_id = tu.get_peer_id(ent)
+                            break
+                    except Exception:
+                        pass
+
             async def _join_vc_concurrent(idx, phone_num):
+                nonlocal resolved_chat_id
                 if idx > 0:
-                    await asyncio.sleep(idx * 0.3)
+                    await asyncio.sleep(idx * 0.4)
                 bot_obj = userbot_manager.find_running_bot(phone_num)
                 if not bot_obj:
                     return phone_num, False, "Userbot is not running."
-                success, msg = await bot_obj.join_voice_chat(link)
+                target = resolved_chat_id if resolved_chat_id else link
+                success, msg = await bot_obj.join_voice_chat(target)
+                if success and not resolved_chat_id and bot_obj.current_vc_chat_id:
+                    resolved_chat_id = bot_obj.current_vc_chat_id
                 return phone_num, success, msg
                 
             results = await asyncio.gather(*[_join_vc_concurrent(i, p) for i, p in enumerate(running_phones)], return_exceptions=True)
@@ -4061,12 +4079,30 @@ def register_handlers(client):
             vc_joins = 0
             if len(links) == 1 and total_joins_success > 0:
                 link = links[0]
+                resolved_chat_id = None
+                for p in running_phones:
+                    b_obj = userbot_manager.find_running_bot(p)
+                    if b_obj and b_obj.client:
+                        try:
+                            from villain_ads_bot.services.userbot import get_peer_from_link
+                            ent = await get_peer_from_link(b_obj.client, link)
+                            if ent:
+                                import telethon.utils as tu
+                                resolved_chat_id = tu.get_peer_id(ent)
+                                break
+                        except Exception:
+                            pass
+
                 for p in running_phones:
                     b_obj = userbot_manager.find_running_bot(p)
                     if b_obj:
-                        vc_ok, _ = await b_obj.join_voice_chat(link)
+                        target = resolved_chat_id if resolved_chat_id else link
+                        vc_ok, _ = await b_obj.join_voice_chat(target)
                         if vc_ok:
                             vc_joins += 1
+                            if not resolved_chat_id and b_obj.current_vc_chat_id:
+                                resolved_chat_id = b_obj.current_vc_chat_id
+                        await asyncio.sleep(0.5)
 
             remaining_groups = max(0, len(links) * len(running_phones) - total_joins_success - total_joins_failed)
             flash = (

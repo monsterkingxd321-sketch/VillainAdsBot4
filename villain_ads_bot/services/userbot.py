@@ -601,7 +601,7 @@ async def get_peer_from_link(client: TelegramClient, link: str):
         except Exception as e_imp:
             logger.warning(f"ImportChatInviteRequest error for hash {hash_val}: {e_imp}")
 
-        # Re-check if invite now returns ChatInviteAlready
+        # Re-check if invite now returns ChatInviteAlready or ChatInvite with title
         try:
             recheck = await client(CheckChatInviteRequest(hash_val))
             if isinstance(recheck, ChatInviteAlready):
@@ -609,28 +609,22 @@ async def get_peer_from_link(client: TelegramClient, link: str):
                     return await client.get_entity(recheck.chat)
                 except Exception:
                     return recheck.chat
+            elif not invite_info and hasattr(recheck, "title"):
+                invite_info = recheck
         except Exception:
             pass
 
-        # If we have title from invite_info, search dialogs
+        # If we have title from invite_info, search dialogs for exact match
         target_title = getattr(invite_info, "title", None) if invite_info else None
         if target_title:
             target_norm = target_title.strip().lower()
             try:
                 async for dialog in client.iter_dialogs(limit=500):
                     d_name = (dialog.name or getattr(dialog.entity, "title", "") or "").strip().lower()
-                    if d_name and (d_name == target_norm or target_norm in d_name):
+                    if d_name and (d_name == target_norm or target_norm == d_name):
                         return dialog.entity
             except Exception:
                 pass
-
-        # Search top recent dialogs (supergroups/channels) if we just joined
-        try:
-            async for dialog in client.iter_dialogs(limit=25):
-                if dialog.is_channel or dialog.is_group:
-                    return dialog.entity
-        except Exception:
-            pass
 
         return None
 
@@ -1640,6 +1634,11 @@ class UserBot:
                 sess_data["vc_link"] = link_str
                 database.save_session(sess_data)
                 
+            try:
+                await self.sync_call_participant_state(full_chat_id, muted=True, video_stopped=True)
+            except Exception:
+                pass
+
             return True, f"Successfully joined Voice Chat of <b>{chat_title}</b>!"
         except Exception as e:
             logger.exception("Error in join_voice_chat")
@@ -1829,6 +1828,12 @@ class UserBot:
                     bind_client._cache.set_cache(numeric_chat_id, input_call)
                     if isinstance(chat_id, int) and chat_id != numeric_chat_id:
                         bind_client._cache.set_cache(chat_id, input_call)
+                    cid_str = str(numeric_chat_id)
+                    if cid_str.startswith("-100"):
+                        try:
+                            bind_client._cache.set_cache(int(cid_str[4:]), input_call)
+                        except Exception:
+                            pass
                     logger.info(f"PyTgCalls cache pre-populated for chat {numeric_chat_id} (Call ID: {group_call.id})")
         except Exception as e:
             logger.debug(f"Could not pre-populate PyTgCalls cache for {chat_id}: {e}")
@@ -1855,6 +1860,56 @@ class UserBot:
         elif hasattr(pytg, "leave_group_call"):
             return await pytg.leave_group_call(chat_id)
 
+    async def sync_call_participant_state(
+        self,
+        chat_id: Union[int, str],
+        muted: bool = False,
+        video_stopped: bool = True
+    ) -> bool:
+        """
+        Directly notifies Telegram MTProto server of participant's muted and video_stopped state.
+        This is REQUIRED so Telegram UI immediately shows the video stream tile and unmuted mic.
+        """
+        if not self.is_running or not self.client:
+            return False
+        try:
+            from telethon.tl.functions.phone import EditGroupCallParticipantRequest
+            from telethon.tl.functions.channels import GetFullChannelRequest
+            from telethon.tl.functions.messages import GetFullChatRequest
+            from telethon.tl.types import InputGroupCall, Channel, InputPeerSelf
+            import telethon.utils as tu
+
+            target_ent = None
+            try:
+                target_ent = await self.client.get_entity(chat_id)
+            except Exception:
+                pass
+            if not target_ent:
+                return False
+
+            if isinstance(target_ent, Channel) or hasattr(target_ent, "access_hash"):
+                full = await self.client(GetFullChannelRequest(target_ent))
+            else:
+                full = await self.client(GetFullChatRequest(getattr(target_ent, "id", chat_id)))
+
+            group_call = getattr(full.full_chat, "call", None)
+            if not group_call or not hasattr(group_call, "id") or not hasattr(group_call, "access_hash"):
+                return False
+
+            await self.client(EditGroupCallParticipantRequest(
+                call=InputGroupCall(id=group_call.id, access_hash=group_call.access_hash),
+                participant=InputPeerSelf(),
+                muted=muted,
+                video_stopped=video_stopped,
+                video_paused=False,
+                presentation_paused=False
+            ))
+            logger.info(f"Userbot {self.session_id} synced participant state to Telegram: muted={muted}, video_stopped={video_stopped}")
+            return True
+        except Exception as e:
+            logger.debug(f"sync_call_participant_state note for {chat_id}: {e}")
+            return False
+
     async def mute_mic(self, chat_id: Optional[int] = None) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
         if not self.is_running or not target_chat:
@@ -1863,6 +1918,7 @@ class UserBot:
             pytg = await self.get_pytgcalls()
             await utils.pytg_mute(pytg, target_chat)
             self.is_muted = True
+            await self.sync_call_participant_state(target_chat, muted=True)
             return True, "Mic turned OFF (Muted)."
         except Exception as e:
             logger.error(f"Failed to mute: {e}")
@@ -1877,6 +1933,7 @@ class UserBot:
             pytg = await self.get_pytgcalls()
             await utils.pytg_unmute(pytg, target_chat)
             self.is_muted = False
+            await self.sync_call_participant_state(target_chat, muted=False)
             return True, "Mic turned ON (Unmuted)."
         except Exception as e:
             logger.error(f"Failed to unmute: {e}")
@@ -1905,6 +1962,7 @@ class UserBot:
             self.is_muted = True
             self.joined_vcs.add(target_chat)
             self.current_vc_chat_id = target_chat
+            await self.sync_call_participant_state(target_chat, muted=True, video_stopped=True)
             logger.info(f"Userbot {self.session_id} successfully idling in VC {target_chat}")
             return True
         except Exception as e:
@@ -2076,6 +2134,7 @@ class UserBot:
                 if has_video_track:
                     stream_obj = MediaStream(
                         file_path,
+                        audio_path=file_path,
                         video_parameters=VideoQuality.HD_720p,
                         video_flags=MediaStream.Flags.REQUIRED
                     )
@@ -2102,6 +2161,7 @@ class UserBot:
                 if play_type == "video":
                     stream_obj = MediaStream(
                         file_path,
+                        audio_path=file_path,
                         video_parameters=VideoQuality.SD_480p,
                         video_flags=MediaStream.Flags.REQUIRED
                     )
@@ -2134,29 +2194,17 @@ class UserBot:
                 logger.warning(f"Could not auto-unmute stream on play: {unmute_err}")
                 utils.report_error(f"userbot.play_song.unmute:{self.session_id}", unmute_err)
 
-            # If playing video, ensure video is unstopped in group call status
-            if play_type == "video":
-                try:
-                    from telethon.tl.types import InputPeerSelf
-                    from telethon.tl.functions.phone import EditGroupCallParticipantRequest
-                    # Set via telethon client directly using InputGroupCall & InputPeerSelf
-                    input_call = None
-                    if hasattr(pytg, "_app") and hasattr(pytg._app, "get_input_call"):
-                        input_call = await pytg._app.get_input_call(actual_chat)
-                    if input_call:
-                        await self.client(
-                            EditGroupCallParticipantRequest(
-                                call=input_call,
-                                participant=InputPeerSelf(),
-                                muted=False,
-                                video_stopped=False,
-                                video_paused=False,
-                                presentation_paused=False
-                            )
-                        )
-                        logger.info(f"Directly called EditGroupCallParticipantRequest video_stopped=False for {actual_chat}")
-                except Exception as vid_status_err:
-                    logger.debug(f"Direct video call status update note: {vid_status_err}")
+            # Sync participant state to Telegram server (unmute mic and start/stop camera video tile)
+            try:
+                is_video_streaming = (play_type == "video" and has_video_track)
+                await self.sync_call_participant_state(
+                    actual_chat,
+                    muted=False,
+                    video_stopped=not is_video_streaming
+                )
+                logger.info(f"Synced participant state for {actual_chat}: muted=False, video_stopped={not is_video_streaming}")
+            except Exception as vid_status_err:
+                logger.debug(f"Direct video call status update note: {vid_status_err}")
             
             # Save playing status in MongoDB
             sess_data = database.get_session(self.session_id)
