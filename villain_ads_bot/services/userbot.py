@@ -3878,27 +3878,48 @@ class UserBot:
                                 is_reply_target = is_explicit_mention or is_reply_to_us
 
                 if is_reply_target and auto_reply_enabled:
-                    now = time.time()
-                    
+                    if not hasattr(self, "_auto_reply_lock") or self._auto_reply_lock is None:
+                        self._auto_reply_lock = asyncio.Lock()
+
+                    # Drop concurrent triggers immediately if already typing or sending a reply:
+                    if self._auto_reply_lock.locked():
+                        return
+
                     if not hasattr(self, "tag_user_cooldown") or self.tag_user_cooldown is None:
                         self.tag_user_cooldown = {}
                     if not hasattr(self, "tag_cooldown") or self.tag_cooldown is None:
                         self.tag_cooldown = {}
 
                     user_key = (event.chat_id, sender_id)
-                    last_user_time = self.tag_user_cooldown.get(user_key, 0)
-                    last_chat_time = self.tag_cooldown.get(event.chat_id, 0)
-                    last_global = getattr(self, "_last_reply_ts", 0.0)
 
-                    # Anti-spam, rate-limit & ban protection cooldowns:
-                    # 1. Per-user cooldown: The same user cannot spam auto-replies more than once per 15s in this chat
-                    # 2. Per-chat cooldown: At least 6.0s gap between auto-replies in the same chat
-                    # 3. Global account cooldown: At least 6.0s gap across all chats so account is never flagged
-                    user_cooldown = 15.0
-                    chat_cooldown = 6.0
-                    global_gap = max(6.0, float(current_settings.get("auto_reply_global_gap", 6.0) or 6.0))
+                    # Align auto-chat pacing with the user's configured interval (inter_group_delay):
+                    configured_interval = float(current_settings.get("inter_group_delay", 30.0) or 30.0)
+                    if configured_interval <= 0:
+                        configured_interval = 30.0
 
-                    if (now - last_user_time >= user_cooldown) and (now - last_chat_time >= chat_cooldown) and (now - last_global >= global_gap):
+                    # Safe base interval aligned to the user's set interval (minimum 30.0s so Telegram account ID never gets limited)
+                    safe_interval = max(30.0, configured_interval)
+
+                    # Cooldowns aligned with the userbot's set interval:
+                    # 1. Global account cooldown: At least safe_interval between replies across all chats
+                    # 2. Per-chat cooldown: At least safe_interval in this same chat
+                    # 3. Per-user cooldown: The same user cannot spam auto-replies in less than 60s (or 2x interval)
+                    global_gap = safe_interval
+                    chat_cooldown = safe_interval
+                    user_cooldown = max(60.0, safe_interval * 2.0)
+
+                    async with self._auto_reply_lock:
+                        now = time.time()
+                        last_user_time = self.tag_user_cooldown.get(user_key, 0)
+                        last_chat_time = self.tag_cooldown.get(event.chat_id, 0)
+                        last_global = getattr(self, "_last_reply_ts", 0.0)
+
+                        if (now - last_user_time < user_cooldown) or (now - last_chat_time < chat_cooldown) or (now - last_global < global_gap):
+                            return
+
+                        # Set global timestamp forward during typing to prevent any overlap
+                        self._last_reply_ts = now + 999.0
+
                         # Prune cooldown maps periodically to prevent memory bloat
                         if len(self.tag_user_cooldown) > 1000:
                             cutoff = now - 600
@@ -3936,13 +3957,9 @@ class UserBot:
                         )
                         processed_reply = utils.normalize_text(processed_reply)
 
-                        self.tag_user_cooldown[user_key] = now
-                        self.tag_cooldown[event.chat_id] = now
-                        self._last_reply_ts = now
-
                         try:
-                            # Natural human typing simulation (3.0 - 5.0s) to avoid bot detection and flood limits
-                            typing_delay = random.uniform(3.0, 5.0)
+                            # Natural human typing simulation (4.0 - 7.0s) so it feels authentic and avoids Telegram bot detection
+                            typing_delay = random.uniform(4.0, 7.0)
                             try:
                                 async with self.client.action(event.chat_id, 'typing'):
                                     await asyncio.sleep(typing_delay)
@@ -3950,6 +3967,7 @@ class UserBot:
                                 await asyncio.sleep(typing_delay)
 
                             if not self.is_running:
+                                self._last_reply_ts = time.time()
                                 logger.info(
                                     f"Auto-reply skipped in chat {event.chat_id} - "
                                     f"the userbot was stopped."
@@ -3962,21 +3980,27 @@ class UserBot:
                                     await event.reply(processed_reply, parse_mode=None)
                                 except Exception:
                                     await self.client.send_message(event.chat_id, processed_reply, parse_mode='html')
-                            logger.info(f"Auto-replied ({ar_mode} mode) to sender {sender_id} in chat {event.chat_id} for userbot {self.session_id}")
+                            
+                            sent_now = time.time()
+                            self.tag_user_cooldown[user_key] = sent_now
+                            self.tag_cooldown[event.chat_id] = sent_now
+                            self._last_reply_ts = sent_now
+                            logger.info(f"Auto-replied ({ar_mode} mode, aligned interval {safe_interval}s) to sender {sender_id} in chat {event.chat_id} for userbot {self.session_id}")
                         except FloodWaitError as fwe:
                             wait_s = getattr(fwe, "seconds", 30) or 30
                             logger.warning(
                                 f"Telegram FloodWait of {wait_s}s on auto-reply in chat {event.chat_id} "
                                 f"for userbot {self.session_id}"
                             )
-                            self._last_reply_ts = time.time() + wait_s + 5.0
+                            self._last_reply_ts = time.time() + wait_s + 10.0
                         except PeerFloodError:
                             logger.warning(
                                 f"PeerFloodError on auto-reply in chat {event.chat_id} "
-                                f"for userbot {self.session_id}. Backing off for 60s."
+                                f"for userbot {self.session_id}. Backing off for 120s."
                             )
-                            self._last_reply_ts = time.time() + 60.0
+                            self._last_reply_ts = time.time() + 120.0
                         except Exception as reply_err:
+                            self._last_reply_ts = time.time()
                             logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
 
     async def broadcast_round(self, progress_msg=None, delay: float = None,
