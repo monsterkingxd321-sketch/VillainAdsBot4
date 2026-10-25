@@ -1346,6 +1346,8 @@ class UserBot:
         self.watchdog_task: Optional[asyncio.Task] = None
         self.joined_vcs: Set[int] = set()
         self.tag_cooldown = {}
+        self.tag_user_cooldown = {}
+        self._auto_reply_counter = 0
         # Timestamp of the last auto reply of THIS account (global limiter).
         self._last_reply_ts = 0.0
         self.vc_keepalive_task: Optional[asyncio.Task] = None
@@ -3835,42 +3837,62 @@ class UserBot:
                                     except Exception:
                                         pass
 
-                                is_mentioned = bool(getattr(event, "mentioned", False))
+                                is_explicit_mention = False
                                 raw_text_lower = (event.raw_text or "").lower()
                                 if self.username and f"@{self.username.lower()}" in raw_text_lower:
-                                    is_mentioned = True
+                                    is_explicit_mention = True
                                 if self.me_id and f"tg://user?id={self.me_id}" in raw_text_lower:
-                                    is_mentioned = True
+                                    is_explicit_mention = True
                                 if getattr(event, "entities", None):
                                     try:
                                         for ent in event.entities:
                                             if isinstance(ent, (tl_types.MessageEntityMentionName, tl_types.InputMessageEntityMentionName)):
                                                 if getattr(ent, "user_id", None) == self.me_id:
-                                                    is_mentioned = True
+                                                    is_explicit_mention = True
                                                     break
                                     except Exception:
                                         pass
 
-                                is_reply_target = is_mentioned or is_reply_to_us
+                                # Fallback: only if event.mentioned is True AND text does not explicitly target another username
+                                if not is_explicit_mention and getattr(event, "mentioned", False):
+                                    other_mentions = re.findall(r"@([a-zA-Z0-9_]{3,32})", raw_text_lower)
+                                    if not other_mentions:
+                                        is_explicit_mention = True
+                                    elif self.username and self.username.lower() in other_mentions:
+                                        is_explicit_mention = True
+
+                                is_reply_target = is_explicit_mention or is_reply_to_us
 
                 if is_reply_target and auto_reply_enabled:
                     now = time.time()
-                    last_reply_time = self.tag_cooldown.get(event.chat_id, 0)
+                    
+                    if not hasattr(self, "tag_user_cooldown") or self.tag_user_cooldown is None:
+                        self.tag_user_cooldown = {}
+                    if not hasattr(self, "tag_cooldown") or self.tag_cooldown is None:
+                        self.tag_cooldown = {}
 
-                    # Prune the cooldown map so it cannot grow forever.
-                    if len(self.tag_cooldown) > 500:
-                        cutoff = now - 1800
-                        self.tag_cooldown = {
-                            cid: ts for cid, ts in self.tag_cooldown.items() if ts > cutoff
-                        }
-
+                    user_key = (event.chat_id, sender_id)
+                    last_user_time = self.tag_user_cooldown.get(user_key, 0)
+                    last_chat_time = self.tag_cooldown.get(event.chat_id, 0)
                     last_global = getattr(self, "_last_reply_ts", 0.0)
-                    global_gap = float(current_settings.get("auto_reply_global_gap", 2.0) or 2.0)
-                    chat_cooldown = 1.5
 
-                    global_ok = (now - last_global) >= global_gap
+                    # Cooldowns:
+                    # 1. Per-user cooldown: The same user cannot spam auto-replies in less than 4 seconds in this chat
+                    # 2. Per-chat cooldown: At least 1.0s gap between auto-replies in the same chat
+                    # 3. Global account cooldown: At least 1.5s gap between auto-replies across all chats
+                    user_cooldown = 4.0
+                    chat_cooldown = 1.0
+                    global_gap = float(current_settings.get("auto_reply_global_gap", 1.5) or 1.5)
 
-                    if (now - last_reply_time >= chat_cooldown) and global_ok:
+                    if (now - last_user_time >= user_cooldown) and (now - last_chat_time >= chat_cooldown) and (now - last_global >= global_gap):
+                        # Prune cooldown maps periodically to prevent memory bloat
+                        if len(self.tag_user_cooldown) > 1000:
+                            cutoff = now - 600
+                            self.tag_user_cooldown = {k: ts for k, ts in self.tag_user_cooldown.items() if ts > cutoff}
+                        if len(self.tag_cooldown) > 500:
+                            cutoff = now - 600
+                            self.tag_cooldown = {cid: ts for cid, ts in self.tag_cooldown.items() if ts > cutoff}
+
                         DEFAULT_REPLIES = [
                             "Hello! How can I help you? 😊",
                             "Hey there! Thanks for reaching out. Please leave a message! 💬",
@@ -3880,42 +3902,49 @@ class UserBot:
                         candidates = utils.get_auto_reply_messages(current_settings)
                         if not candidates:
                             candidates = DEFAULT_REPLIES
+
                         ar_mode = current_settings.get("auto_reply_mode", "single")
-                        if ar_mode == "multiple":
-                            msgs_to_send = candidates
+                        
+                        # Separate reply depending upon mode (NEVER spam all messages together on a single tag!):
+                        if ar_mode == "multiple" and len(candidates) > 1:
+                            # In multiple mode: rotate round-robin across candidates so each tag gets a separate message!
+                            if not hasattr(self, "_auto_reply_counter"):
+                                self._auto_reply_counter = 0
+                            selected_reply = candidates[self._auto_reply_counter % len(candidates)]
+                            self._auto_reply_counter = (self._auto_reply_counter + 1) % len(candidates)
                         else:
+                            # In single mode: send the single configured auto-reply message
                             single_msg = current_settings.get("auto_reply_msg")
-                            msgs_to_send = [single_msg] if single_msg else [candidates[0]]
+                            selected_reply = single_msg if single_msg else candidates[0]
 
-                        for idx, selected_reply in enumerate(msgs_to_send):
-                            if idx > 0:
-                                await asyncio.sleep(0.4)
-                            processed_reply = antispam.vary_message(
-                                selected_reply, group_id=event.chat_id, tag=False)
-                            processed_reply = utils.normalize_text(processed_reply)
+                        processed_reply = antispam.vary_message(
+                            selected_reply, group_id=event.chat_id, tag=False
+                        )
+                        processed_reply = utils.normalize_text(processed_reply)
 
-                            self.tag_cooldown[event.chat_id] = now
-                            self._last_reply_ts = now
+                        self.tag_user_cooldown[user_key] = now
+                        self.tag_cooldown[event.chat_id] = now
+                        self._last_reply_ts = now
 
+                        try:
+                            # Small human-like typing delay before replying
+                            await asyncio.sleep(0.5)
+                            if not self.is_running:
+                                logger.info(
+                                    f"Auto-reply skipped in chat {event.chat_id} - "
+                                    f"the userbot was stopped."
+                                )
+                                return
                             try:
-                                if idx == 0:
-                                    await asyncio.sleep(0.5)
-                                if not self.is_running:
-                                    logger.info(
-                                        f"Auto-reply skipped in chat {event.chat_id} - "
-                                        f"the userbot was stopped."
-                                    )
-                                    continue
+                                await event.reply(processed_reply, parse_mode='html')
+                            except Exception:
                                 try:
-                                    await event.reply(processed_reply, parse_mode='html')
+                                    await event.reply(processed_reply, parse_mode=None)
                                 except Exception:
-                                    try:
-                                        await event.reply(processed_reply, parse_mode=None)
-                                    except Exception:
-                                        await self.client.send_message(event.chat_id, processed_reply, parse_mode='html')
-                                logger.info(f"Auto-replied ({ar_mode} mode) in chat {event.chat_id} for userbot {self.session_id}")
-                            except Exception as reply_err:
-                                logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
+                                    await self.client.send_message(event.chat_id, processed_reply, parse_mode='html')
+                            logger.info(f"Auto-replied ({ar_mode} mode) to sender {sender_id} in chat {event.chat_id} for userbot {self.session_id}")
+                        except Exception as reply_err:
+                            logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
 
     async def broadcast_round(self, progress_msg=None, delay: float = None,
                               force: bool = False) -> dict:
