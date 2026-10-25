@@ -13,7 +13,7 @@ from villain_ads_bot.data import database
 from villain_ads_bot.core import utils
 from villain_ads_bot.services import userbot_manager
 from villain_ads_bot.services.youtube import YouTube
-from villain_ads_bot.services.userbot import download_media, extract_media_info, generate_silence
+from villain_ads_bot.services.userbot import download_media, extract_media_info, generate_silence, get_local_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -367,11 +367,13 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         if prev_companions:
             companion_bots = [cb for cb in prev_companions if cb.is_running]
         else:
-            owner_uid = getattr(bot_obj, "owner_id", None) or requester_id
-            if owner_uid:
-                companion_bots = userbot_manager.get_running_userbots_for_owner(
-                    owner_uid, chat_id=chat_id, exclude_bot=bot_obj
-                )
+            companion_bots = userbot_manager.get_running_userbots_in_vc(chat_id, exclude_bot=bot_obj)
+            if not companion_bots:
+                owner_uid = getattr(bot_obj, "owner_id", None) or requester_id
+                if owner_uid:
+                    companion_bots = userbot_manager.get_running_userbots_for_owner(
+                        owner_uid, chat_id=chat_id, exclude_bot=bot_obj
+                    )
     except Exception as comp_err:
         logger.debug(f"Companion bot lookup error in queue advance: {comp_err}")
 
@@ -381,12 +383,13 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
             try:
                 await c_bot.play_song(
                     query="",
-                    play_type=play_type,
+                    play_type="audio",
                     chat_id=chat_id,
                     local_file=local_fp,
                     title=song_info.get("title"),
                     duration=song_info.get("duration", 30)
                 )
+                await c_bot.unmute_mic(chat_id)
                 logger.info(f"Companion userbot {c_bot.session_id} streaming next track in VC {chat_id}")
             except Exception as c_err:
                 logger.warning(f"Companion userbot {c_bot.session_id} next stream error: {c_err}")
@@ -394,24 +397,18 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         asyncio.create_task(asyncio.gather(*[_stream_companion_next(cb) for cb in companion_bots], return_exceptions=True))
 
     thumb_enabled = database.get_thumbnail_setting(chat_id)
+    local_thumb = await get_local_thumbnail(song_info.get("thumb"), song_info.get("vid")) if thumb_enabled else None
+    if local_thumb:
+        song_info["thumb"] = local_thumb
+
     np_text = format_now_playing_text(song_info, requester_name, requester_id, stream_type=play_type, bot_count=len(companion_bots) + 1)
     buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
-    thumb_file = song_info.get("thumb")
 
     # The previous song's card is removed before the new one is posted so the
     # chat never accumulates stale player cards.
     previous = _active_chat_players.get(chat_id)
     if previous:
         await _delete_card_by_session(previous, chat_id)
-
-    # Accept both local file paths and HTTP URLs for thumbnail
-    def _thumb_valid(tf):
-        if not tf:
-            return False
-        s = str(tf)
-        if s.startswith("http"):
-            return True
-        return os.path.exists(s) and os.path.getsize(s) > 0
 
     sent_msg = None
     ub_client = getattr(bot_obj, "client", None)
@@ -426,8 +423,8 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
 
     if not sent_msg and _main_bot:
         try:
-            if thumb_enabled and _thumb_valid(thumb_file):
-                sent_msg = await _main_bot.send_message(chat_id, np_text, file=thumb_file, buttons=buttons, parse_mode="html")
+            if thumb_enabled and local_thumb:
+                sent_msg = await _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html")
             else:
                 sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html")
         except Exception as send_err:
@@ -436,8 +433,8 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
     # Fallback to userbot if main bot fails or is unavailable
     if not sent_msg and ub_client:
         try:
-            if thumb_enabled and _thumb_valid(thumb_file):
-                sent_msg = await ub_client.send_message(chat_id, np_text, file=thumb_file, parse_mode="html")
+            if thumb_enabled and local_thumb:
+                sent_msg = await ub_client.send_file(chat_id, local_thumb, caption=np_text, parse_mode="html")
             else:
                 sent_msg = await ub_client.send_message(chat_id, np_text, parse_mode="html")
         except Exception as ub_err:
@@ -525,11 +522,11 @@ def register_handlers(client):
             thumb_enabled = database.get_thumbnail_setting(target_chat_id)
             builder_res = None
             if thumb_enabled and thumb_file:
-                tf_str = str(thumb_file)
-                if tf_str.startswith("http") or (os.path.exists(tf_str) and os.path.getsize(tf_str) > 0):
+                local_thumb = await get_local_thumbnail(thumb_file, song_info.get("vid"))
+                if local_thumb and os.path.exists(local_thumb) and os.path.getsize(local_thumb) > 1000:
                     try:
                         builder_res = await event.builder.photo(
-                            file=thumb_file,
+                            file=local_thumb,
                             text=card_text,
                             parse_mode="html",
                             buttons=buttons
@@ -762,11 +759,13 @@ def register_handlers(client):
         # Stream concurrently on all companion userbots of this owner that are joined in this voice chat
         companion_bots = []
         try:
-            owner_uid = getattr(bot_obj, "owner_id", None) or user_id
-            if owner_uid:
-                companion_bots = userbot_manager.get_running_userbots_for_owner(
-                    owner_uid, chat_id=chat_id, exclude_bot=bot_obj
-                )
+            companion_bots = userbot_manager.get_running_userbots_in_vc(chat_id, exclude_bot=bot_obj)
+            if not companion_bots:
+                owner_uid = getattr(bot_obj, "owner_id", None) or user_id
+                if owner_uid:
+                    companion_bots = userbot_manager.get_running_userbots_for_owner(
+                        owner_uid, chat_id=chat_id, exclude_bot=bot_obj
+                    )
         except Exception as comp_err:
             logger.debug(f"Companion bot lookup error in play_command: {comp_err}")
 
@@ -776,12 +775,13 @@ def register_handlers(client):
                 try:
                     await c_bot.play_song(
                         query="",
-                        play_type=play_type,
+                        play_type="audio",
                         chat_id=chat_id,
                         local_file=local_fp,
                         title=song_info.get("title"),
                         duration=song_info.get("duration", 30)
                     )
+                    await c_bot.unmute_mic(chat_id)
                     logger.info(f"Companion userbot {c_bot.session_id} streaming in VC {chat_id}")
                 except Exception as c_err:
                     logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
@@ -790,10 +790,13 @@ def register_handlers(client):
             
         # 5. Render Now Playing Card
         thumb_enabled = database.get_thumbnail_setting(chat_id)
+        local_thumb = await get_local_thumbnail(song_info.get("thumb"), song_info.get("vid") or (vid if 'vid' in locals() else None)) if thumb_enabled else None
+        if local_thumb:
+            song_info["thumb"] = local_thumb
+
         np_text = format_now_playing_text(song_info, requester_name, user_id, stream_type=play_type, bot_count=len(companion_bots) + 1)
         buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
         
-        thumb_file = song_info.get("thumb")
         sent_msg = None
         ub_client = getattr(bot_obj, "client", None)
         bot_username = get_main_bot_username()
@@ -810,9 +813,9 @@ def register_handlers(client):
                 logger.debug(f"Play command inline query failed: {in_err}")
 
         if not sent_msg:
-            if thumb_enabled and thumb_file:
+            if thumb_enabled and local_thumb:
                 try:
-                    sent_msg = await event.respond(np_text, file=thumb_file, buttons=buttons)
+                    sent_msg = await event.respond(np_text, file=local_thumb, buttons=buttons)
                     try:
                         await progress_msg.delete()
                     except Exception:
@@ -874,12 +877,12 @@ def register_handlers(client):
                 await _delete_card_by_session(stale, chat_id)
                 for cb in stale.get("companion_bots", []):
                     try:
-                        await cb.stop_song(chat_id, leave_vc=True)
+                        await cb.stop_song(chat_id, leave_vc=False)
                     except Exception:
                         pass
             bot_obj, _ = await get_or_start_userbot_for_chat(user_id, chat_id)
             if bot_obj:
-                await bot_obj.stop_song(chat_id, leave_vc=True)
+                await bot_obj.stop_song(chat_id, leave_vc=False)
             
             empty_msg = await event.respond(
                 utils.format_html_message(

@@ -415,9 +415,77 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
     except Exception as e:
         logger.error(f"Download media exception: {e}")
         return None, None, None, None
-    except Exception as e:
-        logger.error(f"Download media exception: {e}")
-        return None, None, None, None
+
+
+async def get_local_thumbnail(thumb_source: Optional[str] = None, videoid: Optional[str] = None) -> Optional[str]:
+    """
+    Guarantees a local, valid image file path on disk for Telethon message/inline sending.
+    Downloads remote HTTP/HTTPS thumbnails or generates banner if missing.
+    """
+    if not thumb_source and not videoid:
+        return None
+
+    # 1. Check if thumb_source is an existing local file
+    if thumb_source and not str(thumb_source).startswith("http"):
+        p = str(thumb_source).strip()
+        if os.path.exists(p) and os.path.getsize(p) > 1000:
+            return os.path.abspath(p)
+
+    os.makedirs("cache", exist_ok=True)
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+    # 2. Check if cache or downloads already has a final banner or thumb
+    if videoid:
+        final_banner = os.path.join("cache", f"{videoid}_final.png")
+        if os.path.exists(final_banner) and os.path.getsize(final_banner) > 1000:
+            return os.path.abspath(final_banner)
+        raw_thumb = os.path.join(DOWNLOAD_DIR, f"{videoid}_thumb.jpg")
+        if os.path.exists(raw_thumb) and os.path.getsize(raw_thumb) > 1000:
+            return os.path.abspath(raw_thumb)
+
+    # 3. Try generating rich banner via thumb_gen
+    if videoid:
+        try:
+            from villain_ads_bot.thumb_gen import gen_thumb
+            gen_path = await gen_thumb(videoid)
+            if gen_path and os.path.exists(gen_path) and os.path.getsize(gen_path) > 1000:
+                return os.path.abspath(gen_path)
+        except Exception as e:
+            logger.debug(f"gen_thumb error in get_local_thumbnail: {e}")
+
+    # 4. Download remote thumbnail URL with browser User-Agent
+    urls_to_try = []
+    if thumb_source and str(thumb_source).startswith("http"):
+        urls_to_try.append(str(thumb_source))
+    if videoid:
+        urls_to_try.extend([
+            f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg",
+            f"https://img.youtube.com/vi/{videoid}/mqdefault.jpg",
+            f"https://img.youtube.com/vi/{videoid}/0.jpg"
+        ])
+
+    target_name = f"{videoid}_thumb.jpg" if videoid else f"thumb_{int(time.time())}.jpg"
+    dest_path = os.path.join(DOWNLOAD_DIR, target_name)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    import aiohttp
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for url in urls_to_try:
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                        if len(content) > 1000:
+                            with open(dest_path, "wb") as f:
+                                f.write(content)
+                            return os.path.abspath(dest_path)
+            except Exception:
+                continue
+
+    return None
 
 
 async def call_gpt_api(api_key: str, user_message: str) -> str:
@@ -1197,12 +1265,9 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
         # 4. Build the final values (suffix always kept intact).
         new_first_name = _fit_with_suffix(base_name, name_suffix if has_name_branding else "", BRAND_NAME_MAX)
         
-        # When admin sets a custom bio, set that EXACT bio completely across userbots (do not cut old bio)
+        # Build the final bio keeping suffix intact
         if has_bio_branding:
-            if brand_bio_text:
-                new_bio = brand_bio_text[:BRAND_BIO_MAX]
-            else:
-                new_bio = _fit_with_suffix(base_bio, bio_suffix, BRAND_BIO_MAX)
+            new_bio = _fit_with_suffix(base_bio, bio_suffix, BRAND_BIO_MAX)
         else:
             new_bio = base_bio[:BRAND_BIO_MAX]
 
@@ -1832,7 +1897,7 @@ class UserBot:
                                             if active:
                                                 from villain_ads_bot.handlers.player import _delete_card_by_session
                                                 await _delete_card_by_session(active, raw_chat_id)
-                                            await self.stop_song(raw_chat_id, leave_vc=True)
+                                            await self.stop_song(raw_chat_id, leave_vc=False)
                                     else:
                                         # Silence/idle stream finished. Userbot is idling in VC.
                                         # DO NOT leave voice chat! Keep userbot in VC with idle stream.
@@ -1885,7 +1950,7 @@ class UserBot:
                                         if active:
                                             from villain_ads_bot.handlers.player import _delete_card_by_session
                                             await _delete_card_by_session(active, raw_chat_id)
-                                        await self.stop_song(raw_chat_id, leave_vc=True)
+                                        await self.stop_song(raw_chat_id, leave_vc=False)
                                 else:
                                     logger.info(f"on_stream_end for idle VC {raw_chat_id} on userbot {self.session_id}: keeping connected.")
                                     await self.idle_in_vc(raw_chat_id)
@@ -1966,8 +2031,8 @@ class UserBot:
     async def sync_call_participant_state(
         self,
         chat_id: Union[int, str],
-        muted: bool = False,
-        video_stopped: bool = True
+        muted: Optional[bool] = None,
+        video_stopped: Optional[bool] = None
     ) -> bool:
         """
         Directly notifies Telegram MTProto server of participant's muted and video_stopped state.
@@ -1999,14 +2064,18 @@ class UserBot:
             if not group_call or not hasattr(group_call, "id") or not hasattr(group_call, "access_hash"):
                 return False
 
-            await self.client(EditGroupCallParticipantRequest(
-                call=InputGroupCall(id=group_call.id, access_hash=group_call.access_hash),
-                participant=InputPeerSelf(),
-                muted=muted,
-                video_stopped=video_stopped,
-                video_paused=False,
-                presentation_paused=False
-            ))
+            req_kwargs = {
+                "call": InputGroupCall(id=group_call.id, access_hash=group_call.access_hash),
+                "participant": InputPeerSelf(),
+                "video_paused": False,
+                "presentation_paused": False
+            }
+            if muted is not None:
+                req_kwargs["muted"] = muted
+            if video_stopped is not None:
+                req_kwargs["video_stopped"] = video_stopped
+
+            await self.client(EditGroupCallParticipantRequest(**req_kwargs))
             logger.info(f"Userbot {self.session_id} synced participant state to Telegram: muted={muted}, video_stopped={video_stopped}")
             return True
         except Exception as e:
@@ -2072,7 +2141,7 @@ class UserBot:
             logger.debug(f"idle_in_vc note for {target_chat}: {e}")
             return False
 
-    async def stop_song(self, chat_id: Optional[int] = None, leave_vc: bool = True) -> tuple:
+    async def stop_song(self, chat_id: Optional[int] = None, leave_vc: bool = False) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
         if not target_chat:
             return False, "Not in a Voice Chat."
@@ -2184,8 +2253,6 @@ class UserBot:
             pytg = await self.get_pytgcalls()
             from pytgcalls.types import MediaStream, VideoQuality
 
-
-            
             if play_type == "video":
                 has_video_track = False
                 try:
@@ -2202,9 +2269,9 @@ class UserBot:
                     has_video_track = True  # Assume true for mp4 if probe fails
                     
                 if has_video_track:
+                    # Pass single file_path to MediaStream without duplicating audio_path to prevent ffmpeg pipe stalls
                     stream_obj = MediaStream(
                         file_path,
-                        audio_path=file_path,
                         video_parameters=VideoQuality.HD_720p,
                         video_flags=MediaStream.Flags.REQUIRED
                     )
@@ -2223,15 +2290,9 @@ class UserBot:
                 logger.info(f"Playback succeeded for {actual_chat}")
             except Exception as play_err:
                 logger.warning(f"Initial playback failed ({play_err}), attempting fallback...")
-                try:
-                    await self._safe_leave(pytg, actual_chat)
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass
                 if play_type == "video":
                     stream_obj = MediaStream(
                         file_path,
-                        audio_path=file_path,
                         video_parameters=VideoQuality.SD_480p,
                         video_flags=MediaStream.Flags.REQUIRED
                     )
@@ -2266,13 +2327,13 @@ class UserBot:
 
             # Sync participant state to Telegram server (unmute mic and start/stop camera video tile)
             try:
-                is_video_streaming = (play_type == "video" and has_video_track)
+                is_video_streaming = bool(play_type == "video" and has_video_track)
                 await self.sync_call_participant_state(
                     actual_chat,
                     muted=False,
-                    video_stopped=not is_video_streaming
+                    video_stopped=(False if is_video_streaming else None)
                 )
-                logger.info(f"Synced participant state for {actual_chat}: muted=False, video_stopped={not is_video_streaming}")
+                logger.info(f"Synced participant state for {actual_chat}: muted=False, video_stopped={False if is_video_streaming else None}")
             except Exception as vid_status_err:
                 logger.debug(f"Direct video call status update note: {vid_status_err}")
             
@@ -3054,10 +3115,12 @@ class UserBot:
                             companion_bots = []
                             try:
                                 from villain_ads_bot.services import userbot_manager
-                                owner_uid = getattr(self, "owner_id", None) or requester_id
-                                companion_bots = userbot_manager.get_running_userbots_for_owner(
-                                    owner_uid, chat_id=chat_id, exclude_bot=self
-                                )
+                                companion_bots = userbot_manager.get_running_userbots_in_vc(chat_id, exclude_bot=self)
+                                if not companion_bots:
+                                    owner_uid = getattr(self, "owner_id", None) or requester_id
+                                    companion_bots = userbot_manager.get_running_userbots_for_owner(
+                                        owner_uid, chat_id=chat_id, exclude_bot=self
+                                    )
                             except Exception as c_lookup_err:
                                 logger.debug(f"Companion bot lookup error in userbot: {c_lookup_err}")
 
@@ -3067,12 +3130,13 @@ class UserBot:
                                     try:
                                         await c_bot.play_song(
                                             query="",
-                                            play_type=play_type,
+                                            play_type="audio",
                                             chat_id=chat_id,
                                             local_file=local_fp,
                                             title=song_info.get("title"),
                                             duration=song_info.get("duration", 30)
                                         )
+                                        await c_bot.unmute_mic(chat_id)
                                         logger.info(f"Companion userbot {c_bot.session_id} streaming track in VC {chat_id}")
                                     except Exception as c_err:
                                         logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
@@ -3121,8 +3185,9 @@ class UserBot:
                             _track_timer_tasks[chat_id] = asyncio.create_task(ub_track_auto_timer())
                             
                             thumb_enabled = database.get_thumbnail_setting(chat_id)
-                            thumb_file = song_info.get("thumb") if thumb_enabled else None
-                            _tf_valid = bool(thumb_file) and (str(thumb_file).startswith("http") or (os.path.exists(str(thumb_file)) and os.path.getsize(str(thumb_file)) > 0))
+                            local_thumb = await get_local_thumbnail(song_info.get("thumb"), song_info.get("vid") or (vid if 'vid' in locals() else None)) if thumb_enabled else None
+                            if local_thumb:
+                                song_info["thumb"] = local_thumb
                             
                             from villain_ads_bot.handlers.player import _main_bot, build_now_playing_markup, get_main_bot_username
                             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
@@ -3141,21 +3206,21 @@ class UserBot:
                             if not sent_msg:
                                 if _main_bot:
                                     try:
-                                        if thumb_enabled and _tf_valid:
-                                            sent_msg = await _main_bot.send_message(chat_id, np_text, file=thumb_file, buttons=buttons, parse_mode="html")
+                                        if thumb_enabled and local_thumb:
+                                            sent_msg = await _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html")
                                         else:
                                             sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html")
                                     except Exception as mb_err:
                                         logger.debug(f"_main_bot send_message failed: {mb_err}")
-                                        if thumb_enabled and _tf_valid:
-                                            sent_msg = await event.respond(np_text, file=thumb_file, parse_mode="html")
+                                        if thumb_enabled and local_thumb:
+                                            sent_msg = await self.client.send_file(chat_id, local_thumb, caption=np_text, parse_mode="html")
                                         else:
-                                            sent_msg = await event.respond(np_text, parse_mode="html")
+                                            sent_msg = await self.client.send_message(chat_id, np_text, parse_mode="html")
                                 else:
-                                    if thumb_enabled and _tf_valid:
-                                        sent_msg = await event.respond(np_text, file=thumb_file, parse_mode="html")
+                                    if thumb_enabled and local_thumb:
+                                        sent_msg = await self.client.send_file(chat_id, local_thumb, caption=np_text, parse_mode="html")
                                     else:
-                                        sent_msg = await event.respond(np_text, parse_mode="html")
+                                        sent_msg = await self.client.send_message(chat_id, np_text, parse_mode="html")
 
                             # Delete temporary search progress message
                             try:
@@ -3186,10 +3251,10 @@ class UserBot:
                                 stale_cb = old_p.get("companion_bots", []) if old_p else []
                                 for cb in stale_cb:
                                     try:
-                                        await cb.stop_song(chat_id, leave_vc=True)
+                                        await cb.stop_song(chat_id, leave_vc=False)
                                     except Exception:
                                         pass
-                                await self.stop_song(chat_id, leave_vc=True)
+                                await self.stop_song(chat_id, leave_vc=False)
                                 prog = await event.respond(
                                     utils.format_html_message(
                                         "<blockquote><b>» ⏹️ Ending Song...</b></blockquote>"
@@ -3436,26 +3501,44 @@ class UserBot:
                             asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
-                        elif cmd in ("vc", "joinvc"):
+                        elif cmd in ("vc", "joinvc", "joinallvc"):
                             try:
                                 await event.delete()
                             except Exception:
                                 pass
                             success, msg = await self.join_voice_chat(str(chat_id))
+                            from villain_ads_bot.services import userbot_manager
+                            owner_uid = getattr(self, "owner_id", None) or event.sender_id
+                            comp_bots = userbot_manager.get_running_userbots_for_owner(owner_uid, exclude_bot=self)
+                            joined_cnt = 1 if success else 0
+                            for cb in comp_bots:
+                                try:
+                                    c_ok, _ = await cb.join_voice_chat(str(chat_id))
+                                    if c_ok:
+                                        joined_cnt += 1
+                                except Exception:
+                                    pass
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» 🎙️ Connected To Voice Chat</b></blockquote>"
-                                ) if success else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{msg}</code></blockquote>")
+                                    f"<blockquote><b>» 🎙️ Connected To Voice Chat ({joined_cnt} Userbots)</b></blockquote>"
+                                ) if (success or joined_cnt > 0) else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{msg}</code></blockquote>")
                             )
                             asyncio.create_task(utils.delayed_delete(prog, 4))
                             return
                             
-                        elif cmd in ("leavevc", "vcleft"):
+                        elif cmd in ("leavevc", "vcleft", "leaveallvc"):
                             try:
                                 await event.delete()
                             except Exception:
                                 pass
                             success, msg = await self.leave_voice_chat(chat_id)
+                            from villain_ads_bot.services import userbot_manager
+                            comp_bots = userbot_manager.get_running_userbots_in_vc(chat_id, exclude_bot=self)
+                            for cb in comp_bots:
+                                try:
+                                    await cb.leave_voice_chat(chat_id)
+                                except Exception:
+                                    pass
                             prog = await event.respond(
                                 utils.format_html_message(
                                     "<blockquote><b>» 🔴 Left Voice Chat</b></blockquote>"

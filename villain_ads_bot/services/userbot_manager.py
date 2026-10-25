@@ -206,6 +206,45 @@ def get_running_userbots_for_owner(owner_id: int, chat_id: Optional[int] = None,
 
     return matching_bots
 
+
+def get_running_userbots_in_vc(chat_id: Union[int, str], exclude_bot=None) -> list:
+    """
+    Returns all UserBot instances currently running in memory that are joined in chat_id's voice chat.
+    Ensures multi-bot streaming and simultaneous unmuting in group calls.
+    """
+    if not chat_id:
+        return []
+
+    cid_str = str(chat_id).strip()
+    cid_variants = {cid_str}
+    if cid_str.startswith("-100"):
+        cid_variants.add(cid_str[4:])
+        cid_variants.add(f"-{cid_str[4:]}")
+    elif cid_str.startswith("-"):
+        cid_variants.add(f"-100{cid_str[1:]}")
+        cid_variants.add(cid_str[1:])
+    else:
+        cid_variants.add(f"-100{cid_str}")
+        cid_variants.add(f"-{cid_str}")
+
+    matching = []
+    seen = set()
+    if exclude_bot is not None:
+        seen.add(id(exclude_bot))
+
+    for ident, bot in list(_running_bots.items()):
+        if not bot or not getattr(bot, "is_running", False) or id(bot) in seen:
+            continue
+        b_vcs = {str(x) for x in getattr(bot, "joined_vcs", set())}
+        curr = str(getattr(bot, "current_vc_chat_id", "") or "")
+        if curr:
+            b_vcs.add(curr)
+        if any(v in b_vcs for v in cid_variants):
+            seen.add(id(bot))
+            matching.append(bot)
+
+    return matching
+
 async def start_all_running_bots():
     """
     Resumes all UserBots that are marked as 'running' in the database (e.g. after a manager reboot).

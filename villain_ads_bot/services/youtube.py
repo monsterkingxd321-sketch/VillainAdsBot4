@@ -12,7 +12,7 @@ API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.in")
 
 API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsdvUpVh4n66hhD1iQ5fm0") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT 
 
-DOWNLOAD_DIR = "downloads"
+DOWNLOAD_DIR = os.path.abspath("downloads")
 
 
 def _env_dir(name: str) -> str:
