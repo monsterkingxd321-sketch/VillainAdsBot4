@@ -366,26 +366,27 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             ("🎙️ VC, Music & Groups", f"vc_menu_{phone}", None, "success")
         ])
             
-        # Row 2: Set Broadcast & Set DM Welcome
+        # Row 2: Set Broadcast & Auto Broadcast Toggle
         rows.append([
             ("btn_set_broadcast", f"set_broadcast_{phone}"),
-            ("btn_set_welcome", f"set_welcome_{phone}")
+            ("btn_toggle_spam", f"toggle_spam_{phone}", auto_spam)
         ])
         
-        # Row 3: Tag Auto-Reply & Set Run Timer
+        # Row 3: Set Welcome & Auto Welcome Toggle
         rows.append([
-            ("btn_set_auto_reply", f"set_auto_reply_{phone}"),
-            ("⏱️ Set Run Timer", f"set_run_timer_{phone}")
-        ])
-        
-        # Row 4: Auto Feature Toggles (Spam & Welcome)
-        rows.append([
-            ("btn_toggle_spam", f"toggle_spam_{phone}", auto_spam),
+            ("btn_set_welcome", f"set_welcome_{phone}"),
             ("btn_toggle_welcome", f"toggle_welcome_{phone}", auto_welcome)
         ])
-        # Row 5: Auto Feature Toggles (Tag Reply & Contact)
+        
+        # Row 4: Set Tag Auto-Reply & Tag Auto-Reply Toggle
         rows.append([
-            ("btn_toggle_auto_reply", f"toggle_reply_{phone}", auto_reply),
+            ("btn_set_auto_reply", f"set_auto_reply_{phone}"),
+            ("btn_toggle_auto_reply", f"toggle_reply_{phone}", auto_reply)
+        ])
+        
+        # Row 5: Set Run Timer & Auto Contact Toggle
+        rows.append([
+            ("⏱️ Set Run Timer", f"set_run_timer_{phone}"),
             ("btn_toggle_add_contact", f"toggle_add_contact_{phone}", auto_add_contact)
         ])
         
@@ -397,30 +398,28 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             ])
             rows.append([
                 ("btn_change_name", f"change_name_{phone}"),
-                ("btn_set_interval", f"set_interval_{phone}")
+                ("btn_refresh_stats", f"refresh_stats_{phone}"),
+                ("btn_how_to_use", f"how_to_use_{phone}")
             ])
             rows.append([
-                ("btn_how_to_use", f"how_to_use_{phone}"),
-                ("btn_refresh_stats", f"refresh_stats_{phone}")
-            ])
-            rows.append([
+                ("btn_set_interval", f"set_interval_{phone}"),
                 ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
             ])
         else:
             rows.append([
                 ("btn_clone_profile", f"clone_profile_{phone}"),
-                ("btn_change_name", f"change_name_{phone}")
+                ("btn_set_interval", f"set_interval_{phone}")
             ])
             rows.append([
-                ("btn_set_interval", f"set_interval_{phone}"),
+                ("btn_change_name", f"change_name_{phone}"),
+                ("btn_refresh_stats", f"refresh_stats_{phone}"),
                 ("btn_how_to_use", f"how_to_use_{phone}")
             ])
             rows.append([
-                ("btn_refresh_stats", f"refresh_stats_{phone}"),
                 ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
             ])
         
-        # Row 6: Back to Bots
+        # Row 7: Back to Bots
         sender_id = getattr(event, "sender_id", user_id)
         is_other_bot = sess and str(sess.get("user_id")) != str(sender_id)
         if is_other_bot:
@@ -556,24 +555,24 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
             utils.styled_button("🔄 Restart All", "all_slots_restart", style="primary"),
             utils.styled_button("🎙️ VC & Groups (All)", "all_slots_vc_menu", style="success")
         ],
-        # Row 2: Set All Broadcast & Set All Welcome
+        # Row 2: Set Broadcast & Auto Broadcast Toggle
         [
             utils.styled_button("✉️ Set Broadcast", "all_slots_set_broadcast", style="primary"),
-            utils.styled_button("👋 Set Welcome", "all_slots_set_welcome", style="primary")
+            utils.styled_button(f"✉️ Broadcast: {spam_state_display}", "all_slots_toggle_spam", style="primary")
         ],
-        # Row 3: Set Tag Auto-Reply & Set Run Timer
+        # Row 3: Set Welcome & Auto Welcome Toggle
         [
-            utils.styled_button("💬 Set Auto-Reply", "all_slots_set_auto_reply", style="primary"),
-            utils.styled_button("⏱️ Set Run Timer", "all_slots_set_run_timer", style="primary")
-        ],
-        # Row 4: Auto Broadcast & Auto-Welcome Toggles
-        [
-            utils.styled_button(f"🔄 Broadcast: {spam_state_display}", "all_slots_toggle_spam", style="primary"),
+            utils.styled_button("👋 Set Welcome", "all_slots_set_welcome", style="primary"),
             utils.styled_button(f"👋 Welcome: {welcome_state_display}", "all_slots_toggle_welcome", style="primary")
         ],
-        # Row 5: Tag Auto-Reply & Auto-Contact Toggles
+        # Row 4: Set Auto-Reply & Tag Auto-Reply Toggle
         [
-            utils.styled_button(f"💬 Tag Reply: {reply_state_display}", "all_slots_toggle_reply", style="primary"),
+            utils.styled_button("💬 Set Auto-Reply", "all_slots_set_auto_reply", style="primary"),
+            utils.styled_button(f"💬 Tag Reply: {reply_state_display}", "all_slots_toggle_reply", style="primary")
+        ],
+        # Row 5: Set Run Timer & Auto Contact Toggle
+        [
+            utils.styled_button("⏱️ Set Run Timer", "all_slots_set_run_timer", style="primary"),
             utils.styled_button(f"👥 Contact: {add_contact_state_display}", "all_slots_toggle_add_contact", style="primary")
         ],
         # Row 6: Clone Profile & Return To Original
@@ -581,18 +580,15 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
             utils.styled_button("👤 Clone Profile", "all_slots_clone_profile", style="primary"),
             utils.styled_button("🔄 Return Original", "all_slots_restore_profile", style="success")
         ],
-        # Row 7: Change Name & Delays
+        # Row 7: Change Name, Delays, Refresh Stats (Compact 3 in one row)
         [
             utils.styled_button("✏️ Change Name", "all_slots_change_name", style="primary"),
-            utils.styled_button("⏱️ Timing & Delays", "all_slots_set_interval", style="primary")
-        ],
-        # Row 8: How to Use & Refresh Stats
-        [
-            utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary"),
+            utils.styled_button("⏱️ Delays", "all_slots_set_interval", style="primary"),
             utils.styled_button("🔄 Refresh Stats", "all_slots_refresh_stats", style="primary")
         ],
-        # Row 9: Delete All Userbots
+        # Row 8: How to Use & Delete All Userbots
         [
+            utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary"),
             utils.styled_button("🗑️ Delete All Userbots", "all_slots_delete", style="danger")
         ],
         # Row 10: Back to Bots / Exit
@@ -626,14 +622,18 @@ async def render_broadcast_menu(event, phone: str, user_id: int):
     single_status = "✅ <b>Set</b>" if single_msg else "❌ <b>Empty</b>"
     multiple_status = f"✅ <b>Set ({len(multi_msgs)} Msgs)</b>" if multi_msgs else "❌ <b>Empty</b>"
     
-    text = (
-        f"<blockquote><b>» ✉️ Broadcast Message Settings</b>\n\n"
-        f"👤 <b>Userbot :</b> <b>{name}</b>\n\n"
-        f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
-        f"• <b>Single Msg :</b> {single_status}\n"
-        f"• <b>Multiple Msgs :</b> {multiple_status}\n\n"
-        f"💡 <i>How To Set Multiple Messages : Click 'Set Multiple Messages' And Send Messages Separated By Commas (<code>,</code>).</i></blockquote>"
-    )
+    lines = [
+        "<b>» ✉️ Broadcast Message Settings</b>",
+        "",
+        f"👤 <b>Userbot :</b> <b>{name}</b>",
+        "",
+        f"• <b>Current Mode :</b> <b>{mode_display}</b>",
+        f"• <b>Single Msg :</b> {single_status}",
+        f"• <b>Multiple Msgs :</b> {multiple_status}",
+        "",
+        "💡 <i>How To Set Multiple Messages : Click 'Set Multiple Messages' And Send Messages Separated By Commas (<code>,</code>).</i>"
+    ]
+    text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
     
     buttons = [
         [
@@ -669,14 +669,18 @@ async def render_welcome_menu(event, phone: str, user_id: int):
     single_status = "✅ <b>Set</b>" if single_msg else "❌ <b>Empty</b>"
     multiple_status = f"✅ <b>Set ({len(multi_msgs)} Msgs)</b>" if multi_msgs else "❌ <b>Empty</b>"
     
-    text = (
-        f"<blockquote><b>» 👋 Dm Welcome Message Settings</b>\n\n"
-        f"👤 <b>Userbot :</b> <b>{name}</b>\n\n"
-        f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
-        f"• <b>Single Welcome :</b> {single_status}\n"
-        f"• <b>Multiple Welcomes :</b> {multiple_status}\n\n"
-        f"💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i></blockquote>"
-    )
+    lines = [
+        "<b>» 👋 Dm Welcome Message Settings</b>",
+        "",
+        f"👤 <b>Userbot :</b> <b>{name}</b>",
+        "",
+        f"• <b>Current Mode :</b> <b>{mode_display}</b>",
+        f"• <b>Single Welcome :</b> {single_status}",
+        f"• <b>Multiple Welcomes :</b> {multiple_status}",
+        "",
+        "💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i>"
+    ]
+    text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
     
     buttons = [
         [
@@ -712,14 +716,18 @@ async def render_auto_reply_menu(event, phone: str, user_id: int):
     single_status = "✅ <b>Set</b>" if single_msg else "❌ <b>Empty</b>"
     multiple_status = f"✅ <b>Set ({len(multi_msgs)} Msgs)</b>" if multi_msgs else "❌ <b>Empty</b>"
     
-    text = (
-        f"<blockquote><b>» 💬 Group Tag Auto-Reply Settings</b>\n\n"
-        f"👤 <b>Userbot :</b> <b>{name}</b>\n\n"
-        f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
-        f"• <b>Single Reply :</b> {single_status}\n"
-        f"• <b>Multiple Replies :</b> {multiple_status}\n\n"
-        f"💡 <i>How To Set Multiple Replies : Click 'Set Multiple Replies' And Send Messages Separated By Commas (<code>,</code>).</i></blockquote>"
-    )
+    lines = [
+        "<b>» 💬 Group Tag Auto-Reply Settings</b>",
+        "",
+        f"👤 <b>Userbot :</b> <b>{name}</b>",
+        "",
+        f"• <b>Current Mode :</b> <b>{mode_display}</b>",
+        f"• <b>Single Reply :</b> {single_status}",
+        f"• <b>Multiple Replies :</b> {multiple_status}",
+        "",
+        "💡 <i>How To Set Multiple Replies : Click 'Set Multiple Replies' And Send Messages Separated By Commas (<code>,</code>).</i>"
+    ]
+    text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
     
     buttons = [
         [
@@ -2050,13 +2058,17 @@ def register_handlers(client):
         mode = "multiple" if (modes and all(m == "multiple" for m in modes)) else "single"
         mode_display = "📚 Multiple (Rotational)" if mode == "multiple" else "✉️ Single (Normal)"
         
-        text = (
-            f"<blockquote><b>» ✉️ Bulk Broadcast Settings (All Slots)</b>\n\n"
-            f"Configure Broadcasting Settings For All Userbots Simultaneously:\n\n"
-            f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
-            f"• <b>Configured Userbots :</b> <b>{total_bots}</b>\n\n"
-            f"💡 <i>How To Set Multiple Messages : Click 'Set Multiple Messages (All)' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i></blockquote>"
-        )
+        lines = [
+            "<b>» ✉️ Bulk Broadcast Settings (All Slots)</b>",
+            "",
+            "Configure Broadcasting Settings For All Userbots Simultaneously:",
+            "",
+            f"• <b>Current Mode :</b> <b>{mode_display}</b>",
+            f"• <b>Configured Userbots :</b> <b>{total_bots}</b>",
+            "",
+            "💡 <i>How To Set Multiple Messages : Click 'Set Multiple Messages (All)' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i>"
+        ]
+        text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
         buttons = [
             [
                 utils.styled_button("✉️ Set Single Message (All)", "all_slots_set_single_msg", style="primary"),
@@ -2097,13 +2109,17 @@ def register_handlers(client):
         _bot_action_states[user_id] = {
             "action": "WAITING_FOR_ALL_MULTI_MSG"
         }
-        prompt_text = (
-            "<blockquote><b>» 📚 Set Multiple Messages (All Slots)</b>\n\n"
-            "Send Your Multiple Broadcast Messages Separated By Commas (<code>,</code>). The Bot Will Rotate/Pick One Message For Each Group.\n\n"
-            "💡 <b>Example Input :</b>\n"
-            "<code>Hey Check This Out!, Join Our Channel Now!, Best Deals Today!</code>\n\n"
-            "✍️ <b>Send Your Comma-Separated Message List Below :</b></blockquote>"
-        )
+        lines = [
+            "<b>» 📚 Set Multiple Messages (All Slots)</b>",
+            "",
+            "Send Your Multiple Broadcast Messages Separated By Commas (<code>,</code>). The Bot Will Rotate/Pick One Message For Each Group.",
+            "",
+            "💡 <b>Example Input :</b>",
+            "<code>Hey Check This Out!, Join Our Channel Now!, Best Deals Today!</code>",
+            "",
+            "✍️ <b>Send Your Comma-Separated Message List Below :</b>"
+        ]
+        prompt_text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
         buttons = [[utils.styled_button("🔙 Cancel", "all_slots_set_broadcast", style="primary")]]
         try:
             await event.edit(prompt_text, buttons=buttons)
@@ -2144,13 +2160,17 @@ def register_handlers(client):
         mode = "multiple" if (modes and all(m == "multiple" for m in modes)) else "single"
         mode_display = "📚 Multiple (Rotational)" if mode == "multiple" else "👋 Single (Normal)"
         
-        text = (
-            f"<blockquote><b>» 👋 Dm Welcome Message Settings (All Userbots)</b>\n\n"
-            f"Configure Dm Welcome Responses For All Userbots Simultaneously:\n\n"
-            f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
-            f"• <b>Configured Userbots :</b> <b>{total_bots}</b>\n\n"
-            f"💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i></blockquote>"
-        )
+        lines = [
+            "<b>» 👋 Dm Welcome Message Settings (All Userbots)</b>",
+            "",
+            "Configure Dm Welcome Responses For All Userbots Simultaneously:",
+            "",
+            f"• <b>Current Mode :</b> <b>{mode_display}</b>",
+            f"• <b>Configured Userbots :</b> <b>{total_bots}</b>",
+            "",
+            "💡 <i>How To Set Multiple Welcomes : Click 'Set Multiple Welcomes' And Send Messages Separated By Commas (<code>,</code>), Pipes (<code>|</code>), Or Newlines.</i>"
+        ]
+        text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
         buttons = [
             [
                 utils.styled_button("👋 Set Single Welcome (All)", "all_slots_set_single_welcome", style="primary"),
@@ -2236,13 +2256,17 @@ def register_handlers(client):
         mode = "multiple" if (modes and all(m == "multiple" for m in modes)) else "single"
         mode_display = "📚 Multiple (Rotational)" if mode == "multiple" else "💬 Single (Normal)"
         
-        text = (
-            f"<blockquote><b>» 💬 Group Tag Auto-Reply Settings (All Userbots)</b>\n\n"
-            f"Configure Group Tag/Mention Responses For All Userbots Simultaneously:\n\n"
-            f"• <b>Current Mode :</b> <b>{mode_display}</b>\n"
-            f"• <b>Configured Userbots :</b> <b>{total_bots}</b>\n\n"
-            f"💡 <i>How To Set Multiple Replies : Click 'Set Multiple Replies (All)' And Send Messages Separated By Commas (<code>,</code>).</i></blockquote>"
-        )
+        lines = [
+            "<b>» 💬 Group Tag Auto-Reply Settings (All Userbots)</b>",
+            "",
+            "Configure Group Tag/Mention Responses For All Userbots Simultaneously:",
+            "",
+            f"• <b>Current Mode :</b> <b>{mode_display}</b>",
+            f"• <b>Configured Userbots :</b> <b>{total_bots}</b>",
+            "",
+            "💡 <i>How To Set Multiple Replies : Click 'Set Multiple Replies (All)' And Send Messages Separated By Commas (<code>,</code>).</i>"
+        ]
+        text = "\n".join(f"<blockquote>{l}</blockquote>" if l.strip() else "" for l in lines)
         buttons = [
             [
                 utils.styled_button("💬 Set Single Reply (All)", "all_slots_set_single_reply", style="primary"),

@@ -644,6 +644,21 @@ def format_html_message(text: str) -> str:
 
     return text
 
+# Globally hook Telethon's HTML parser to ensure every blockquote is line-by-line across all handlers
+try:
+    import telethon.extensions.html as _telethon_html
+    _orig_telethon_html_parse = getattr(_telethon_html, "_villain_orig_parse", _telethon_html.parse)
+    _telethon_html._villain_orig_parse = _orig_telethon_html_parse
+
+    def _villain_html_parse(text):
+        if text and isinstance(text, str) and ("<blockquote>" in text or "(^|\n)>\s*" in text):
+            text = format_html_message(text)
+        return _orig_telethon_html_parse(text)
+
+    _telethon_html.parse = _villain_html_parse
+except Exception as _hook_err:
+    logger.debug(f"Could not hook telethon html parse: {_hook_err}")
+
 def get_text(key: str, lang: Optional[str] = "en", **kwargs) -> str:
     """
     Retrieves the localized text for the given key and language.

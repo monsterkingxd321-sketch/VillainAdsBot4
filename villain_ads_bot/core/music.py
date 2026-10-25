@@ -20,19 +20,24 @@ def get_configured_credentials() -> tuple:
     Priority: admin panel (MongoDB) -> .env / environment -> defaults.
     """
     url = "https://api.shrutibots.in"
-    key = None
+    key = "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
     backup = "https://music.yukiapi.site"
 
     try:
         from villain_ads_bot.data import database
         settings = database.get_global_settings() or {}
-        url = (settings.get("music_api_url") or url).strip()
-        key = (settings.get("music_api_key") or "").strip() or None
+        db_url = (settings.get("music_api_url") or "").strip()
+        db_key = (settings.get("music_api_key") or "").strip()
+        # Only adopt db_url if it is NOT the dead yukiapi endpoint
+        if db_url and "yuki" not in db_url.lower():
+            url = db_url
+        if db_key and (not url.startswith("https://api.shrutibots.in") or db_key.startswith("ShrutiBots")):
+            key = db_key
         backup = (settings.get("music_backup_api_url") or backup).strip()
     except Exception as e:
         logger.debug(f"Could not read the music settings: {e}")
 
-    if not key or ("shrutibots" in url.lower() and not key.startswith("ShrutiBots")):
+    if "shrutibots" in url.lower() and (not key or not key.startswith("ShrutiBots")):
         try:
             import os
             key = (os.environ.get("SHRUTI_API_KEY") or "").strip() or "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
@@ -82,8 +87,8 @@ async def download_with_failover(kind: str, link: str) -> str:
 
     primary, _key, backup = apply_configured_credentials()
     gateways = [(primary, _key)]
-    if backup and backup != primary:
-        backup_key = os.environ.get("MEOW_API_KEY", "yuki_8641adadf64870f3065dd502c8ee30f1")
+    if backup and backup != primary and "yuki" not in backup.lower():
+        backup_key = os.environ.get("MEOW_API_KEY", "")
         gateways.append((backup, backup_key))
 
     try:

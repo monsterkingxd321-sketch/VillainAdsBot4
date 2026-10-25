@@ -83,7 +83,7 @@ def _get_cookie_file():
 
 
 async def _download_media(link: str, kind: str, timeout: int) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = extract_video_id(link) if link else ""
     if not video_id or len(video_id) < 3:
         return None
 
@@ -109,6 +109,8 @@ async def _download_media(link: str, kind: str, timeout: int) -> str:
                 timeout=aiohttp.ClientTimeout(total=timeout)
             ) as resp:
                 if resp.status != 200:
+                    import logging
+                    logging.getLogger(__name__).warning(f"ShrutiAPI download error: status {resp.status} for {video_id}")
                     return None
                 if external:
                     found = _find_external(external, video_id, extensions, resp)
