@@ -172,11 +172,35 @@ def get_running_userbots_for_owner(owner_id: int, chat_id: Optional[int] = None,
                     matching_bots.append(bot)
                     break
                     
+    # Fallback to all running userbots if owner lookup yielded no bots or only 1 bot
+    if len(matching_bots) <= 1:
+        for ident, bot in list(_running_bots.items()):
+            if bot and bot.is_running and id(bot) not in seen_ids:
+                seen_ids.add(id(bot))
+                matching_bots.append(bot)
+
     if chat_id and matching_bots:
-        in_vc = [
-            b for b in matching_bots
-            if (chat_id in getattr(b, "joined_vcs", set()) or getattr(b, "current_vc_chat_id", None) == chat_id)
-        ]
+        cid_str = str(chat_id).strip()
+        cid_variants = {cid_str}
+        if cid_str.startswith("-100"):
+            cid_variants.add(cid_str[4:])
+            cid_variants.add(f"-{cid_str[4:]}")
+        elif cid_str.startswith("-"):
+            cid_variants.add(f"-100{cid_str[1:]}")
+            cid_variants.add(cid_str[1:])
+        else:
+            cid_variants.add(f"-100{cid_str}")
+            cid_variants.add(f"-{cid_str}")
+
+        in_vc = []
+        for b in matching_bots:
+            b_vcs = {str(x) for x in getattr(b, "joined_vcs", set())}
+            curr_vc = str(getattr(b, "current_vc_chat_id", "") or "")
+            if curr_vc:
+                b_vcs.add(curr_vc)
+            if any(v in b_vcs for v in cid_variants):
+                in_vc.append(b)
+
         if in_vc:
             return in_vc
 

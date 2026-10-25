@@ -14,7 +14,7 @@ from villain_ads_bot.core import ui
 from villain_ads_bot.core import joiner
 from villain_ads_bot import config
 from villain_ads_bot.services import userbot_manager
-from villain_ads_bot.services.userbot import join_vc_by_link, leave_chat_single, join_channel_single
+from villain_ads_bot.services.userbot import join_vc_by_link, leave_chat_single, join_channel_single, join_channel_detailed
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +350,7 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             f"{ui.kv('Auto contact', auto_add_contact, chr(128101))}"
         )
         
-        # Configure dashboard buttons (Large full-width layout)
+        # Configure dashboard buttons (Compact 2-per-row layout)
         buttons = []
         rows = []
         
@@ -360,82 +360,65 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             ("btn_stop_bot", f"stop_bot_{phone}")
         ])
         
-        # Row 0.5: Restart Bot
+        # Row 1: Restart Bot & VC / Group Menu
         rows.append([
-            ("btn_restart_bot", f"restart_bot_{phone}")
+            ("btn_restart_bot", f"restart_bot_{phone}"),
+            ("🎙️ VC, Music & Groups", f"vc_menu_{phone}", None, "success")
         ])
             
-        # Row 1: Set Broadcast Message (Full width)
+        # Row 2: Set Broadcast & Set DM Welcome
         rows.append([
-            ("btn_set_broadcast", f"set_broadcast_{phone}")
-        ])
-
-        
-        
-        
-        # The proxy section is OWNER ONLY - it must not appear in the ads
-        # userbot dashboard.
-
-        # Row 1.2: Set DM Welcome Message (Full width)
-        rows.append([
+            ("btn_set_broadcast", f"set_broadcast_{phone}"),
             ("btn_set_welcome", f"set_welcome_{phone}")
         ])
         
-        # Row 1.5: Set Tag Auto-Reply Messages (Full width)
+        # Row 3: Tag Auto-Reply & Set Run Timer
         rows.append([
-            ("btn_set_auto_reply", f"set_auto_reply_{phone}")
-        ])
-        
-        # Row 1.6: Set Run Timer (Full width)
-        rows.append([
+            ("btn_set_auto_reply", f"set_auto_reply_{phone}"),
             ("⏱️ Set Run Timer", f"set_run_timer_{phone}")
         ])
         
-        # Row 1.8: Voice Chat (VC) & Music & Group Management Menu
-        rows.append([
-            ("🎙️ VC, Music & Groups", f"vc_menu_{phone}")
-        ])
-        
-        # Row 2: Auto Feature Toggles (Spam, Welcome, Tag Reply, Contact)
+        # Row 4: Auto Feature Toggles (Spam & Welcome)
         rows.append([
             ("btn_toggle_spam", f"toggle_spam_{phone}", auto_spam),
             ("btn_toggle_welcome", f"toggle_welcome_{phone}", auto_welcome)
         ])
+        # Row 5: Auto Feature Toggles (Tag Reply & Contact)
         rows.append([
             ("btn_toggle_auto_reply", f"toggle_reply_{phone}", auto_reply),
             ("btn_toggle_add_contact", f"toggle_add_contact_{phone}", auto_add_contact)
         ])
         
-        # Row 3: Profile & Timing Settings
+        # Row 6: Profile & Timing Settings
         if sess and ("original_first_name" in sess or sess.get("is_cloned") or "cloned_name" in sess):
             rows.append([
                 ("btn_clone_profile", f"clone_profile_{phone}"),
                 ("🔄 Return To Original Profile", f"restore_profile_{phone}", None, "success")
             ])
             rows.append([
-                ("btn_change_name", f"change_name_{phone}")
+                ("btn_change_name", f"change_name_{phone}"),
+                ("btn_set_interval", f"set_interval_{phone}")
+            ])
+            rows.append([
+                ("btn_how_to_use", f"how_to_use_{phone}"),
+                ("btn_refresh_stats", f"refresh_stats_{phone}")
+            ])
+            rows.append([
+                ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
             ])
         else:
             rows.append([
                 ("btn_clone_profile", f"clone_profile_{phone}"),
                 ("btn_change_name", f"change_name_{phone}")
             ])
-        rows.append([
-            ("btn_set_interval", f"set_interval_{phone}")
-        ])
-        
-        # Row 4: Help & Info
-        rows.append([
-            ("btn_how_to_use", f"how_to_use_{phone}")
-        ])
-        
-        # Row 5: Refresh Stats & Delete Bot
-        rows.append([
-            ("btn_refresh_stats", f"refresh_stats_{phone}")
-        ])
-        rows.append([
-            ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
-        ])
+            rows.append([
+                ("btn_set_interval", f"set_interval_{phone}"),
+                ("btn_how_to_use", f"how_to_use_{phone}")
+            ])
+            rows.append([
+                ("btn_refresh_stats", f"refresh_stats_{phone}"),
+                ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
+            ])
         
         # Row 6: Back to Bots
         sender_id = getattr(event, "sender_id", user_id)
@@ -568,62 +551,51 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
             utils.styled_button("🟢 Start All", "all_slots_start", style="success"),
             utils.styled_button("🔴 Stop All", "all_slots_stop", style="danger")
         ],
-        # Row 0.5: Restart All
+        # Row 1: Restart All & VC Menu
         [
-            utils.styled_button("🔄 Restart All Userbots", "all_slots_restart", style="primary")
+            utils.styled_button("🔄 Restart All", "all_slots_restart", style="primary"),
+            utils.styled_button("🎙️ VC & Groups (All)", "all_slots_vc_menu", style="success")
         ],
-        # Row 1: Set All Broadcast
+        # Row 2: Set All Broadcast & Set All Welcome
         [
-            utils.styled_button("✉️ Set All Broadcast Text", "all_slots_set_broadcast", style="primary")
+            utils.styled_button("✉️ Set Broadcast", "all_slots_set_broadcast", style="primary"),
+            utils.styled_button("👋 Set Welcome", "all_slots_set_welcome", style="primary")
         ],
-        # Row 1.2: Set All Welcome
+        # Row 3: Set Tag Auto-Reply & Set Run Timer
         [
-            utils.styled_button("👋 Set All Welcome", "all_slots_set_welcome", style="primary")
+            utils.styled_button("💬 Set Auto-Reply", "all_slots_set_auto_reply", style="primary"),
+            utils.styled_button("⏱️ Set Run Timer", "all_slots_set_run_timer", style="primary")
         ],
-        # Row 1.5: Set All Tag Auto-Reply
+        # Row 4: Auto Broadcast & Auto-Welcome Toggles
         [
-            utils.styled_button("💬 Set All Tag Auto-Reply", "all_slots_set_auto_reply", style="primary")
+            utils.styled_button(f"🔄 Broadcast: {spam_state_display}", "all_slots_toggle_spam", style="primary"),
+            utils.styled_button(f"👋 Welcome: {welcome_state_display}", "all_slots_toggle_welcome", style="primary")
         ],
-        # Row 1.6: Set All Run Timer
+        # Row 5: Tag Auto-Reply & Auto-Contact Toggles
         [
-            utils.styled_button("⏱️ Set Run Timer (All)", "all_slots_set_run_timer", style="primary")
+            utils.styled_button(f"💬 Tag Reply: {reply_state_display}", "all_slots_toggle_reply", style="primary"),
+            utils.styled_button(f"👥 Contact: {add_contact_state_display}", "all_slots_toggle_add_contact", style="primary")
         ],
-        # Row 1.8: Voice Chat (VC) Menu (All)
+        # Row 6: Clone Profile & Return To Original
         [
-            utils.styled_button("🎙️ Vc + Grp Joining (All)", "all_slots_vc_menu", style="success")
+            utils.styled_button("👤 Clone Profile", "all_slots_clone_profile", style="primary"),
+            utils.styled_button("🔄 Return Original", "all_slots_restore_profile", style="success")
         ],
-        # Row 2: Auto Feature Toggles (All)
+        # Row 7: Change Name & Delays
         [
-            utils.styled_button(f"🔄 Auto Broadcast (All): {spam_state_display}", "all_slots_toggle_spam", style="primary"),
-            utils.styled_button(f"👋 Auto-Welcome (All): {welcome_state_display}", "all_slots_toggle_welcome", style="primary")
+            utils.styled_button("✏️ Change Name", "all_slots_change_name", style="primary"),
+            utils.styled_button("⏱️ Timing & Delays", "all_slots_set_interval", style="primary")
         ],
+        # Row 8: How to Use & Refresh Stats
         [
-            utils.styled_button(f"💬 Tag Auto-Reply (All): {reply_state_display}", "all_slots_toggle_reply", style="primary"),
-            utils.styled_button(f"👥 Auto-Contact (All): {add_contact_state_display}", "all_slots_toggle_add_contact", style="primary")
+            utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary"),
+            utils.styled_button("🔄 Refresh Stats", "all_slots_refresh_stats", style="primary")
         ],
-        # Row 3: Clone Profile (All) & Unclone (All)
-        [
-            utils.styled_button("👤 Clone Profile (All)", "all_slots_clone_profile", style="primary"),
-            utils.styled_button("🔄 Return To Original (All)", "all_slots_restore_profile", style="success")
-        ],
-        [
-            utils.styled_button("✏️ Change Name (All)", "all_slots_change_name", style="primary")
-        ],
-        # Row 4: Timing & Help
-        [
-            utils.styled_button("⏱️ Set Timing & Delays (All)", "all_slots_set_interval", style="primary")
-        ],
-        [
-            utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary")
-        ],
-        # Row 5: Refresh Stats & Delete
-        [
-            utils.styled_button("🔄 Refresh Stats (All)", "all_slots_refresh_stats", style="primary")
-        ],
+        # Row 9: Delete All Userbots
         [
             utils.styled_button("🗑️ Delete All Userbots", "all_slots_delete", style="danger")
         ],
-        # Row 6: Back to Bots / Exit
+        # Row 10: Back to Bots / Exit
         [
             utils.styled_button("🚪 Exit Admin Access", "admin_exit_impersonation", style="danger") if event.sender_id in _admin_impersonation else utils.styled_button(utils.get_text("btn_back_to_bots", lang), "menu_my_bots", style="danger")
         ]
@@ -919,30 +891,93 @@ def register_handlers(client):
         )
         
         buttons = [
-            # ── SECTION 1 : VC JOIN ──
+            # ── SECTION 1 : VC JOIN & LEAVE ──
             [
-                utils.styled_button("🎙️ Join Vc", f"vc_join_{phone}", style="success"),
-                utils.styled_button("🔴 Leave Vc", f"vc_leave_{phone}", style="danger")
+                utils.styled_button("🎙️ Join Voice Chat", f"vc_join_opts_{phone}", style="success"),
+                utils.styled_button("🔴 Leave Voice Chat", f"vc_leave_opts_{phone}", style="danger")
             ],
+            # ── SECTION 2 : GROUP JOINING & LEAVING ──
             [
-                utils.styled_button("🎙️ Join All Group Vcs", f"vc_join_all_{phone}", style="success"),
-                utils.styled_button("🔴 Leave All Group Vcs", f"vc_leave_all_{phone}", style="danger")
+                utils.styled_button("🔗 Join Groups", f"grp_join_opts_{phone}", style="primary"),
+                utils.styled_button("❌ Leave Group", f"vc_leave_grp_{phone}", style="danger")
             ],
-            # ── SECTION 2 : VC PLAYING ──
+            # ── SECTION 3 : VC PLAYING ──
             [
                 utils.styled_button("🎵 Play Song", f"play_song_{phone}", style="primary"),
                 utils.styled_button("📖 Commands Guide", f"music_guide_{phone}", style="primary")
             ],
-            # ── SECTION 3 : GROUP JOINING & LEAVING ──
-            [
-                utils.styled_button("🔗 Join Group", f"vc_join_grp_{phone}", style="primary"),
-                utils.styled_button("📚 Join Multi Groups", f"vc_join_multi_grp_{phone}", style="primary")
-            ],
-            [
-                utils.styled_button("❌ Leave Group", f"vc_leave_grp_{phone}", style="danger")
-            ],
+            # ── BACK ──
             [
                 utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="primary")
+            ]
+        ]
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern=r"^vc_join_opts_(.+)$"))
+    async def vc_join_opts_callback(event):
+        phone = event.pattern_match.group(1).strip()
+        text = (
+            f"<blockquote><b>» 🎙️ Voice Chat Joining Options ({phone})</b>\n\n"
+            f"• <b>Single Group VC :</b> Connect userbot to a specific group VC via invite link or username.\n"
+            f"• <b>All Active VCs :</b> Sweep all groups where userbot is added and join any active voice chat.\n\n"
+            f"<i>Choose an option below:</i></blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("🎙️ Join By Group Link", f"vc_join_{phone}", style="success"),
+                utils.styled_button("📡 Join All Active VCs", f"vc_join_all_{phone}", style="success")
+            ],
+            [
+                utils.styled_button("🔙 Back To VC Menu", f"vc_menu_{phone}", style="primary")
+            ]
+        ]
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern=r"^vc_leave_opts_(.+)$"))
+    async def vc_leave_opts_callback(event):
+        phone = event.pattern_match.group(1).strip()
+        text = (
+            f"<blockquote><b>» 🔴 Voice Chat Leaving Options ({phone})</b>\n\n"
+            f"• <b>Leave Current VC :</b> Disconnect userbot from its current voice chat.\n"
+            f"• <b>Leave All Active VCs :</b> Disconnect from all voice chats across all groups.\n\n"
+            f"<i>Choose an option below:</i></blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("🔴 Leave Current VC", f"vc_leave_{phone}", style="danger"),
+                utils.styled_button("🔴 Leave All Active VCs", f"vc_leave_all_{phone}", style="danger")
+            ],
+            [
+                utils.styled_button("🔙 Back To VC Menu", f"vc_menu_{phone}", style="primary")
+            ]
+        ]
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern=r"^grp_join_opts_(.+)$"))
+    async def grp_join_opts_callback(event):
+        phone = event.pattern_match.group(1).strip()
+        text = (
+            f"<blockquote><b>» 🔗 Group Joining Options ({phone})</b>\n\n"
+            f"• <b>Single Link :</b> Join a single group or channel via invite link or username.\n"
+            f"• <b>Multiple Links :</b> Join multiple groups with anti-flood delay and live countdown timer.\n\n"
+            f"<i>Choose an option below:</i></blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("🔗 Single Link", f"vc_join_grp_{phone}", style="primary"),
+                utils.styled_button("📚 Multiple Links", f"vc_join_multi_grp_{phone}", style="primary")
+            ],
+            [
+                utils.styled_button("🔙 Back To VC Menu", f"vc_menu_{phone}", style="primary")
             ]
         ]
         try:
@@ -1014,29 +1049,89 @@ def register_handlers(client):
         )
         
         buttons = [
-            # ── SECTION 1 : VC JOIN ──
+            # ── SECTION 1 : VC JOIN & LEAVE ──
             [
-                utils.styled_button("🎙️ Join Vc (All)", "all_slots_vc_join", style="success"),
-                utils.styled_button("🔴 Leave Vc (All)", "all_slots_vc_leave", style="danger")
+                utils.styled_button("🎙️ Join Voice Chat (All)", "all_slots_vc_join_opts", style="success"),
+                utils.styled_button("🔴 Leave Voice Chat (All)", "all_slots_vc_leave_opts", style="danger")
             ],
+            # ── SECTION 2 : GROUP JOINING & LEAVING ──
             [
-                utils.styled_button("🎙️ Join All Active Vcs (All)", "all_slots_vc_join_all", style="success"),
-                utils.styled_button("🔴 Leave All Active Vcs (All)", "all_slots_vc_leave_all", style="danger")
+                utils.styled_button("🔗 Join Groups (All)", "all_slots_grp_join_opts", style="primary"),
+                utils.styled_button("❌ Leave Group (All)", "all_slots_vc_leave_grp", style="danger")
             ],
-            # ── SECTION 2 : VC PLAYING ──
+            # ── SECTION 3 : VC PLAYING ──
             [
                 utils.styled_button("🎵 Play Song (All)", "all_slots_play_song", style="primary")
             ],
-            # ── SECTION 3 : GROUP JOINING & LEAVING ──
-            [
-                utils.styled_button("🔗 Join Group (All)", "all_slots_vc_join_grp", style="primary"),
-                utils.styled_button("📚 Join Multi Groups (All)", "all_slots_vc_join_multi_grp", style="primary")
-            ],
-            [
-                utils.styled_button("❌ Leave Group (All)", "all_slots_vc_leave_grp", style="danger")
-            ],
+            # ── BACK ──
             [
                 utils.styled_button("🔙 Back", "menu_all_slots", style="primary")
+            ]
+        ]
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern="^all_slots_vc_join_opts$"))
+    async def all_slots_vc_join_opts_callback(event):
+        text = (
+            "<blockquote><b>» 🎙️ Voice Chat Joining Options (All Slots)</b>\n\n"
+            "• <b>Single Group VC :</b> Connect all userbots to a specific group VC via invite link.\n"
+            "• <b>All Active VCs :</b> Sweep all groups across all userbots and join active voice chats.\n\n"
+            "<i>Choose an option below:</i></blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("🎙️ Join By Group Link", "all_slots_vc_join", style="success"),
+                utils.styled_button("📡 Join All Active VCs", "all_slots_vc_join_all", style="success")
+            ],
+            [
+                utils.styled_button("🔙 Back To VC Menu", "all_slots_vc_menu", style="primary")
+            ]
+        ]
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern="^all_slots_vc_leave_opts$"))
+    async def all_slots_vc_leave_opts_callback(event):
+        text = (
+            "<blockquote><b>» 🔴 Voice Chat Leaving Options (All Slots)</b>\n\n"
+            "• <b>Leave Current VC :</b> Disconnect all userbots from their current voice chats.\n"
+            "• <b>Leave All Active VCs :</b> Disconnect all userbots from all active voice chats.\n\n"
+            "<i>Choose an option below:</i></blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("🔴 Leave Current VC", "all_slots_vc_leave", style="danger"),
+                utils.styled_button("🔴 Leave All Active VCs", "all_slots_vc_leave_all", style="danger")
+            ],
+            [
+                utils.styled_button("🔙 Back To VC Menu", "all_slots_vc_menu", style="primary")
+            ]
+        ]
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception:
+            await event.respond(text, buttons=buttons)
+
+    @client.on(events.CallbackQuery(pattern="^all_slots_grp_join_opts$"))
+    async def all_slots_grp_join_opts_callback(event):
+        text = (
+            "<blockquote><b>» 🔗 Group Joining Options (All Slots)</b>\n\n"
+            "• <b>Single Group Link :</b> All userbots will join one target group or channel.\n"
+            "• <b>Multiple Group Links :</b> All userbots join a list of groups sequentially with anti-flood delay and live countdown timer.\n\n"
+            "<i>Choose an option below:</i></blockquote>"
+        )
+        buttons = [
+            [
+                utils.styled_button("🔗 Single Link", "all_slots_vc_join_grp", style="primary"),
+                utils.styled_button("📚 Multiple Links", "all_slots_vc_join_multi_grp", style="primary")
+            ],
+            [
+                utils.styled_button("🔙 Back To VC Menu", "all_slots_vc_menu", style="primary")
             ]
         ]
         try:
@@ -4029,7 +4124,7 @@ def register_handlers(client):
                 return
                 
             progress_msg = await event.reply(
-                f"⏳ <b>Joining {len(links)} Group(s) Across {len(running_phones)} Userbot(s)...</b>",
+                f"<blockquote><b>⏳ Joining {len(links)} Group(s) Across {len(running_phones)} Userbot(s)...</b></blockquote>",
                 parse_mode="html"
             )
             
@@ -4037,6 +4132,7 @@ def register_handlers(client):
             total_joins_failed = 0
             total_flood_waits = 0
             total_wait_time = 0
+            all_failure_reasons = {}
             
             for p_idx, phone_num in enumerate(running_phones, 1):
                 bot_obj = userbot_manager.find_running_bot(phone_num)
@@ -4048,13 +4144,13 @@ def register_handlers(client):
                 async def _on_progress(done, total, state, _phone=phone_num):
                     try:
                         await progress_msg.edit(
-                            f"⏳ <b>Joining Groups...</b> <code>({p_idx}/{len(running_phones)} bots)</code>\n\n"
+                            f"<blockquote><b>⏳ Joining Groups...</b> <code>({p_idx}/{len(running_phones)} bots)</code>\n\n"
                             f"🤖 <b>Account :</b> <code>{_phone}</code>\n"
-                            f"✅ <b>Joined :</b> {total_joins_success}\n"
-                            f"❌ <b>Failed :</b> {total_joins_failed}\n"
-                            f"⏳ <b>Remaining :</b> {state.get('remaining', 0)}\n"
-                            f"⏸️ <b>Flood waits :</b> {total_flood_waits}"
-                            + (f" (<code>{total_wait_time}s</code> waited)" if total_flood_waits else ""),
+                            f"✅ <b>Joined :</b> <b>{total_joins_success}</b>\n"
+                            f"❌ <b>Failed :</b> <b>{total_joins_failed}</b>\n"
+                            f"⏳ <b>Remaining :</b> <b>{state.get('remaining', 0)}</b>"
+                            + (f"\n⏸️ <b>Flood waits :</b> <b>{total_flood_waits}</b> (<code>{total_wait_time}s</code> waited)" if total_flood_waits else "")
+                            + "</blockquote>",
                             parse_mode="html"
                         )
                     except Exception:
@@ -4069,6 +4165,9 @@ def register_handlers(client):
                 total_joins_failed += result.get("failed", 0)
                 total_flood_waits += result.get("flood_waits", 0)
                 total_wait_time += result.get("wait_total", 0)
+                reasons = result.get("failure_reasons") or result.get("failed_reasons") or {}
+                for r, cnt in reasons.items():
+                    all_failure_reasons[r] = all_failure_reasons.get(r, 0) + cnt
                 bot_obj.groups_cache_time = 0
                 
             try:
@@ -4077,6 +4176,12 @@ def register_handlers(client):
                 pass
                 
             remaining_groups = max(0, len(links) * len(running_phones) - total_joins_success - total_joins_failed)
+            reasons_str = ""
+            if total_joins_failed and all_failure_reasons:
+                reasons_str = "\n• <b>Failure Reasons :</b>\n" + "\n".join(
+                    [f"  - ⚠️ {r}: {cnt}" for r, cnt in all_failure_reasons.items()]
+                )
+
             flash = (
                 f"<blockquote><b>» 📚 All Slots : Group Joining Completed</b>\n\n"
                 f"• <b>Total Userbots :</b> <b>{len(running_phones)}</b>\n"
@@ -4085,6 +4190,7 @@ def register_handlers(client):
                 f"• <b>❌ Failed Joins :</b> <b>{total_joins_failed}</b>"
                 + (f"\n• <b>⏸️ Flood Waits :</b> <b>{total_flood_waits}</b> (<b>{total_wait_time}s</b> waited)" if total_flood_waits else "")
                 + (f"\n• <b>⏳ Remaining :</b> <b>{remaining_groups}</b>" if remaining_groups else "")
+                + reasons_str
                 + "</blockquote>"
             )
             await show_all_slots_dashboard(event, user_id, flash_message=flash, fetch_all=is_system_all_mode(user_id))

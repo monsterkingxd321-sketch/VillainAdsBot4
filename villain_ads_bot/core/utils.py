@@ -1243,3 +1243,14 @@ def check_and_mark_command(chat_id: int, text: str, msg_id: int = 0, ttl: float 
     _handled_commands[key] = now
     return True
 
+
+async def delayed_delete(msg, delay: float = 3.0):
+    """Safely deletes a message after delay seconds without throwing errors."""
+    if not msg:
+        return
+    try:
+        await asyncio.sleep(delay)
+        await msg.delete()
+    except Exception:
+        pass
+

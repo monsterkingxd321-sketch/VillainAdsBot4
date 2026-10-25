@@ -13,8 +13,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Default pause between two join requests (Telegram is very strict here)
-DEFAULT_DELAY = 2.0
+# Default pause between two join requests (safe delay to prevent Telegram flood limits)
+DEFAULT_DELAY = 4.0
 # Maximum time we are willing to wait for a single flood wait
 MAX_FLOOD_WAIT = 900
 
@@ -32,85 +32,77 @@ async def join_many(client, links, progress_msg=None, delay: float = DEFAULT_DEL
                     progress_callback=None) -> dict:
     """
     Joins every link in `links` sequentially.
-
-    Parameters
-    ----------
-    client          : the userbot client
-    links           : list of invite links / usernames
-    progress_msg    : optional Telethon message that is updated live
-    delay           : pause between two join requests
-    progress_callback: optional coroutine ``callback(done, total, state)``
-
-    Returns a dict with the counters and the total time that was needed.
     """
-    from villain_ads_bot.services.userbot import join_channel_single
+    from villain_ads_bot.services.userbot import join_channel_detailed
 
     total = len(links)
     joined = 0
     failed = 0
     flood_waits = 0
     wait_total = 0
+    failure_reasons = []
     started = time.time()
 
     for index, link in enumerate(links, 1):
         remaining = total - index + 1
         try:
-            ok = await join_channel_single(client, link)
+            ok, reason = await join_channel_detailed(client, link)
             if ok:
                 joined += 1
             else:
                 failed += 1
+                failure_reasons.append(f"{link}: {reason}")
         except Exception as exc:
             seconds = _flood_seconds(exc)
             if seconds:
-                # ── Flood limit: wait it out and continue automatically ──
                 flood_waits += 1
                 seconds = min(seconds, MAX_FLOOD_WAIT)
                 wait_total += seconds
                 logger.warning(
                     f"Flood wait of {seconds}s while joining group {index}/{total} - waiting."
                 )
-                if progress_msg is not None:
-                    try:
-                        await progress_msg.edit(
-                            f"⏳ <b>Flood Limit Hit</b>\n\n"
-                            f"✅ <b>Joined :</b> {joined}\n"
-                            f"⏳ <b>Remaining :</b> {remaining}\n"
-                            f"⏱️ <b>Waiting :</b> {seconds}s\n\n"
-                            f"<i>The remaining groups will be joined automatically afterwards.</i>",
-                            parse_mode="html"
-                        )
-                    except Exception:
-                        pass
+                for s_wait in range(seconds, 0, -1):
+                    if progress_msg is not None and (s_wait % 2 == 0 or s_wait <= 5):
+                        try:
+                            await progress_msg.edit(
+                                f"<blockquote><b>» ⏳ Telegram Flood Limit Hit</b>\n\n"
+                                f"• <b>✅ Joined So Far :</b> <b>{joined}</b>\n"
+                                f"• <b>⏳ Remaining Groups :</b> <b>{remaining}</b>\n"
+                                f"• <b>⏱️ Waiting Timer :</b> <code>{s_wait}s</code>\n\n"
+                                f"💡 <i>Process will resume automatically once timer reaches 0.</i></blockquote>",
+                                parse_mode="html"
+                            )
+                        except Exception:
+                            pass
+                    await asyncio.sleep(1)
+
                 try:
-                    await asyncio.sleep(seconds)
-                except asyncio.CancelledError:
-                    break
-                # Retry the group that hit the flood limit.
-                try:
-                    ok = await join_channel_single(client, link)
+                    ok, retry_reason = await join_channel_detailed(client, link)
                     if ok:
                         joined += 1
                     else:
                         failed += 1
+                        failure_reasons.append(f"{link}: {retry_reason}")
                 except Exception as retry_exc:
                     logger.warning(f"Could not join {link} after the flood wait: {retry_exc}")
                     failed += 1
+                    failure_reasons.append(f"{link}: {retry_exc}")
             else:
                 logger.warning(f"Could not join {link}: {exc}")
                 failed += 1
+                failure_reasons.append(f"{link}: {exc}")
 
         elapsed = int(time.time() - started)
         if progress_msg is not None:
             try:
                 await progress_msg.edit(
-                    f"⏳ <b>Joining Groups...</b> <code>({index}/{total})</code>\n\n"
-                    f"✅ <b>Joined :</b> {joined}\n"
-                    f"❌ <b>Failed :</b> {failed}\n"
-                    f"⏳ <b>Remaining :</b> {remaining}\n"
-                    f"⏱️ <b>Elapsed :</b> {elapsed}s"
-                    + (f"\n⏸️ <b>Flood waits :</b> {flood_waits} ({wait_total}s waited)"
-                       if flood_waits else ""),
+                    f"<blockquote><b>» ⏳ Joining Groups... ({index}/{total})</b>\n\n"
+                    f"• <b>✅ Joined :</b> <b>{joined}</b>\n"
+                    f"• <b>❌ Failed :</b> <b>{failed}</b>\n"
+                    f"• <b>⏳ Remaining :</b> <b>{total - index}</b>\n"
+                    f"• <b>⏱️ Elapsed :</b> <code>{elapsed}s</code>"
+                    + (f"\n• <b>⏸️ Flood Waits :</b> <b>{flood_waits}</b> (<code>{wait_total}s</code> waited)" if flood_waits else "")
+                    + "</blockquote>",
                     parse_mode="html"
                 )
             except Exception:
@@ -127,10 +119,21 @@ async def join_many(client, links, progress_msg=None, delay: float = DEFAULT_DEL
                 pass
 
         if index < total:
-            try:
-                await asyncio.sleep(delay)
-            except asyncio.CancelledError:
-                break
+            wait_delay = int(delay) if delay > 1 else 1
+            for s_delay in range(wait_delay, 0, -1):
+                if progress_msg is not None:
+                    try:
+                        await progress_msg.edit(
+                            f"<blockquote><b>» ⏳ Joining Groups... ({index}/{total})</b>\n\n"
+                            f"• <b>✅ Joined :</b> <b>{joined}</b>\n"
+                            f"• <b>❌ Failed :</b> <b>{failed}</b>\n"
+                            f"• <b>⏳ Remaining :</b> <b>{total - index}</b>\n"
+                            f"• <b>⏱️ Next Join In :</b> <code>{s_delay}s</code> (Anti-Flood Guard)</blockquote>",
+                            parse_mode="html"
+                        )
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
 
     total_time = int(time.time() - started)
     return {
@@ -140,6 +143,8 @@ async def join_many(client, links, progress_msg=None, delay: float = DEFAULT_DEL
         "flood_waits": flood_waits,
         "wait_total": wait_total,
         "total_time": total_time,
+        "failure_reasons": failure_reasons,
+        "failed_reasons": failure_reasons,
     }
 
 
@@ -161,6 +166,12 @@ def format_result(result: dict, title: str = "Group Joining") -> str:
     ]
     if flood:
         lines.append(f"⏸️ <b>Flood waits :</b> <code>{flood}</code> (<code>{wait_total}s</code> waited)")
+
+    reasons = result.get("failure_reasons") or result.get("failed_reasons")
+    if reasons:
+        lines.append("⚠️ <b>Failure Details :</b>")
+        for r, cnt in reasons.items():
+            lines.append(f"• {r}: <code>{cnt}</code>")
 
     summary = "\n".join(lines)
     if remaining:

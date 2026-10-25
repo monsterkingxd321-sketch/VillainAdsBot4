@@ -26,6 +26,19 @@ AUDIO_EXTENSIONS = ("webm", "m4a", "mp3", "ogg")
 VIDEO_EXTENSIONS = ("mp4", "mkv", "webm")
 
 
+def _is_valid_video_file(path: str) -> bool:
+    if not path or not os.path.exists(path) or os.path.getsize(path) < 1000:
+        return False
+    return True
+
+
+def extract_video_id(url: str) -> str:
+    if not url:
+        return ""
+    m = re.search(r"(?:v=|\/|vi\/|youtu\.be\/|\/v\/|\/embed\/|\/shorts\/|^)([a-zA-Z0-9_-]{11})", str(url))
+    return m.group(1) if m else str(url)
+
+
 def is_external_path(path) -> bool:
     if not path:
         return False

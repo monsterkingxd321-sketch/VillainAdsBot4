@@ -821,29 +821,24 @@ def _flood_wait_seconds(exc) -> int:
     return 0
 
 
-async def join_channel_single(client: TelegramClient, ch: str) -> bool:
+async def join_channel_detailed(client: TelegramClient, ch: str) -> tuple:
     """
     Attempts to join a single channel or group by invite link or username.
-    Returns True if successfully joined, already in it, or join request was sent.
-
-    A flood limit is NOT swallowed here - it is re-raised so the caller can
-    wait for the required time and continue automatically.
+    Returns (success: bool, reason: str).
     """
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.functions.messages import ImportChatInviteRequest
     import re
     
     if not ch:
-        return False
+        return False, "Empty link or username"
         
-    # Strip HTML tags, quotes, angles and leading/trailing whitespace
     ch_clean = re.sub(r'<[^>]+>', '', str(ch)).strip()
     ch_clean = ch_clean.strip('\'"`()[]{}<> \t\n\r')
     if not ch_clean:
-        return False
+        return False, "Invalid link format"
         
     try:
-        # Match joinchat or + hash links for t.me, telegram.me, telegram.dog, telegram.org, tg://join, +hash
         join_hash_match = re.search(r'(?:(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)|tg://join\?invite=|^[+]|^joinchat/)([a-zA-Z0-9_-]+)', ch_clean, re.IGNORECASE)
         
         if join_hash_match:
@@ -853,14 +848,11 @@ async def join_channel_single(client: TelegramClient, ch: str) -> bool:
             except Exception as e_invite:
                 err_inv = str(e_invite).lower()
                 if "already" in err_inv or "user_already_participant" in err_inv:
-                    logger.info(f"Already participant of invite hash: {hash_val}")
-                    return True
+                    return True, "Already a member"
                 if "request" in err_inv or "invite_request_sent" in err_inv or "inviterequestsent" in err_inv:
-                    logger.info(f"Join request sent successfully for hash: {hash_val}")
-                    return True
+                    return True, "Join request sent"
                 raise e_invite
         else:
-            # Extract username from public invite link if present
             username_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/([a-zA-Z0-9_]+)', ch_clean, re.IGNORECASE)
             if username_match:
                 username = username_match.group(1).strip()
@@ -872,28 +864,42 @@ async def join_channel_single(client: TelegramClient, ch: str) -> bool:
             except Exception as e_join:
                 err_j = str(e_join).lower()
                 if "already" in err_j or "user_already_participant" in err_j:
-                    logger.info(f"Already participant of channel: {username}")
-                    return True
+                    return True, "Already a member"
                 if "request" in err_j or "invite_request_sent" in err_j or "inviterequestsent" in err_j:
-                    logger.info(f"Join request sent successfully for: {username}")
-                    return True
+                    return True, "Join request sent"
                 raise e_join
             
         logger.info(f"Successfully joined channel/group: {ch_clean}")
-        return True
+        return True, "Joined successfully"
     except Exception as e:
-        # ── Flood limit: let the caller handle the wait ──
         if _flood_wait_seconds(e):
             raise
         err_msg = str(e).lower()
         if "already" in err_msg or "already participant" in err_msg or "user_already_participant" in err_msg:
-            logger.debug(f"Already participant of: {ch_clean}")
-            return True
+            return True, "Already a member"
         if "request" in err_msg or "invite_request_sent" in err_msg or "inviterequestsent" in err_msg:
-            logger.info(f"Join request sent for: {ch_clean}")
-            return True
+            return True, "Join request sent"
+        if "banned" in err_msg or "user_banned_in_channel" in err_msg:
+            return False, "Userbot is banned in this group/channel"
+        if "private" in err_msg or "channel_private" in err_msg:
+            return False, "Group is private or link is inaccessible"
+        if "expired" in err_msg or "invite_hash_expired" in err_msg:
+            return False, "Invite link has expired"
+        if "invalid" in err_msg or "invite_hash_invalid" in err_msg:
+            return False, "Invite link is invalid"
+        if "users_too_much" in err_msg:
+            return False, "Group reached maximum members limit"
         logger.warning(f"Failed to join channel {ch_clean}: {e}")
-        return False
+        return False, str(e)
+
+
+async def join_channel_single(client: TelegramClient, ch: str) -> bool:
+    """
+    Attempts to join a single channel or group by invite link or username.
+    Returns True if successfully joined, already in it, or join request was sent.
+    """
+    ok, _ = await join_channel_detailed(client, ch)
+    return ok
 
 
 async def leave_chat_single(client: TelegramClient, ch: str) -> bool:
@@ -1762,12 +1768,15 @@ class UserBot:
                                 chat_id = getattr(update, "chat_id", None)
                                 if chat_id:
                                     from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players
-                                    if (chat_id in _chat_queues and _chat_queues[chat_id]) or chat_id in _active_chat_players:
+                                    if chat_id in _chat_queues and _chat_queues[chat_id]:
                                         from villain_ads_bot.handlers.player import play_next_in_queue
                                         await play_next_in_queue(chat_id)
                                     else:
-                                        # Idling in VC: re-stream silence so Telegram WebRTC stays active forever
-                                        await self.idle_in_vc(chat_id)
+                                        active = _active_chat_players.pop(chat_id, None)
+                                        if active:
+                                            from villain_ads_bot.handlers.player import _delete_card_by_session
+                                            await _delete_card_by_session(active, chat_id)
+                                        await self.stop_song(chat_id, leave_vc=True)
                             except Exception as e:
                                 logger.error(f"Error in handle_stream_update: {e}")
                 except Exception as reg_err:
@@ -1780,12 +1789,15 @@ class UserBot:
                             chat_id = getattr(update, "chat_id", None)
                             if chat_id:
                                 from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players
-                                if (chat_id in _chat_queues and _chat_queues[chat_id]) or chat_id in _active_chat_players:
+                                if chat_id in _chat_queues and _chat_queues[chat_id]:
                                     from villain_ads_bot.handlers.player import play_next_in_queue
                                     await play_next_in_queue(chat_id)
                                 else:
-                                    # Idling in VC: re-stream silence so Telegram WebRTC stays active forever
-                                    await self.idle_in_vc(chat_id)
+                                    active = _active_chat_players.pop(chat_id, None)
+                                    if active:
+                                        from villain_ads_bot.handlers.player import _delete_card_by_session
+                                        await _delete_card_by_session(active, chat_id)
+                                    await self.stop_song(chat_id, leave_vc=True)
                         except Exception as e:
                             logger.error(f"Error in on_stream_end: {e}")
                 except Exception as reg_err:
@@ -1969,7 +1981,7 @@ class UserBot:
             logger.debug(f"idle_in_vc note for {target_chat}: {e}")
             return False
 
-    async def stop_song(self, chat_id: Optional[int] = None, leave_vc: bool = False) -> tuple:
+    async def stop_song(self, chat_id: Optional[int] = None, leave_vc: bool = True) -> tuple:
         target_chat = chat_id or self.current_vc_chat_id
         if not target_chat:
             return False, "Not in a Voice Chat."
@@ -2002,25 +2014,20 @@ class UserBot:
                     self.current_vc_chat_id = None
                     self.current_vc_link = None
             else:
-                # Keep userbot connected in VC without leaving!
                 await self.idle_in_vc(target_chat)
+
+            self.is_muted = False
+            sess_data = database.get_session(self.session_id)
+            if sess_data:
+                sess_data["current_song"] = None
+                if leave_vc:
+                    sess_data["vc_chat_id"] = None
+                database.save_session(sess_data)
 
             return True, "Playback stopped."
         except Exception as e:
             logger.warning(f"Error in stop_song: {e}")
             return False, f"Error: {e}"
-            self.is_muted = False
-
-            # Clear MongoDB status
-            sess_data = database.get_session(self.session_id)
-            if sess_data:
-                sess_data["current_song"] = None
-                sess_data["vc_chat_id"] = None
-                database.save_session(sess_data)
-            return True, "Playback stopped and left voice chat."
-        except Exception as e:
-            logger.error(f"Failed to stop playback: {e}")
-            return False, f"Failed to stop: {e}"
 
     async def play_song(self, query: str, play_type: str = "audio", chat_id: Optional[Union[int, str]] = None, local_file: str = None, title: str = None, duration: int = 30) -> tuple:
         """
@@ -2450,6 +2457,9 @@ class UserBot:
                     sess_data["username"] = me.username or ""
             except Exception as me_err:
                 logger.warning(f"Could not fetch get_me for {self.session_id} on startup: {me_err}")
+                
+            self.owner_id = sess_data.get("user_id") or sess_data.get("owner_id")
+            self.phone = sess_data.get("phone")
                 
             # Apply configurations safely
             global_settings = database.get_global_settings()
@@ -2949,12 +2959,40 @@ class UserBot:
                                 _preparing_chats.discard(chat_id)
 
                             companion_bots = []
+                            try:
+                                from villain_ads_bot.services import userbot_manager
+                                owner_uid = getattr(self, "owner_id", None) or requester_id
+                                companion_bots = userbot_manager.get_running_userbots_for_owner(
+                                    owner_uid, chat_id=chat_id, exclude_bot=self
+                                )
+                            except Exception as c_lookup_err:
+                                logger.debug(f"Companion bot lookup error in userbot: {c_lookup_err}")
+
+                            if companion_bots and song_info.get("file_path"):
+                                local_fp = song_info["file_path"]
+                                async def _stream_companion_play(c_bot):
+                                    try:
+                                        await c_bot.play_song(
+                                            query="",
+                                            play_type=play_type,
+                                            chat_id=chat_id,
+                                            local_file=local_fp,
+                                            title=song_info.get("title"),
+                                            duration=song_info.get("duration", 30)
+                                        )
+                                        logger.info(f"Companion userbot {c_bot.session_id} streaming track in VC {chat_id}")
+                                    except Exception as c_err:
+                                        logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
+
+                                asyncio.create_task(asyncio.gather(*[_stream_companion_play(cb) for cb in companion_bots], return_exceptions=True))
+
                             title = song_info.get("title", "Unknown Track")
                             duration = song_info.get("duration", 0)
                             mins, secs = divmod(duration, 60)
                             dur_str = f"{mins:02d}:{secs:02d}" if duration > 0 else "Live Stream"
                             mode_emoji = "🎬 Video Stream" if play_type == "video" else "🎙️ Audio Stream"
-                            bot_count_str = ""
+                            bot_count = len(companion_bots) + 1
+                            bot_count_str = f" [{bot_count} Bots]" if bot_count > 1 else ""
                             
                             np_text = utils.format_html_message(
                                 f"<blockquote><b>» 🎵 Now Streaming{bot_count_str}</b>\n\n"
@@ -2967,13 +3005,10 @@ class UserBot:
                             )
                             
                             # Remove the card of the previous song so the chat
-                            # never accumulates stale player cards. The old
-                            # session must be captured BEFORE it is replaced.
+                            # never accumulates stale player cards.
                             try:
-                                from villain_ads_bot.handlers.player import _delete_card_by_session
-                                stale = _active_chat_players.get(chat_id)
-                                if stale:
-                                    await _delete_card_by_session(stale, chat_id)
+                                from villain_ads_bot.handlers.player import delete_now_playing_card
+                                await delete_now_playing_card(chat_id, bot_obj=self)
                             except Exception:
                                 pass
                             
@@ -2996,38 +3031,45 @@ class UserBot:
                             thumb_file = song_info.get("thumb") if thumb_enabled else None
                             _tf_valid = bool(thumb_file) and (str(thumb_file).startswith("http") or (os.path.exists(str(thumb_file)) and os.path.getsize(str(thumb_file)) > 0))
                             
-                            from villain_ads_bot.handlers.player import _main_bot, build_now_playing_markup
+                            from villain_ads_bot.handlers.player import _main_bot, build_now_playing_markup, get_main_bot_username
                             buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
                             
                             sent_msg = None
-                            if _main_bot:
-                                try:
-                                    await prog.delete()
-                                except Exception:
-                                    pass
-                                try:
-                                    if thumb_enabled and _tf_valid:
-                                        sent_msg = await _main_bot.send_message(chat_id, np_text, file=thumb_file, buttons=buttons)
-                                    else:
-                                        sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons)
-                                except Exception as e:
+                            # 1. Try sending via inline query so it shows "via @xtradsbot"
+                            bot_username = get_main_bot_username()
+                            try:
+                                inline_results = await self.client.inline_query(bot_username, f"player:{chat_id}")
+                                if inline_results and len(inline_results) > 0:
+                                    sent_msg = await inline_results[0].click(chat_id)
+                            except Exception as in_err:
+                                logger.debug(f"Userbot inline query via @{bot_username} failed: {in_err}")
+
+                            # 2. If inline query didn't send, fallback to _main_bot or direct userbot message
+                            if not sent_msg:
+                                if _main_bot:
+                                    try:
+                                        if thumb_enabled and _tf_valid:
+                                            sent_msg = await _main_bot.send_message(chat_id, np_text, file=thumb_file, buttons=buttons)
+                                        else:
+                                            sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons)
+                                    except Exception as mb_err:
+                                        logger.debug(f"_main_bot send_message failed: {mb_err}")
+                                        if thumb_enabled and _tf_valid:
+                                            sent_msg = await event.respond(np_text, file=thumb_file)
+                                        else:
+                                            sent_msg = await event.respond(np_text)
+                                else:
                                     if thumb_enabled and _tf_valid:
                                         sent_msg = await event.respond(np_text, file=thumb_file)
                                     else:
                                         sent_msg = await event.respond(np_text)
-                            else:
-                                if thumb_enabled and _tf_valid:
-                                    try:
-                                        await prog.delete()
-                                    except Exception:
-                                        pass
-                                    sent_msg = await event.respond(np_text, file=thumb_file)
-                                else:
-                                    try:
-                                        sent_msg = await prog.edit(np_text)
-                                    except Exception:
-                                        sent_msg = await event.respond(np_text)
-                                        
+
+                            # Delete temporary search progress message
+                            try:
+                                await prog.delete()
+                            except Exception:
+                                pass
+
                             if sent_msg and hasattr(sent_msg, "id") and chat_id in _active_chat_players:
                                 _active_chat_players[chat_id]["msg_id"] = sent_msg.id
                             return
@@ -3037,18 +3079,10 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, play_next_in_queue
+                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, play_next_in_queue, delete_now_playing_card
                             
+                            await delete_now_playing_card(chat_id, bot_obj=self)
                             old_p = _active_chat_players.get(chat_id)
-                            if old_p and old_p.get("msg_id"):
-                                try:
-                                    from villain_ads_bot.handlers.player import _main_bot
-                                    if _main_bot:
-                                        await _main_bot.delete_messages(chat_id, old_p["msg_id"])
-                                    else:
-                                        await self.client.delete_messages(chat_id, old_p["msg_id"])
-                                except Exception:
-                                    pass
                                     
                             queue_list = _chat_queues.get(chat_id, [])
                             prev_timer = _track_timer_tasks.pop(chat_id, None)
@@ -3059,34 +3093,25 @@ class UserBot:
                                 stale_cb = old_p.get("companion_bots", []) if old_p else []
                                 for cb in stale_cb:
                                     try:
-                                        await cb.stop_song(chat_id, leave_vc=False)
+                                        await cb.stop_song(chat_id, leave_vc=True)
                                     except Exception:
                                         pass
-                                await self.stop_song(chat_id)
+                                await self.stop_song(chat_id, leave_vc=True)
                                 prog = await event.respond(
                                     utils.format_html_message(
-                                        "<blockquote><b>» ⏭️ Queue Empty</b>\n\n"
-                                        "No More Songs In Queue. Stream Has Been Stopped.</blockquote>"
+                                        "<blockquote><b>» ⏹️ Ending Song...</b></blockquote>"
                                     )
                                 )
-                                await asyncio.sleep(3)
-                                try:
-                                    await prog.delete()
-                                except Exception:
-                                    pass
+                                asyncio.create_task(utils.delayed_delete(prog, 3))
                                 return
 
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» ⏭️ Skipping Track</b>\n\n"
-                                    "Skipping To Next Song In Queue...</blockquote>"
+                                    "<blockquote><b>» ⏭️ Skipping Song...</b></blockquote>"
                                 )
                             )
                             await play_next_in_queue(chat_id)
-                            try:
-                                await prog.delete()
-                            except Exception:
-                                pass
+                            asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
 
                         elif cmd in ("queue", "q", "playlist", "cqueue"):
@@ -3200,14 +3225,12 @@ class UserBot:
                                 pass
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Pausing Stream</b>\n\nPausing Voice Chat Stream...</blockquote>"
+                                    "<blockquote><b>» ⏸️ Pausing Song...</b></blockquote>"
                                 )
                             )
                             try:
                                 pytg = await self.get_pytgcalls()
                                 await pytg.pause_stream(chat_id)
-                                
-                                # Synchronize pause across companion userbots in this chat
                                 from villain_ads_bot.handlers.player import _active_chat_players
                                 active_info = _active_chat_players.get(chat_id, {})
                                 for cb in active_info.get("companion_bots", []):
@@ -3216,15 +3239,9 @@ class UserBot:
                                         await cb_pytg.pause_stream(chat_id)
                                     except Exception:
                                         pass
-
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        "<blockquote><b>» ⏸️ Playback Paused</b>\n\n"
-                                        "Stream Is Paused. Use <code>.resume</code> Or <code>/resume</code> To Continue Playing.</blockquote>"
-                                    )
-                                )
-                            except Exception as e:
-                                await prog.edit(utils.format_html_message(f"<blockquote><b>» ❌ Error Pausing</b>\n\n⚠️ <code>{e}</code></blockquote>"))
+                            except Exception:
+                                pass
+                            asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
                         elif cmd == "resume":
@@ -3234,14 +3251,12 @@ class UserBot:
                                 pass
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Resuming Stream</b>\n\nResuming Voice Chat Stream...</blockquote>"
+                                    "<blockquote><b>» ▶️ Resuming Song...</b></blockquote>"
                                 )
                             )
                             try:
                                 pytg = await self.get_pytgcalls()
                                 await pytg.resume_stream(chat_id)
-
-                                # Synchronize resume across companion userbots in this chat
                                 from villain_ads_bot.handlers.player import _active_chat_players
                                 active_info = _active_chat_players.get(chat_id, {})
                                 for cb in active_info.get("companion_bots", []):
@@ -3250,14 +3265,9 @@ class UserBot:
                                         await cb_pytg.resume_stream(chat_id)
                                     except Exception:
                                         pass
-
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        "<blockquote><b>» ▶️ Playback Resumed</b>\n\nStream Resumed Successfully.</blockquote>"
-                                    )
-                                )
-                            except Exception as e:
-                                await prog.edit(utils.format_html_message(f"<blockquote><b>» ❌ Error Resuming</b>\n\n⚠️ <code>{e}</code></blockquote>"))
+                            except Exception:
+                                pass
+                            asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
                         elif cmd in ("stop", "end"):
@@ -3265,51 +3275,28 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks
+                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, delete_now_playing_card
                             
-                            old_p = _active_chat_players.get(chat_id)
+                            old_p = _active_chat_players.pop(chat_id, None)
                             companion_bots = old_p.get("companion_bots", []) if old_p else []
-                            if old_p and old_p.get("msg_id"):
-                                try:
-                                    from villain_ads_bot.handlers.player import _main_bot
-                                    if _main_bot:
-                                        await _main_bot.delete_messages(chat_id, old_p["msg_id"])
-                                    else:
-                                        await self.client.delete_messages(chat_id, old_p["msg_id"])
-                                except Exception:
-                                    pass
-                                    
-                            _chat_queues.pop(chat_id, None)
-                            _active_chat_players.pop(chat_id, None)
+                            await delete_now_playing_card(chat_id, bot_obj=self)
                             prev_timer = _track_timer_tasks.pop(chat_id, None)
                             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                                 prev_timer.cancel()
 
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Stopping Stream</b>\n\nStopping Voice Chat Stream...</blockquote>"
+                                    "<blockquote><b>» ⏹️ Ending Song...</b></blockquote>"
                                 )
                             )
                             for cb in companion_bots:
                                 try:
-                                    await cb.stop_song(chat_id, leave_vc=False)
+                                    await cb.stop_song(chat_id, leave_vc=True)
                                 except Exception:
                                     pass
 
-                            success, msg = await self.stop_song(chat_id)
-                            if success:
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        "<blockquote><b>» ⏹️ Playback Stopped</b>\n\nVoice Chat Stream Has Been Stopped & Queue Cleared.</blockquote>"
-                                    )
-                                )
-                                await asyncio.sleep(3)
-                                try:
-                                    await prog.delete()
-                                except Exception:
-                                    pass
-                            else:
-                                await prog.edit(utils.format_html_message(f"<blockquote><b>» ❌ Failed To Stop</b>\n\n⚠️ <code>{msg}</code></blockquote>"))
+                            await self.stop_song(chat_id, leave_vc=True)
+                            asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
                         elif cmd == "mute":
@@ -3317,11 +3304,6 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            prog = await event.respond(
-                                utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Muting Mic</b>\n\nMuting Userbot In Voice Chat...</blockquote>"
-                                )
-                            )
                             success, msg = await self.mute_mic(chat_id)
                             from villain_ads_bot.handlers.player import _active_chat_players
                             active_info = _active_chat_players.get(chat_id, {})
@@ -3331,11 +3313,12 @@ class UserBot:
                                 except Exception:
                                     pass
 
-                            await prog.edit(
+                            prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» 🔇 Mic Muted</b>\n\nUserbot Microphone Has Been Turned <b>Off</b>.</blockquote>"
-                                )
+                                    "<blockquote><b>» 🔇 Mic Muted</b></blockquote>"
+                                ) if success else utils.format_html_message("<blockquote><b>» ❌ Failed To Mute</b></blockquote>")
                             )
+                            asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
                         elif cmd == "unmute":
@@ -3343,11 +3326,6 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            prog = await event.respond(
-                                utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Unmuting Mic</b>\n\nUnmuting Userbot In Voice Chat...</blockquote>"
-                                )
-                            )
                             success, msg = await self.unmute_mic(chat_id)
                             from villain_ads_bot.handlers.player import _active_chat_players
                             active_info = _active_chat_players.get(chat_id, {})
@@ -3357,11 +3335,12 @@ class UserBot:
                                 except Exception:
                                     pass
 
-                            await prog.edit(
+                            prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» 🔊 Mic Unmuted</b>\n\nUserbot Microphone Has Been Turned <b>On</b>.</blockquote>"
-                                )
+                                    "<blockquote><b>» 🔊 Mic Unmuted</b></blockquote>"
+                                ) if success else utils.format_html_message("<blockquote><b>» ❌ Failed To Unmute</b></blockquote>")
                             )
+                            asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
                         elif cmd in ("vc", "joinvc"):
@@ -3369,26 +3348,13 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
+                            success, msg = await self.join_voice_chat(str(chat_id))
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Joining Voice Chat</b>\n\nConnecting Userbot To Group Voice Chat...</blockquote>"
-                                )
+                                    "<blockquote><b>» 🎙️ Connected To Voice Chat</b></blockquote>"
+                                ) if success else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{msg}</code></blockquote>")
                             )
-                            success, msg = await self.join_voice_chat(str(chat_id))
-                            if success:
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        "<blockquote><b>» 🎙️ Connected To Voice Chat</b>\n\n"
-                                        "Userbot Successfully Connected To Voice Chat!\n\n"
-                                        "💡 <i>Use <code>.play &lt;song&gt;</code> Or <code>.vplay &lt;video&gt;</code> To Stream Media.</i></blockquote>"
-                                    )
-                                )
-                            else:
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        f"<blockquote><b>» ❌ Failed To Join Vc</b>\n\n⚠️ <code>{msg}</code></blockquote>"
-                                    )
-                                )
+                            asyncio.create_task(utils.delayed_delete(prog, 4))
                             return
                             
                         elif cmd in ("leavevc", "vcleft"):
@@ -3396,20 +3362,13 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
+                            success, msg = await self.leave_voice_chat(chat_id)
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» ⏳ Leaving Voice Chat</b>\n\nDisconnecting Userbot From Voice Chat...</blockquote>"
-                                )
+                                    "<blockquote><b>» 🔴 Left Voice Chat</b></blockquote>"
+                                ) if success else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Leave Vc:</b> <code>{msg}</code></blockquote>")
                             )
-                            success, msg = await self.leave_voice_chat(chat_id)
-                            if success:
-                                await prog.edit(
-                                    utils.format_html_message(
-                                        "<blockquote><b>» 👋 Left Voice Chat</b>\n\nUserbot Has Disconnected From The Voice Chat.</blockquote>"
-                                    )
-                                )
-                            else:
-                                await prog.edit(utils.format_html_message(f"<blockquote><b>» ❌ Failed To Leave Vc</b>\n\n⚠️ <code>{msg}</code></blockquote>"))
+                            asyncio.create_task(utils.delayed_delete(prog, 4))
                             return
                             
                         elif cmd in ("thumb", "thumbnail"):
@@ -3615,8 +3574,8 @@ class UserBot:
                             pass
 
                     is_reply_target = is_mentioned or is_reply_to_us
-                elif event.is_private:
-                    is_reply_target = True
+                else:
+                    is_reply_target = False
 
                 auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
 
