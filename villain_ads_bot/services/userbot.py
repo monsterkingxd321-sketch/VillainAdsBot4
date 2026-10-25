@@ -3529,7 +3529,7 @@ class UserBot:
                                                     logger.debug(f"Failed to record welcomed_user: {db_err}")
                                             asyncio.get_running_loop().run_in_executor(None, _persist_welcomed)
 
-                # 4. Auto-Reply / Auto-Chat (Strictly for Groups & Channels)
+                # 4. Auto-Reply / Auto-Chat (Strictly for Groups only, and ONLY real human users)
                 is_reply_target = False
 
                 # Ensure me_id and username are known
@@ -3543,41 +3543,93 @@ class UserBot:
                     except Exception:
                         pass
 
-                if event.is_group or event.is_channel:
-                    is_reply_to_us = False
-                    if event.is_reply:
-                        try:
-                            reply_msg = await event.get_reply_message()
-                            if reply_msg:
-                                if self.me_id and reply_msg.sender_id == self.me_id:
-                                    is_reply_to_us = True
-                                elif hasattr(reply_msg, "from_id") and getattr(reply_msg.from_id, "user_id", None) == self.me_id:
-                                    is_reply_to_us = True
-                        except Exception:
-                            pass
+                auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
 
-                    is_mentioned = bool(getattr(event, "mentioned", False))
-                    raw_text_lower = (event.raw_text or "").lower()
-                    if self.username and f"@{self.username.lower()}" in raw_text_lower:
-                        is_mentioned = True
-                    if self.me_id and f"tg://user?id={self.me_id}" in raw_text_lower:
-                        is_mentioned = True
-                    if getattr(event, "entities", None):
+                # Strictly Groups only (No DMs, No Broadcast Channels, No Channel Posts)
+                is_strictly_group = bool(event.is_group and not getattr(event, "is_channel_post", False))
+                is_outgoing = bool(getattr(event, "out", False))
+                sender_id = getattr(event, "sender_id", None)
+
+                if is_strictly_group and not is_outgoing and sender_id and auto_reply_enabled:
+                    # In Telegram: Real users have positive IDs (> 0). Channels/Anonymous Admins have negative IDs (< 0).
+                    # 1087968824 is GroupAnonymousBot, 777000 is Telegram Notifications
+                    if sender_id > 0 and sender_id != self.me_id and sender_id not in (1087968824, 777000):
+                        # Filter out main management bot
+                        main_bot_id = getattr(config, "BOT_ID", None)
+                        is_main_bot = bool(main_bot_id and sender_id == main_bot_id)
+
+                        # Filter out any companion userbots in the multi-slot fleet
+                        is_companion_bot = False
                         try:
-                            from telethon.tl import types as tl_types
-                            for ent in event.entities:
-                                if isinstance(ent, (tl_types.MessageEntityMentionName, tl_types.InputMessageEntityMentionName)):
-                                    if getattr(ent, "user_id", None) == self.me_id:
-                                        is_mentioned = True
+                            from villain_ads_bot.services import userbot_manager
+                            owner_uid = getattr(self, "owner_id", None)
+                            if owner_uid:
+                                companion_userbots = userbot_manager.get_running_userbots_for_owner(owner_uid)
+                                for ub in companion_userbots:
+                                    if getattr(ub, "me_id", None) == sender_id:
+                                        is_companion_bot = True
                                         break
                         except Exception:
                             pass
 
-                    is_reply_target = is_mentioned or is_reply_to_us
-                else:
-                    is_reply_target = False
+                        if not is_main_bot and not is_companion_bot:
+                            # Check sender entity: Must be a real human user, NOT a bot!
+                            sender = getattr(event, "sender", None)
+                            if not sender:
+                                try:
+                                    sender = await event.get_sender()
+                                except Exception:
+                                    pass
 
-                auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
+                            from telethon.tl import types as tl_types
+                            is_real_human = False
+                            if sender and isinstance(sender, tl_types.User):
+                                is_bot_user = bool(
+                                    getattr(sender, "bot", False) or 
+                                    getattr(sender, "deleted", False) or
+                                    (getattr(sender, "username", None) or "").lower().endswith("bot")
+                                )
+                                if not is_bot_user:
+                                    is_real_human = True
+                            elif sender_id and sender is None:
+                                try:
+                                    resolved = await self.client.get_entity(sender_id)
+                                    if isinstance(resolved, tl_types.User) and not getattr(resolved, "bot", False):
+                                        if not (getattr(resolved, "username", None) or "").lower().endswith("bot"):
+                                            is_real_human = True
+                                except Exception:
+                                    pass
+
+                            if is_real_human:
+                                is_reply_to_us = False
+                                if event.is_reply:
+                                    try:
+                                        reply_msg = await event.get_reply_message()
+                                        if reply_msg:
+                                            if self.me_id and reply_msg.sender_id == self.me_id:
+                                                is_reply_to_us = True
+                                            elif hasattr(reply_msg, "from_id") and getattr(reply_msg.from_id, "user_id", None) == self.me_id:
+                                                is_reply_to_us = True
+                                    except Exception:
+                                        pass
+
+                                is_mentioned = bool(getattr(event, "mentioned", False))
+                                raw_text_lower = (event.raw_text or "").lower()
+                                if self.username and f"@{self.username.lower()}" in raw_text_lower:
+                                    is_mentioned = True
+                                if self.me_id and f"tg://user?id={self.me_id}" in raw_text_lower:
+                                    is_mentioned = True
+                                if getattr(event, "entities", None):
+                                    try:
+                                        for ent in event.entities:
+                                            if isinstance(ent, (tl_types.MessageEntityMentionName, tl_types.InputMessageEntityMentionName)):
+                                                if getattr(ent, "user_id", None) == self.me_id:
+                                                    is_mentioned = True
+                                                    break
+                                    except Exception:
+                                        pass
+
+                                is_reply_target = is_mentioned or is_reply_to_us
 
                 if is_reply_target and auto_reply_enabled:
                     now = time.time()
