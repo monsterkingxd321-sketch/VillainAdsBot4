@@ -452,8 +452,7 @@ async def main():
                 BotCommand(command="dashboard", description="📊 Open Dashboard"),
                 BotCommand(command="login", description="➕ Add / Login Userbot"),
                 BotCommand(command="settings", description="⚙️ Bot Settings"),
-                BotCommand(command="status", description="📡 Bot Status & VCs"),
-                BotCommand(command="admin", description="👑 Admin Control Panel")
+                BotCommand(command="status", description="📡 Bot Status & VCs")
             ]
         ))
         logger.info("Successfully updated Telegram bot command suggestions.")
