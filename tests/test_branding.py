@@ -112,6 +112,17 @@ async def main():
     assert TG_NAME["value"] == "NameOnly via @Brand", TG_NAME["value"]
     assert TG_BIO["value"] == "BioUntouched", TG_BIO["value"]
 
+    # 7. Pre-existing untracked branding (e.g. '@BharatMusicBot') revert
+    TG_NAME["value"] = "Samiya @BharatMusicBot"
+    TG_BIO["value"] = "Bio line @BharatMusicBot"
+    sess4 = {"phone": "+944", "name": "Samiya @BharatMusicBot"}
+    await U._revert_branding(client, sess4)
+    print("7) untracked revert    :", repr(TG_NAME["value"]), "|", repr(TG_BIO["value"]))
+    assert TG_NAME["value"] == "Samiya", TG_NAME["value"]
+    assert TG_BIO["value"] == "Bio line", TG_BIO["value"]
+    assert sess4["branding_applied_name_suffix"] == ""
+    assert sess4["branding_applied_bio_suffix"] == ""
+
     print("\nALL BRANDING TESTS PASSED")
 
 

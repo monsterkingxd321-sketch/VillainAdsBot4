@@ -1254,7 +1254,7 @@ async def remove_all_branding() -> tuple:
     (both live running userbots and stored sessions).
     Returns (reverted_count, total_count).
     """
-    global_settings = database.get_global_settings()
+    global_settings = database.get_global_settings() or {}
     global_settings["branding_name_enabled"] = False
     global_settings["branding_bio_enabled"] = False
     global_settings["branding_lock"] = False
@@ -1274,6 +1274,16 @@ async def remove_all_branding() -> tuple:
         phone = sess.get("phone") or sess.get("session_id")
         if not phone:
             return
+
+        # Clean session record in database
+        pure_name = utils.strip_branding(sess.get("name") or "")
+        pure_base_name = utils.strip_branding(sess.get("branding_base_name") or "") or pure_name
+        sess["branding_applied_name_suffix"] = ""
+        sess["branding_applied_bio_suffix"] = ""
+        sess["branding_base_name"] = pure_base_name
+        if pure_name:
+            sess["name"] = pure_name
+
         bot = find_running_bot(phone)
         if bot and bot.client and bot.client.is_connected():
             async with sem:
@@ -1282,18 +1292,33 @@ async def remove_all_branding() -> tuple:
                     if ok:
                         reverted += 1
                 except Exception as e:
-                    logger.error(f"remove_all_branding failed for {phone}: {e}")
+                    logger.error(f"remove_all_branding failed for live {phone}: {e}")
         else:
-            # Clean offline session record
-            sess["branding_applied_name_suffix"] = ""
-            sess["branding_applied_bio_suffix"] = ""
-            if "branding_base_name" in sess:
-                sess["name"] = sess["branding_base_name"]
-            try:
-                database.save_session(sess)
-            except Exception:
-                pass
+            # If offline, attempt a direct connection to live revert if session file exists
+            sess_file = sess.get("session_file")
+            if sess_file and os.path.exists(sess_file):
+                async with sem:
+                    temp_client = None
+                    try:
+                        sf = sess_file[:-8] if sess_file.endswith(".session") else sess_file
+                        temp_client = TelegramClient(sf, config.API_ID, config.API_HASH)
+                        await temp_client.connect()
+                        if await temp_client.is_user_authorized():
+                            await revert_branding_for_session(temp_client, sess)
+                    except Exception as e:
+                        logger.debug(f"Direct offline revert skipped for {phone}: {e}")
+                    finally:
+                        if temp_client:
+                            try:
+                                await temp_client.disconnect()
+                            except Exception:
+                                pass
             reverted += 1
+
+        try:
+            database.save_session(sess)
+        except Exception:
+            pass
 
     await asyncio.gather(*[_revert_one(s) for s in all_sessions], return_exceptions=True)
     logger.info(f"remove_all_branding: reverted branding on {reverted}/{len(all_sessions)} session(s).")

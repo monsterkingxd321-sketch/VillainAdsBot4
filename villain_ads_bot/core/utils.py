@@ -56,6 +56,26 @@ def normalize_brand_suffix(suffix: str) -> str:
     return s
 
 
+def strip_branding(text: str, known_suffixes: list = None) -> str:
+    """
+    Completely strips any branding suffix from a display name or bio.
+    Handles known suffixes, custom text, and standard Telegram handle suffixes
+    (e.g., ' via @Bot', ' @BharatMusicBot', ' | @Bot', ' - @Bot', etc.).
+    """
+    if not text:
+        return ""
+    result = str(text).strip()
+    if known_suffixes:
+        for s in known_suffixes:
+            if s and isinstance(s, str):
+                s_strip = s.strip()
+                if s_strip and result.endswith(s_strip):
+                    result = result[:-len(s_strip)].rstrip()
+    import re
+    result = re.sub(r'[\s\-_|~•*]*(?:via\s+@?|@)[a-zA-Z0-9_]{3,32}\s*$', '', result, flags=re.IGNORECASE).rstrip()
+    return result
+
+
 # ─── LOG GROUP HELPER ───────────────────────────────────────────────────
 async def safe_send_to_log_group(client, text: str, file=None, buttons=None, parse_mode="html") -> bool:
     """

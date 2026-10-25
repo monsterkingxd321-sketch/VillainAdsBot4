@@ -1088,15 +1088,7 @@ def _is_cloned_session(session_data: dict) -> bool:
 
 def _strip_trailing_suffix(value: str, suffix: str) -> str:
     """Removes a trailing branding suffix from a value (if present)."""
-    if not value:
-        return ""
-    if not suffix:
-        return value.rstrip()
-    v = value.rstrip()
-    s = suffix.rstrip()
-    if s and v.endswith(s):
-        return v[: -len(s)].rstrip()
-    return v
+    return utils.strip_branding(value, [suffix] if suffix else None)
 
 
 def _normalize_suffix(suffix: str) -> str:
@@ -1121,8 +1113,9 @@ async def _revert_branding(client: TelegramClient, session_data: dict):
     """
     Removes a previously applied branding suffix by restoring the stored
     "pure" profile values, or stripping any applied/fallback branding suffixes.
+    Updates Telegram profile immediately and cleans MongoDB session fields.
     """
-    if not session_data:
+    if not session_data or not client:
         return False
 
     from telethon.tl.functions.account import UpdateProfileRequest
@@ -1134,42 +1127,64 @@ async def _revert_branding(client: TelegramClient, session_data: dict):
         current_name = (user_me.first_name or "").strip()
         current_bio = (full_user.full_user.about or "").strip()
 
-        base_name = session_data.get("branding_base_name") or session_data.get("original_first_name")
-        base_bio = session_data.get("branding_base_bio") or session_data.get("original_about")
+        global_settings = database.get_global_settings() or {}
+        brand_name_text = global_settings.get("branding_name_text") or ""
+        brand_bio_text = global_settings.get("branding_bio_text") or ""
+        brand_username = global_settings.get("branding_username") or ""
 
         applied_name_suffix = session_data.get("branding_applied_name_suffix") or ""
         applied_bio_suffix = session_data.get("branding_applied_bio_suffix") or ""
 
-        # Suffix stripping fallback if base values are not stored
-        if not base_name:
-            if applied_name_suffix and current_name.endswith(applied_name_suffix):
-                base_name = current_name[:-len(applied_name_suffix)].rstrip()
-            elif " via @" in current_name:
-                base_name = current_name.split(" via @")[0].rstrip()
-            else:
-                base_name = session_data.get("name") or current_name
+        known_name_suffixes = [applied_name_suffix, brand_name_text, f"via @{brand_username}" if brand_username else ""]
+        known_bio_suffixes = [applied_bio_suffix, brand_bio_text, f"via @{brand_username}" if brand_username else ""]
 
-        if not base_bio:
-            if applied_bio_suffix and current_bio.endswith(applied_bio_suffix):
-                base_bio = current_bio[:-len(applied_bio_suffix)].rstrip()
-            elif " via @" in current_bio:
-                base_bio = current_bio.split(" via @")[0].rstrip()
-            else:
-                base_bio = current_bio
+        # 1. Determine clean base name
+        stored_base_name = session_data.get("branding_base_name") or session_data.get("original_first_name") or session_data.get("original_name")
+        clean_stored_name = utils.strip_branding(stored_base_name, known_name_suffixes) if stored_base_name else ""
+        clean_current_name = utils.strip_branding(current_name, known_name_suffixes)
+        clean_db_name = utils.strip_branding(session_data.get("name") or "", known_name_suffixes)
+
+        target_name = clean_stored_name or clean_current_name or clean_db_name or current_name
+
+        # 2. Determine clean base bio
+        stored_base_bio = session_data.get("branding_base_bio") or session_data.get("original_about") or session_data.get("original_bio")
+        clean_stored_bio = utils.strip_branding(stored_base_bio, known_bio_suffixes) if stored_base_bio is not None else None
+        clean_current_bio = utils.strip_branding(current_bio, known_bio_suffixes)
+        clean_db_bio = utils.strip_branding(session_data.get("original_bio") or "", known_bio_suffixes)
+
+        if clean_stored_bio is not None:
+            target_bio = clean_stored_bio
+        elif clean_current_bio is not None:
+            target_bio = clean_current_bio
+        elif clean_db_bio is not None:
+            target_bio = clean_db_bio
+        else:
+            target_bio = current_bio
 
         update_kwargs = {}
-        if base_name and base_name != current_name:
-            update_kwargs["first_name"] = base_name[:BRAND_NAME_MAX]
-        if base_bio is not None and base_bio != current_bio:
-            update_kwargs["about"] = base_bio[:BRAND_BIO_MAX]
+        if target_name and target_name != current_name:
+            update_kwargs["first_name"] = target_name[:BRAND_NAME_MAX]
+        if target_bio is not None and target_bio != current_bio:
+            update_kwargs["about"] = target_bio[:BRAND_BIO_MAX]
 
         if update_kwargs:
-            await client(UpdateProfileRequest(**update_kwargs))
-            logger.info(f"Branding reverted for {session_data.get('phone')}: {update_kwargs}")
+            try:
+                await client(UpdateProfileRequest(**update_kwargs))
+                logger.info(f"Branding successfully reverted on Telegram for {session_data.get('phone')}: {update_kwargs}")
+            except Exception as up_err:
+                logger.warning(f"Failed to update profile on Telegram for {session_data.get('phone')}: {up_err}")
 
+        # Update database session record to pure values
         session_data["branding_applied_name_suffix"] = ""
         session_data["branding_applied_bio_suffix"] = ""
-        database.save_session(session_data)
+        session_data["branding_base_name"] = target_name
+        session_data["branding_base_bio"] = target_bio
+        if target_name:
+            session_data["name"] = target_name
+        try:
+            database.save_session(session_data)
+        except Exception as s_err:
+            logger.warning(f"Could not save session after revert: {s_err}")
         return True
     except Exception as e:
         logger.warning(f"Could not revert branding: {e}")
@@ -1181,43 +1196,38 @@ revert_branding_for_session = _revert_branding
 async def apply_branding(client: TelegramClient, branding_username: str, session_data: dict):
     """
     Applies (or refreshes) the branding suffix on the userbot profile name/bio.
-
-    Key guarantees:
-      * The branding is applied to the LIVE Telegram profile immediately.
-      * The "pure" (un-branded) name/bio is remembered so the suffix can be
-        refreshed or removed later without ever stacking multiple suffixes.
-      * Cloned profiles are never touched.
-      * Bio-only branding works (the name is left untouched).
+    Branding is ONLY for name and bio. Never username.
     """
+    if not session_data or not client:
+        return
+
     from telethon.tl.functions.users import GetFullUserRequest
     from telethon.tl.functions.account import UpdateProfileRequest
 
     try:
-        global_settings = database.get_global_settings()
+        global_settings = database.get_global_settings() or {}
         branding_lock = global_settings.get("branding_lock", True)
 
         # 1. PROTECT CLONED AND CUSTOM PROFILES:
-        #    When the branding lock is enabled (default) the branding is
-        #    applied ON TOP of a cloned profile so a user can never remove it.
         if _is_cloned_session(session_data) and not branding_lock:
             logger.info(f"apply_branding: session {session_data.get('phone')} has an active cloned profile, skipping branding.")
             return
 
-        brand_name_enabled = global_settings.get("branding_name_enabled", True)
-        brand_bio_enabled = global_settings.get("branding_bio_enabled", True)
+        brand_name_enabled = global_settings.get("branding_name_enabled", False)
+        brand_bio_enabled = global_settings.get("branding_bio_enabled", False)
 
         brand_name_text = _normalize_suffix(global_settings.get("branding_name_text") or "")
         brand_bio_text = _normalize_suffix(global_settings.get("branding_bio_text") or "")
-        brand_username = (branding_username or "").strip()
 
-        fallback_suffix = f" via @{brand_username}" if brand_username else ""
-        name_suffix = brand_name_text if brand_name_text else fallback_suffix
-        bio_suffix = brand_bio_text if brand_bio_text else fallback_suffix
+        # Fallback suffix only if explicitly configured in name/bio text
+        fallback_suffix = f" via @{branding_username.strip()}" if branding_username and branding_username.strip() else ""
+        name_suffix = brand_name_text if brand_name_text else (fallback_suffix if brand_name_enabled else "")
+        bio_suffix = brand_bio_text if brand_bio_text else (fallback_suffix if brand_bio_enabled else "")
 
         has_name_branding = bool(brand_name_enabled and name_suffix)
         has_bio_branding = bool(brand_bio_enabled and bio_suffix)
 
-        # 2. Nothing configured any more -> revert to the pure profile (if known).
+        # 2. Nothing configured any more -> revert to the pure profile.
         if not has_name_branding and not has_bio_branding:
             await _revert_branding(client, session_data)
             return
@@ -1235,41 +1245,25 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
         stored_base_bio = session_data.get("branding_base_bio")
 
         # 3. Work out the "pure" base values (profile WITHOUT any branding).
+        known_name_suffixes = [prev_name_suffix, name_suffix]
+        known_bio_suffixes = [prev_bio_suffix, bio_suffix]
+
         if stored_base_name and not _is_cloned_session(session_data):
-            expected = stored_base_name + prev_name_suffix if prev_name_suffix else stored_base_name
-            if current_tg_name == expected:
-                base_name = stored_base_name
-            else:
-                # The user changed the name on Telegram -> use the new name as base.
-                base_name = _strip_trailing_suffix(current_tg_name, prev_name_suffix)
-                base_name = _strip_trailing_suffix(base_name, name_suffix)
+            base_name = utils.strip_branding(stored_base_name, known_name_suffixes)
         else:
-            # A cloned (or never branded) profile: the live name is the base.
-            base_name = _strip_trailing_suffix(current_tg_name, prev_name_suffix)
-            base_name = _strip_trailing_suffix(base_name, name_suffix)
+            base_name = utils.strip_branding(current_tg_name, known_name_suffixes)
 
         if stored_base_bio is not None and not _is_cloned_session(session_data):
-            expected_bio = (stored_base_bio or "") + prev_bio_suffix if prev_bio_suffix else (stored_base_bio or "")
-            if current_tg_bio == expected_bio:
-                base_bio = stored_base_bio or ""
-            else:
-                base_bio = _strip_trailing_suffix(current_tg_bio, prev_bio_suffix)
-                base_bio = _strip_trailing_suffix(base_bio, bio_suffix)
+            base_bio = utils.strip_branding(stored_base_bio, known_bio_suffixes)
         else:
-            base_bio = _strip_trailing_suffix(current_tg_bio, prev_bio_suffix)
-            base_bio = _strip_trailing_suffix(base_bio, bio_suffix)
+            base_bio = utils.strip_branding(current_tg_bio, known_bio_suffixes)
 
         base_name = (base_name or "").strip()
         base_bio = (base_bio or "").strip()
 
         # 4. Build the final values (suffix always kept intact).
-        new_first_name = _fit_with_suffix(base_name, name_suffix if has_name_branding else "", BRAND_NAME_MAX)
-        
-        # Build the final bio keeping suffix intact
-        if has_bio_branding:
-            new_bio = _fit_with_suffix(base_bio, bio_suffix, BRAND_BIO_MAX)
-        else:
-            new_bio = base_bio[:BRAND_BIO_MAX]
+        new_first_name = _fit_with_suffix(base_name, name_suffix, BRAND_NAME_MAX) if has_name_branding else base_name[:BRAND_NAME_MAX]
+        new_bio = _fit_with_suffix(base_bio, bio_suffix, BRAND_BIO_MAX) if has_bio_branding else base_bio[:BRAND_BIO_MAX]
 
         update_kwargs = {}
         if new_first_name and new_first_name != current_tg_name:
@@ -1283,25 +1277,10 @@ async def apply_branding(client: TelegramClient, branding_username: str, session
                 logger.info(f"Branding applied for {user_me.id}: {list(update_kwargs.keys())}")
             except Exception as up_err:
                 err_name = type(up_err).__name__
-                # A FROZEN account can not be written to at all. Mark it so the
-                # dashboard shows the truth instead of retrying for ever.
                 if "Frozen" in err_name:
                     logger.warning(
-                        f"Account {session_data.get('phone')} is FROZEN by Telegram - "
-                        f"the branding was skipped."
+                        f"Account {session_data.get('phone')} is FROZEN by Telegram - branding was skipped."
                     )
-                    try:
-                        _sid = session_data.get("session_id") or session_data.get("phone")
-                        _sess = database.get_session(_sid) if _sid else None
-                        if _sess:
-                            _sess["status"] = "unauthorized"
-                            _sess["last_error"] = (
-                                "Account frozen by Telegram (@SpamBot restriction). "
-                                "It can not be used any more."
-                            )
-                            database.save_session(_sess)
-                    except Exception:
-                        pass
                     return
                 logger.warning(f"Could not update branding on Telegram for {user_me.id}: {up_err}")
                 utils.report_error(f"apply_branding.update:{session_data.get('phone')}", up_err)
@@ -2648,17 +2627,20 @@ class UserBot:
 
             # Apply branding to this freshly hosted userbot.
             # ANY of name-text / bio-text / branding-username triggers it, so a
-            # bio-only branding configuration is honoured as well.
+            # Apply branding or revert if branding is turned off
+            brand_name_enabled = global_settings.get("branding_name_enabled", False)
+            brand_bio_enabled = global_settings.get("branding_bio_enabled", False)
             brand_name_text = (global_settings.get("branding_name_text") or "").strip()
             brand_bio_text = (global_settings.get("branding_bio_text") or "").strip()
-            brand_username = (global_settings.get("branding_username") or "").strip()
-            if (brand_name_text or brand_bio_text or brand_username) and not _is_cloned_session(sess_data):
-                t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
+            has_branding = (brand_name_enabled and brand_name_text) or (brand_bio_enabled and brand_bio_text)
+
+            if has_branding and not _is_cloned_session(sess_data):
+                t_brand = asyncio.create_task(apply_branding(self.client, "", sess_data))
                 self.bg_tasks.add(t_brand)
                 t_brand.add_done_callback(self.bg_tasks.discard)
-            elif sess_data.get("branding_base_name") is not None:
-                # Branding was switched off while the bot was offline -> revert it.
-                t_brand = asyncio.create_task(apply_branding(self.client, brand_username, sess_data))
+            elif sess_data.get("branding_base_name") is not None or sess_data.get("branding_applied_name_suffix") or sess_data.get("branding_applied_bio_suffix") or not has_branding:
+                # Branding was switched off or removed -> revert profile to pure state
+                t_brand = asyncio.create_task(_revert_branding(self.client, sess_data))
                 self.bg_tasks.add(t_brand)
                 t_brand.add_done_callback(self.bg_tasks.discard)
                 

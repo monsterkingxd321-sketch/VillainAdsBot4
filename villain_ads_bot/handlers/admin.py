@@ -3997,23 +3997,7 @@ def register_handlers(client):
 
     @client.on(events.CallbackQuery(pattern=r"^admin_set_brand_username_txt$"))
     async def admin_set_branding_username_callback(event):
-        user_id = event.sender_id
-        if not check_admin(user_id):
-            return
-
-        _admin_action_states[user_id] = "WAITING_FOR_BRAND_USERNAME_TXT"
-
-        prompt_text = (
-            "<blockquote><b>🔗 Set Branding Username</b>\n\n"
-            "Send the Telegram username (without @) that should be used as the fallback branding suffix.\n\n"
-            "Example: <code>MySupportBot</code>\n\n"
-            "💡 <i>Used as <code> via @MySupportBot</code> whenever no explicit name/bio suffix is configured.</i></blockquote>"
-        )
-        buttons = [[utils.styled_button("🔙 Cancel", "admin_branding_settings", style="danger")]]
-        try:
-            await event.edit(prompt_text, buttons=buttons)
-        except Exception:
-            await event.respond(prompt_text, buttons=buttons)
+        await event.answer("ℹ️ Branding is only for Name and Bio.", alert=True)
 
     @client.on(events.CallbackQuery(pattern=r"^admin_tgl_brand_lock_opt$"))
     async def admin_toggle_branding_lock_callback(event):
@@ -4080,25 +4064,21 @@ async def show_branding_settings(event, user_id: int):
         await event.respond(utils.get_text("error_not_admin", lang))
         return
         
-    global_settings = database.get_global_settings()
-    brand_name_val = "✅ ON" if global_settings.get("branding_name_enabled", True) else "❌ OFF"
-    brand_bio_val = "✅ ON" if global_settings.get("branding_bio_enabled", True) else "❌ OFF"
+    global_settings = database.get_global_settings() or {}
+    brand_name_val = "✅ ON" if global_settings.get("branding_name_enabled", False) else "❌ OFF"
+    brand_bio_val = "✅ ON" if global_settings.get("branding_bio_enabled", False) else "❌ OFF"
     brand_lock_val = "🔒 LOCKED" if global_settings.get("branding_lock", True) else "🔓 UNLOCKED"
-    brand_username = (global_settings.get("branding_username") or "").strip()
     name_text = global_settings.get("branding_name_text") or "Not Set"
     bio_text = global_settings.get("branding_bio_text") or "Not Set"
-    fallback_note = f" via @{brand_username}" if brand_username else "Not Set"
     
     text = (
-        f"{ui.card('Branding Configurations', '', 'Global branding for every hosted userbot', '🎨')}\n\n"
+        f"{ui.card('Branding Configurations', '', 'Global branding for every hosted userbot (Name & Bio)', '🎨')}\n\n"
         f"{ui.kv('Name branding', brand_name_val, '📛')}\n"
         f"{ui.kv('Name suffix', str(name_text), '✏️')}\n\n"
         f"{ui.kv('Bio branding', brand_bio_val, '📝')}\n"
         f"{ui.kv('Bio suffix', str(bio_text), '✏️')}\n\n"
-        f"{ui.kv('Branding username', brand_username or 'Not Set', '🔗')}\n"
-        f"{ui.kv('Fallback suffix', fallback_note, '↪️')}\n"
         f"{ui.kv('Branding lock', brand_lock_val, '🔒')}\n\n"
-        f"{ui.help_hint('The branding is applied to every userbot instantly when you save it, and to every userbot hosted in the future.')}\n"
+        f"{ui.help_hint('The branding is applied to every userbot profile Name & Bio instantly when applied.')}\n"
         f"{ui.help_hint('With the lock enabled no user can remove the branding from their account.')}"
     )
     
@@ -4112,7 +4092,6 @@ async def show_branding_settings(event, user_id: int):
             utils.styled_button("✏️ Set Bio Suffix", "admin_set_brand_bio_txt", style="primary")
         ],
         [
-            utils.styled_button("🔗 Set Branding Username", "admin_set_brand_username_txt", style="primary"),
             utils.styled_button("🔒 Toggle Branding Lock", "admin_tgl_brand_lock_opt", style="primary")
         ],
         [
