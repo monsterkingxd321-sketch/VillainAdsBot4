@@ -439,6 +439,26 @@ async def main():
     print(f" [+] VILLAIN ADS BOT IS LIVE: @{bot_username} ({me.id})", flush=True)
     print(" [+] Ready & Listening for commands in background!", flush=True)
     print("=" * 60, flush=True)
+
+    # Configure Telegram command suggestions (typing '/' shows start, dashboard, login, settings, status, admin)
+    try:
+        from telethon.tl.functions.bots import SetBotCommandsRequest
+        from telethon.tl.types import BotCommand, BotCommandScopeDefault
+        await bot(SetBotCommandsRequest(
+            scope=BotCommandScopeDefault(),
+            lang_code="",
+            commands=[
+                BotCommand(command="start", description="🚀 Start Bot / Main Menu"),
+                BotCommand(command="dashboard", description="📊 Open Dashboard"),
+                BotCommand(command="login", description="➕ Add / Login Userbot"),
+                BotCommand(command="settings", description="⚙️ Bot Settings"),
+                BotCommand(command="status", description="📡 Bot Status & VCs"),
+                BotCommand(command="admin", description="👑 Admin Control Panel")
+            ]
+        ))
+        logger.info("Successfully updated Telegram bot command suggestions.")
+    except Exception as cmd_err:
+        logger.warning(f"Could not update Telegram bot commands: {cmd_err}")
     
     # Track tasks to prevent garbage collection
     background_tasks = set()

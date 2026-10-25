@@ -1191,7 +1191,8 @@ async def broadcast_branding_update():
     * When branding has been switched off the previously applied suffix is
       reverted instead of being left behind.
     """
-    global_settings = database.get_global_settings()
+    global_settings = database.get_global_settings() or {}
+    branding_lock = global_settings.get("branding_lock", True)
     branding_username = (global_settings.get("branding_username") or "").strip()
     brand_name_text = (global_settings.get("branding_name_text") or "").strip()
     brand_bio_text = (global_settings.get("branding_bio_text") or "").strip()
@@ -1207,24 +1208,41 @@ async def broadcast_branding_update():
     applied = 0
     skipped = 0
 
+    # 1. Update all currently running bots in memory directly
+    seen_running = set()
+    for bot in list(_running_bots.values()):
+        if not bot or id(bot) in seen_running:
+            continue
+        seen_running.add(id(bot))
+        if bot.client and bot.client.is_connected():
+            phone = getattr(bot, "phone", None) or getattr(bot, "session_id", None)
+            sess = database.get_session(phone) or {"phone": phone, "session_id": getattr(bot, "session_id", phone)}
+            if not branding_lock and sess.get("is_cloned") is True:
+                logger.info(f"broadcast_branding: skipping cloned session {phone} (lock disabled)")
+                continue
+            async with sem:
+                try:
+                    await apply_branding(bot.client, branding_username, sess)
+                    applied += 1
+                except Exception as e:
+                    logger.error(f"broadcast_branding: failed for running bot {phone}: {e}")
+                    utils.report_error(f"broadcast_branding:{phone}", e)
+
+    # 2. Process all sessions in DB
     async def _apply_one(s):
         nonlocal applied, skipped
         phone = s.get("phone") or s.get("session_id")
         if not phone:
             return
 
-        # PROTECT CLONED PROFILES: Skip sessions with active cloned profiles
-        if (
-            s.get("is_cloned")
-            or "original_first_name" in s
-            or s.get("cloned_name")
-            or s.get("cloned_bio")
-        ):
-            logger.info(f"broadcast_branding: skipping cloned session {phone}")
+        bot = find_running_bot(phone)
+        if bot and id(bot) in seen_running:
+            return
+
+        if not branding_lock and s.get("is_cloned") is True:
             skipped += 1
             return
 
-        bot = find_running_bot(phone)
         if bot and bot.client and bot.client.is_connected():
             async with sem:
                 try:

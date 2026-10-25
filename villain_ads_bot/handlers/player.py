@@ -414,29 +414,25 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         await _delete_card_by_session(previous, chat_id)
 
     sent_msg = None
-    ub_client = getattr(bot_obj, "client", None)
-    bot_username = get_main_bot_username()
-    if ub_client:
+    if _main_bot:
         try:
-            inline_results = await ub_client.inline_query(bot_username, f"player:{chat_id}")
-            if inline_results and len(inline_results) > 0:
-                sent_msg = await inline_results[0].click(chat_id)
-        except Exception as in_err:
-            logger.debug(f"Queue next inline query failed: {in_err}")
-
-    if not sent_msg and _main_bot:
-        try:
-            if thumb_enabled and local_thumb:
-                sent_msg = await _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html")
+            if thumb_enabled and local_thumb and os.path.exists(local_thumb):
+                sent_msg = await asyncio.wait_for(
+                    _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html"),
+                    timeout=3.0
+                )
             else:
-                sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html")
+                sent_msg = await asyncio.wait_for(
+                    _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html"),
+                    timeout=3.0
+                )
         except Exception as send_err:
-            logger.warning(f"Failed to send queue now playing with thumb using main_bot: {send_err}")
+            logger.debug(f"Failed to send queue now playing via main_bot: {send_err}")
             
     # Fallback to userbot if main bot fails or is unavailable
     if not sent_msg and ub_client:
         try:
-            if thumb_enabled and local_thumb:
+            if thumb_enabled and local_thumb and os.path.exists(local_thumb):
                 sent_msg = await ub_client.send_file(chat_id, local_thumb, caption=np_text, parse_mode="html")
             else:
                 sent_msg = await ub_client.send_message(chat_id, np_text, parse_mode="html")
@@ -804,42 +800,26 @@ def register_handlers(client):
         buttons = build_now_playing_markup(chat_id, is_paused=False, is_muted=False)
         
         sent_msg = None
-        ub_client = getattr(bot_obj, "client", None)
-        bot_username = get_main_bot_username()
-        if ub_client:
-            try:
-                inline_results = await ub_client.inline_query(bot_username, f"player:{chat_id}")
-                if inline_results and len(inline_results) > 0:
-                    sent_msg = await inline_results[0].click(chat_id)
-                    try:
-                        await progress_msg.delete()
-                    except Exception:
-                        pass
-            except Exception as in_err:
-                logger.debug(f"Play command inline query failed: {in_err}")
+        # Remove temporary progress message
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
 
-        if not sent_msg:
-            if thumb_enabled and local_thumb:
+        if thumb_enabled and local_thumb and os.path.exists(local_thumb):
+            try:
+                sent_msg = await event.respond(np_text, file=local_thumb, buttons=buttons, parse_mode="html")
+            except Exception as send_err:
+                logger.warning(f"Failed to send with thumb: {send_err}, sending text-only")
                 try:
-                    sent_msg = await event.respond(np_text, file=local_thumb, buttons=buttons)
-                    try:
-                        await progress_msg.delete()
-                    except Exception:
-                        pass
-                except Exception as send_err:
-                    logger.warning(f"Failed to send with thumb: {send_err}, editing text-only")
-                    try:
-                        sent_msg = await progress_msg.edit(np_text, buttons=buttons)
-                    except Exception:
-                        pass
-            else:
-                try:
-                    sent_msg = await progress_msg.edit(np_text, buttons=buttons)
+                    sent_msg = await event.respond(np_text, buttons=buttons, parse_mode="html")
                 except Exception:
-                    try:
-                        sent_msg = await event.respond(np_text, buttons=buttons)
-                    except Exception:
-                        pass
+                    pass
+        else:
+            try:
+                sent_msg = await event.respond(np_text, buttons=buttons, parse_mode="html")
+            except Exception:
+                pass
                 
         # Store active player session
         _active_chat_players[chat_id] = {

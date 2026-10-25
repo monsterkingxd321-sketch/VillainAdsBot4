@@ -434,6 +434,11 @@ async def get_local_thumbnail(thumb_source: Optional[str] = None, videoid: Optio
     os.makedirs("cache", exist_ok=True)
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+    if not videoid and thumb_source:
+        m = re.search(r"(?:vi\/|v=|\/embed\/|\/shorts\/)([a-zA-Z0-9_-]{11})", str(thumb_source))
+        if m:
+            videoid = m.group(1)
+
     # 2. Check if cache or downloads already has a final banner or thumb
     if videoid:
         final_banner = os.path.join("cache", f"{videoid}_final.png")
@@ -443,15 +448,15 @@ async def get_local_thumbnail(thumb_source: Optional[str] = None, videoid: Optio
         if os.path.exists(raw_thumb) and os.path.getsize(raw_thumb) > 1000:
             return os.path.abspath(raw_thumb)
 
-    # 3. Try generating rich banner via thumb_gen
+    # 3. Try generating rich banner via thumb_gen with timeout
     if videoid:
         try:
             from villain_ads_bot.thumb_gen import gen_thumb
-            gen_path = await gen_thumb(videoid)
+            gen_path = await asyncio.wait_for(gen_thumb(videoid), timeout=3.5)
             if gen_path and os.path.exists(gen_path) and os.path.getsize(gen_path) > 1000:
                 return os.path.abspath(gen_path)
         except Exception as e:
-            logger.debug(f"gen_thumb error in get_local_thumbnail: {e}")
+            logger.debug(f"gen_thumb note in get_local_thumbnail: {e}")
 
     # 4. Download remote thumbnail URL with browser User-Agent
     urls_to_try = []
@@ -1075,15 +1080,10 @@ BRAND_BIO_MAX = 70
 
 
 def _is_cloned_session(session_data: dict) -> bool:
-    """Returns True when the session currently carries a cloned profile."""
+    """Returns True when the session currently carries an active cloned profile."""
     if not session_data:
         return False
-    return bool(
-        session_data.get("is_cloned")
-        or session_data.get("cloned_name")
-        or session_data.get("cloned_bio")
-        or "original_first_name" in session_data
-    )
+    return bool(session_data.get("is_cloned") is True)
 
 
 def _strip_trailing_suffix(value: str, suffix: str) -> str:
@@ -3229,7 +3229,10 @@ class UserBot:
                             # 1. Try sending via inline query so it shows "via @xtradsbot"
                             bot_username = get_main_bot_username()
                             try:
-                                inline_results = await self.client.inline_query(bot_username, f"player:{chat_id}")
+                                inline_results = await asyncio.wait_for(
+                                    self.client.inline_query(bot_username, f"player:{chat_id}"),
+                                    timeout=2.0
+                                )
                                 if inline_results and len(inline_results) > 0:
                                     sent_msg = await inline_results[0].click(chat_id)
                             except Exception as in_err:
@@ -3239,21 +3242,31 @@ class UserBot:
                             if not sent_msg:
                                 if _main_bot:
                                     try:
-                                        if thumb_enabled and local_thumb:
-                                            sent_msg = await _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html")
+                                        if thumb_enabled and local_thumb and os.path.exists(local_thumb):
+                                            sent_msg = await asyncio.wait_for(
+                                                _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html"),
+                                                timeout=3.0
+                                            )
                                         else:
-                                            sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html")
+                                            sent_msg = await asyncio.wait_for(
+                                                _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html"),
+                                                timeout=3.0
+                                            )
                                     except Exception as mb_err:
-                                        logger.debug(f"_main_bot send_message failed: {mb_err}")
-                                        if thumb_enabled and local_thumb:
+                                        logger.debug(f"_main_bot send_message note: {mb_err}")
+
+                                if not sent_msg:
+                                    try:
+                                        if thumb_enabled and local_thumb and os.path.exists(local_thumb):
                                             sent_msg = await self.client.send_file(chat_id, local_thumb, caption=np_text, parse_mode="html")
                                         else:
                                             sent_msg = await self.client.send_message(chat_id, np_text, parse_mode="html")
-                                else:
-                                    if thumb_enabled and local_thumb:
-                                        sent_msg = await self.client.send_file(chat_id, local_thumb, caption=np_text, parse_mode="html")
-                                    else:
-                                        sent_msg = await self.client.send_message(chat_id, np_text, parse_mode="html")
+                                    except Exception as ub_err:
+                                        logger.warning(f"Userbot direct send failed: {ub_err}")
+                                        try:
+                                            sent_msg = await self.client.send_message(chat_id, np_text, parse_mode="html")
+                                        except Exception:
+                                            pass
 
                             # Delete temporary search progress message
                             try:

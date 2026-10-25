@@ -97,9 +97,24 @@ def register_handlers(client):
             except Exception:
                 await event.respond(fail_text, buttons=buttons)
 
+    @client.on(events.NewMessage(pattern=r"^/login$"))
+    async def login_cmd(event):
+        if not event.is_private:
+            me = await client.get_me()
+            bot_username = getattr(me, "username", None) or "Bot"
+            await event.reply(
+                "<blockquote><b>» ➕ Add / Login Userbot</b>\n\nTap below to open the login portal in private message:</blockquote>",
+                buttons=[[Button.url("🚀 Open Login Portal", f"https://t.me/{bot_username}?start=login")]],
+                parse_mode="html"
+            )
+            return
+        await add_bot_start(event)
+
     @client.on(events.CallbackQuery(pattern="^menu_add_bot$"))
     async def add_bot_start(event):
-        await event.answer()
+        if hasattr(event, "answer"):
+            try: await event.answer()
+            except Exception: pass
         user_id = event.sender_id
         user = database.get_user(user_id)
         if not user:

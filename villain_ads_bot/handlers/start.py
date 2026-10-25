@@ -332,9 +332,13 @@ def register_handlers(client):
                 )
                 return
                 
-            # Check if deep link is for managing a specific userbot e.g. /start bot_918518814006
+            # Check if deep link is for managing a specific userbot e.g. /start bot_918518814006 or login
             if event.text and len(event.text.split()) > 1:
                 arg = event.text.split()[1].strip()
+                if arg == "login":
+                    from .add_bot import add_bot_start
+                    await add_bot_start(event)
+                    return
                 if arg.startswith("bot_"):
                     phone_target = arg.replace("bot_", "").strip()
                     global_settings = database.get_global_settings()
@@ -373,6 +377,24 @@ def register_handlers(client):
                 )
             except Exception:
                 pass
+
+    @client.on(events.NewMessage(pattern=r"^/(?:dashboard|dash)$"))
+    async def dashboard_cmd(event):
+        try:
+            if not event.is_private:
+                me = await client.get_me()
+                bot_username = getattr(me, "username", None) or "Bot"
+                await event.reply(
+                    "<blockquote><b>» 📊 User Dashboard</b>\n\nTap below to open your dashboard in private message:</blockquote>",
+                    buttons=[[Button.url("🚀 Open Dashboard", f"https://t.me/{bot_username}?start=true")]],
+                    parse_mode="html"
+                )
+                return
+            onboarded = await check_onboarding(client, event)
+            if onboarded:
+                await show_main_menu(event, event.sender_id)
+        except Exception as dash_err:
+            logger.error(f"Error handling /dashboard: {dash_err}")
 
     @client.on(events.CallbackQuery(pattern="^menu_start$"))
     async def menu_start_callback(event):
