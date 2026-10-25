@@ -3714,45 +3714,44 @@ class UserBot:
                                     w_mode = current_settings.get("welcome_mode", "single")
                                     messages_to_send = utils.get_welcome_messages(current_settings)
                                     if messages_to_send:
-                                        # Select exactly ONE welcome message (never flood multiple messages to a single user)
-                                        if w_mode == "multiple" and len(messages_to_send) > 1:
-                                            # Rotate round-robin across candidate messages so each new user gets a distinct welcome message
-                                            if not hasattr(self, "_welcome_counter"):
-                                                self._welcome_counter = 0
-                                            selected_welcome = messages_to_send[self._welcome_counter % len(messages_to_send)]
-                                            self._welcome_counter = (self._welcome_counter + 1) % len(messages_to_send)
-                                        else:
-                                            single_msg = current_settings.get("welcome_msg")
-                                            selected_welcome = single_msg if single_msg else messages_to_send[0]
-
-                                        processed_welcome = antispam.vary_message(
-                                            selected_welcome, group_id=None, tag=False)
-                                        processed_welcome = utils.normalize_text(processed_welcome)
+                                        # In multiple mode: send all configured comma-separated messages sequentially (one after another)
+                                        # In single mode: send only the single message
+                                        welcome_to_send = messages_to_send if w_mode == "multiple" else [messages_to_send[0]]
                                         welcome_sent = False
 
-                                        try:
-                                            # Realistic human typing action and delay (1.5 - 3.0s) so response is natural
-                                            typing_delay = random.uniform(1.5, 3.0)
-                                            try:
-                                                async with self.client.action(event.chat_id, 'typing'):
-                                                    await asyncio.sleep(typing_delay)
-                                            except Exception:
-                                                await asyncio.sleep(typing_delay)
-
+                                        for idx, welcome_msg in enumerate(welcome_to_send):
                                             if not self.is_running:
-                                                return
+                                                break
+
+                                            processed_welcome = antispam.vary_message(
+                                                welcome_msg, group_id=None, tag=False)
+                                            processed_welcome = utils.normalize_text(processed_welcome)
+
                                             try:
-                                                await event.reply(processed_welcome, parse_mode='html')
-                                            except Exception:
+                                                # Natural human typing delay between messages (1.2s - 2.5s)
+                                                typing_delay = random.uniform(1.2, 2.5)
                                                 try:
-                                                    await event.reply(processed_welcome, parse_mode=None)
+                                                    async with self.client.action(event.chat_id, 'typing'):
+                                                        await asyncio.sleep(typing_delay)
                                                 except Exception:
-                                                    await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
-                                            logger.info(f"Sent welcome message ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
-                                            welcome_sent = True
-                                            just_welcomed = True
-                                        except Exception as e:
-                                            logger.warning(f"Could not send welcome message to {sender_id}: {e}")
+                                                    await asyncio.sleep(typing_delay)
+
+                                                if not self.is_running:
+                                                    break
+
+                                                try:
+                                                    await event.reply(processed_welcome, parse_mode='html')
+                                                except Exception:
+                                                    try:
+                                                        await event.reply(processed_welcome, parse_mode=None)
+                                                    except Exception:
+                                                        await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
+
+                                                logger.info(f"Sent welcome message {idx+1}/{len(welcome_to_send)} ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
+                                                welcome_sent = True
+                                                just_welcomed = True
+                                            except Exception as e:
+                                                logger.warning(f"Could not send welcome message {idx+1} to {sender_id}: {e}")
 
                                         if welcome_sent:
                                             # Async DB record via thread executor so it never blocks message loop
