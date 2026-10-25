@@ -32,10 +32,10 @@ def get_configured_credentials() -> tuple:
     except Exception as e:
         logger.debug(f"Could not read the music settings: {e}")
 
-    if not key:
+    if not key or ("shrutibots" in url.lower() and not key.startswith("ShrutiBots")):
         try:
             import os
-            key = (os.environ.get("SHRUTI_API_KEY") or os.environ.get("MEOW_API_KEY") or "").strip() or "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
+            key = (os.environ.get("SHRUTI_API_KEY") or "").strip() or "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
         except Exception:
             key = "ShrutiBotsdvUpVh4n66hhD1iQ5fm0"
 
@@ -76,14 +76,15 @@ async def download_with_failover(kind: str, link: str) -> str:
 
     The primary gateway is tried first, then the backup gateway (high
     availability). The `youtube` module itself is never modified - only the
-    gateway url that it reads is switched for the duration of the call.
+    gateway url and key that it reads are switched for the duration of the call.
     """
     import os
 
     primary, _key, backup = apply_configured_credentials()
-    gateways = [primary]
+    gateways = [(primary, _key)]
     if backup and backup != primary:
-        gateways.append(backup)
+        backup_key = os.environ.get("MEOW_API_KEY", "yuki_8641adadf64870f3065dd502c8ee30f1")
+        gateways.append((backup, backup_key))
 
     try:
         from villain_ads_bot.services import youtube as yt
@@ -92,18 +93,20 @@ async def download_with_failover(kind: str, link: str) -> str:
 
     fn = yt.download_video if kind == "video" else yt.download_song
 
-    for gateway in gateways:
+    for gateway_url, gateway_key in gateways:
         try:
-            yt.API_URL = gateway
+            yt.API_URL = gateway_url
+            yt.API_KEY = gateway_key
             result = await fn(link)
             if result and os.path.exists(result):
                 return result
         except Exception as e:
-            logger.warning(f"Music gateway {gateway} failed: {e}")
+            logger.warning(f"Music gateway {gateway_url} failed: {e}")
 
-    # Always restore the primary gateway.
+    # Always restore the primary gateway credentials.
     try:
         yt.API_URL = primary
+        yt.API_KEY = _key
     except Exception:
         pass
     return None

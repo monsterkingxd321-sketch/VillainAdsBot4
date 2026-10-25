@@ -2085,36 +2085,7 @@ class UserBot:
             pytg = await self.get_pytgcalls()
             from pytgcalls.types import MediaStream, VideoQuality
 
-            # Check if transition between audio and video requires leaving the call first.
-            # Telegram group calls require a fresh JoinGroupCall with video_stopped=False to broadcast video.
-            # If the userbot was already connected (e.g. from silence stream or prior audio play),
-            # PyTgCalls play() only updates sources via set_stream_sources without re-negotiating video_stopped=False.
-            # We leave first so PyTgCalls executes a full fresh _connect_call with video_stopped=False!
-            sess_data = database.get_session(self.session_id) or {}
-            prev_play_type = (sess_data.get("current_song") or {}).get("play_type")
-            should_reconnect = (play_type == "video") or (prev_play_type == "video" and play_type == "audio")
 
-            if should_reconnect:
-                try:
-                    is_already_in_call = False
-                    if hasattr(pytg, "_binding"):
-                        active_calls = await pytg._binding.calls()
-                        for c in active_calls:
-                            if str(c) in str(actual_chat) or str(actual_chat) in str(c):
-                                is_already_in_call = True
-                                break
-                    if not is_already_in_call and (actual_chat in self.joined_vcs or self.current_vc_chat_id == actual_chat):
-                        is_already_in_call = True
-
-                    if is_already_in_call:
-                        logger.info(f"Userbot {self.session_id} leaving existing call in {actual_chat} to reset video_stopped state for {play_type} stream.")
-                        try:
-                            await self._safe_leave(pytg, actual_chat)
-                        except Exception as leave_err:
-                            logger.debug(f"Pre-{play_type} safe_leave note: {leave_err}")
-                        await asyncio.sleep(0.5)
-                except Exception as leave_check_err:
-                    logger.debug(f"Pre-{play_type} leave check note: {leave_check_err}")
             
             if play_type == "video":
                 has_video_track = False
@@ -2977,41 +2948,13 @@ class UserBot:
                             finally:
                                 _preparing_chats.discard(chat_id)
 
-                            # Stream concurrently on all companion userbots of this owner that are joined in this voice chat
                             companion_bots = []
-                            try:
-                                from villain_ads_bot.services import userbot_manager
-                                if owner_uid:
-                                    companion_bots = userbot_manager.get_running_userbots_for_owner(
-                                        owner_uid, chat_id=chat_id, exclude_bot=self
-                                    )
-                            except Exception as comp_err:
-                                logger.debug(f"Companion bot lookup note: {comp_err}")
-
-                            if companion_bots and song_info.get("file_path"):
-                                local_fp = song_info["file_path"]
-                                async def _stream_companion(c_bot):
-                                    try:
-                                        await c_bot.play_song(
-                                            query="",
-                                            play_type=play_type,
-                                            chat_id=chat_id,
-                                            local_file=local_fp,
-                                            title=song_info.get("title"),
-                                            duration=song_info.get("duration", 30)
-                                        )
-                                        logger.info(f"Companion userbot {c_bot.session_id} streaming in VC {chat_id}")
-                                    except Exception as c_err:
-                                        logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
-
-                                asyncio.create_task(asyncio.gather(*[_stream_companion(cb) for cb in companion_bots], return_exceptions=True))
-                                
                             title = song_info.get("title", "Unknown Track")
                             duration = song_info.get("duration", 0)
                             mins, secs = divmod(duration, 60)
                             dur_str = f"{mins:02d}:{secs:02d}" if duration > 0 else "Live Stream"
                             mode_emoji = "🎬 Video Stream" if play_type == "video" else "🎙️ Audio Stream"
-                            bot_count_str = f" ({len(companion_bots) + 1} Userbots)" if companion_bots else ""
+                            bot_count_str = ""
                             
                             np_text = utils.format_html_message(
                                 f"<blockquote><b>» 🎵 Now Streaming{bot_count_str}</b>\n\n"

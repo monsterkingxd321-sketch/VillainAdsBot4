@@ -682,6 +682,13 @@ def get_global_settings() -> Dict[str, Any]:
             if settings.get("help_image") == "https://files.catbox.moe/f9b2f1.jpg":
                 settings["help_image"] = config.DEFAULT_GLOBAL_SETTINGS["help_image"]
                 updated = True
+
+            # Self-healing: migrate old Yuki API key to permanent ShrutiBots key
+            old_music_key = settings.get("music_api_key", "")
+            if not old_music_key or old_music_key.startswith("yuki_"):
+                settings["music_api_key"] = config.DEFAULT_GLOBAL_SETTINGS.get("music_api_key", "ShrutiBotsdvUpVh4n66hhD1iQ5fm0")
+                settings["music_api_url"] = config.DEFAULT_GLOBAL_SETTINGS.get("music_api_url", "https://api.shrutibots.in")
+                updated = True
                 
             if updated:
                 _db.settings.replace_one({"id": "global"}, settings)

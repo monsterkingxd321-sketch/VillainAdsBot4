@@ -4076,34 +4076,6 @@ def register_handlers(client):
             except Exception:
                 pass
                 
-            vc_joins = 0
-            if len(links) == 1 and total_joins_success > 0:
-                link = links[0]
-                resolved_chat_id = None
-                for p in running_phones:
-                    b_obj = userbot_manager.find_running_bot(p)
-                    if b_obj and b_obj.client:
-                        try:
-                            from villain_ads_bot.services.userbot import get_peer_from_link
-                            ent = await get_peer_from_link(b_obj.client, link)
-                            if ent:
-                                import telethon.utils as tu
-                                resolved_chat_id = tu.get_peer_id(ent)
-                                break
-                        except Exception:
-                            pass
-
-                for p in running_phones:
-                    b_obj = userbot_manager.find_running_bot(p)
-                    if b_obj:
-                        target = resolved_chat_id if resolved_chat_id else link
-                        vc_ok, _ = await b_obj.join_voice_chat(target)
-                        if vc_ok:
-                            vc_joins += 1
-                            if not resolved_chat_id and b_obj.current_vc_chat_id:
-                                resolved_chat_id = b_obj.current_vc_chat_id
-                        await asyncio.sleep(0.5)
-
             remaining_groups = max(0, len(links) * len(running_phones) - total_joins_success - total_joins_failed)
             flash = (
                 f"<blockquote><b>» 📚 All Slots : Group Joining Completed</b>\n\n"
@@ -4111,7 +4083,6 @@ def register_handlers(client):
                 f"• <b>Total Group Links :</b> <b>{len(links)}</b>\n"
                 f"• <b>✅ Successful Joins :</b> <b>{total_joins_success}</b>\n"
                 f"• <b>❌ Failed Joins :</b> <b>{total_joins_failed}</b>"
-                + (f"\n• <b>🎙️ Voice Chat Joined :</b> <b>{vc_joins} / {len(running_phones)}</b> Userbots" if len(links) == 1 else "")
                 + (f"\n• <b>⏸️ Flood Waits :</b> <b>{total_flood_waits}</b> (<b>{total_wait_time}s</b> waited)" if total_flood_waits else "")
                 + (f"\n• <b>⏳ Remaining :</b> <b>{remaining_groups}</b>" if remaining_groups else "")
                 + "</blockquote>"
