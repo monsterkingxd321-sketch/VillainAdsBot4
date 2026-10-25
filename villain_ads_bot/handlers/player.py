@@ -383,7 +383,7 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
             try:
                 await c_bot.play_song(
                     query="",
-                    play_type="audio",
+                    play_type=play_type,
                     chat_id=chat_id,
                     local_file=local_fp,
                     title=song_info.get("title"),
@@ -394,7 +394,10 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
             except Exception as c_err:
                 logger.warning(f"Companion userbot {c_bot.session_id} next stream error: {c_err}")
 
-        asyncio.create_task(asyncio.gather(*[_stream_companion_next(cb) for cb in companion_bots], return_exceptions=True))
+        async def _broadcast_companions_next():
+            await asyncio.gather(*[_stream_companion_next(cb) for cb in companion_bots], return_exceptions=True)
+
+        asyncio.create_task(_broadcast_companions_next())
 
     thumb_enabled = database.get_thumbnail_setting(chat_id)
     local_thumb = await get_local_thumbnail(song_info.get("thumb"), song_info.get("vid")) if thumb_enabled else None
@@ -775,7 +778,7 @@ def register_handlers(client):
                 try:
                     await c_bot.play_song(
                         query="",
-                        play_type="audio",
+                        play_type=play_type,
                         chat_id=chat_id,
                         local_file=local_fp,
                         title=song_info.get("title"),
@@ -786,7 +789,10 @@ def register_handlers(client):
                 except Exception as c_err:
                     logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
 
-            asyncio.create_task(asyncio.gather(*[_stream_companion_play(cb) for cb in companion_bots], return_exceptions=True))
+            async def _broadcast_companions_play():
+                await asyncio.gather(*[_stream_companion_play(cb) for cb in companion_bots], return_exceptions=True)
+
+            asyncio.create_task(_broadcast_companions_play())
             
         # 5. Render Now Playing Card
         thumb_enabled = database.get_thumbnail_setting(chat_id)

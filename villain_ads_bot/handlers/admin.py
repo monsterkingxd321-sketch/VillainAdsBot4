@@ -96,6 +96,12 @@ async def show_admin_panel(event, user_id: int):
     """
     Renders the administrator control panel.
     """
+    if hasattr(event, "answer"):
+        try:
+            await event.answer()
+        except Exception:
+            pass
+
     user = database.get_user(user_id)
     lang = user.get("language", "en") if user else "en"
     
@@ -241,9 +247,53 @@ def register_handlers(client):
             return
         await show_admin_panel(event, event.sender_id)
 
+    @client.on(events.NewMessage(pattern=r"^/brandname(?:\s+(.*))?$"))
+    async def brandname_cmd(event):
+        if not event.is_private: return
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER): return
+        arg = (event.pattern_match.group(1) or "").strip()
+        if not arg:
+            _admin_action_states[user_id] = "WAITING_FOR_BRAND_NAME_TXT"
+            await event.reply("✏️ Send the suffix text for userbots' names (or `none` to disable):")
+            return
+        global_settings = database.get_global_settings()
+        if arg.lower() in ("none", "off", "disable"):
+            global_settings["branding_name_text"] = None
+        else:
+            global_settings["branding_name_text"] = arg
+            global_settings["branding_name_enabled"] = True
+        database.save_global_settings(global_settings)
+        from villain_ads_bot.services import userbot_manager
+        client.loop.create_task(userbot_manager.broadcast_branding_update())
+        await event.reply(f"✅ Name suffix updated to: <code>{arg}</code> and applied to all userbots!", parse_mode="html")
+
+    @client.on(events.NewMessage(pattern=r"^/brandbio(?:\s+(.*))?$"))
+    async def brandbio_cmd(event):
+        if not event.is_private: return
+        user_id = event.sender_id
+        if not check_role(user_id, ROLE_OWNER): return
+        arg = (event.pattern_match.group(1) or "").strip()
+        if not arg:
+            _admin_action_states[user_id] = "WAITING_FOR_BRAND_BIO_TXT"
+            await event.reply("✏️ Send the suffix text for userbots' bios (or `none` to disable):")
+            return
+        global_settings = database.get_global_settings()
+        if arg.lower() in ("none", "off", "disable"):
+            global_settings["branding_bio_text"] = None
+        else:
+            global_settings["branding_bio_text"] = arg
+            global_settings["branding_bio_enabled"] = True
+        database.save_global_settings(global_settings)
+        from villain_ads_bot.services import userbot_manager
+        client.loop.create_task(userbot_manager.broadcast_branding_update())
+        await event.reply(f"✅ Bio suffix updated to: <code>{arg}</code> and applied to all userbots!", parse_mode="html")
+
     @client.on(events.CallbackQuery(pattern="^admin_gift_slots$"))
     async def admin_gift_slots_menu(event):
         if not check_admin(event.sender_id): return
+        try: await event.answer()
+        except Exception: pass
         text = "🎁 **Gift Slots Menu**\n\nChoose an option:"
         buttons = [
             [utils.styled_button("👤 Gift Slot to User", "admin_gift_single", style="primary")],
@@ -255,17 +305,23 @@ def register_handlers(client):
     @client.on(events.CallbackQuery(pattern="^admin_gift_single$"))
     async def admin_gift_single_cb(event):
         if not check_admin(event.sender_id): return
+        try: await event.answer()
+        except Exception: pass
         _admin_action_states[event.sender_id] = "WAITING_FOR_GIFT_USERID"
         await event.reply("✏️ **Send the User ID** to whom you want to gift slots.\n\nType /start to cancel.")
 
     @client.on(events.CallbackQuery(pattern="^admin_gift_all$"))
     async def admin_gift_all_cb(event):
         if not check_admin(event.sender_id): return
+        try: await event.answer()
+        except Exception: pass
         _admin_action_states[event.sender_id] = "WAITING_FOR_GIFT_ALL_SLOTS"
         await event.reply("✏️ **Send the number of slots** to gift to ALL users.\n\nType /start to cancel.")
 
     @client.on(events.CallbackQuery(pattern="^menu_admin$"))
     async def admin_menu_callback(event):
+        try: await event.answer()
+        except Exception: pass
         await show_admin_panel(event, event.sender_id)
 
     @client.on(events.CallbackQuery(pattern="^admin_vps_usage$"))
@@ -2028,18 +2084,20 @@ def register_handlers(client):
                 
             # Set branding name suffix text
             elif action == "WAITING_FOR_BRAND_NAME_TXT":
-                if val_str.lower() == "none":
+                if val_str.lower() in ("none", "off", "disable"):
                     global_settings["branding_name_text"] = None
                 else:
                     global_settings["branding_name_text"] = val_str
+                    global_settings["branding_name_enabled"] = True
                 success = True
                 
             # Set branding bio suffix text
             elif action == "WAITING_FOR_BRAND_BIO_TXT":
-                if val_str.lower() == "none":
+                if val_str.lower() in ("none", "off", "disable"):
                     global_settings["branding_bio_text"] = None
                 else:
                     global_settings["branding_bio_text"] = val_str
+                    global_settings["branding_bio_enabled"] = True
                 success = True
                 
             # Set branding username (from the branding screen)
@@ -2656,8 +2714,11 @@ def register_handlers(client):
     @client.on(events.CallbackQuery(pattern="^admin_branding_settings$"))
     async def admin_branding_settings_callback(event):
         if not check_role(event.sender_id, ROLE_OWNER):
-            await event.answer("\u274c Only the owner can change the branding.", alert=True)
+            await event.answer("❌ Only the owner can change the branding.", alert=True)
             return
+        _admin_action_states.pop(event.sender_id, None)
+        try: await event.answer()
+        except Exception: pass
         await show_branding_settings(event, event.sender_id)
 
     @client.on(events.CallbackQuery(pattern="^admin_load_sessions_from_disk$"))
@@ -3982,6 +4043,8 @@ def register_handlers(client):
         if not check_admin(user_id):
             return
             
+        try: await event.answer()
+        except Exception: pass
         _admin_action_states[user_id] = f"WAITING_FOR_BRAND_{element.upper()}_TXT"
         
         prompt_text = (
@@ -4057,6 +4120,9 @@ def register_handlers(client):
 
 
 async def show_branding_settings(event, user_id: int):
+    if hasattr(event, "answer"):
+        try: await event.answer()
+        except Exception: pass
     user = database.get_user(user_id)
     lang = user.get("language", "en") if user else "en"
     

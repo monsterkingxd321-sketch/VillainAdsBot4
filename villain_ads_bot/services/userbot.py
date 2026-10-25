@@ -1354,6 +1354,8 @@ class UserBot:
         self.pytgcalls_client: Optional[object] = None
         self.is_muted = True
         self.current_song: Optional[dict] = None
+        self._song_started_at = 0.0
+        self._song_duration = 0.0
         self.bg_tasks: Set[asyncio.Task] = set()
         
         # Caching attributes to resolve performance bottlenecks
@@ -1857,6 +1859,24 @@ class UserBot:
                                             active = _active_chat_players[cid]
                                             break
 
+                                    # 1. Companion userbot check: Companion bots must NEVER stop playback or delete chat card
+                                    active_bot = active.get("bot") if isinstance(active, dict) else None
+                                    if active_bot and active_bot != self:
+                                        logger.info(f"StreamEnded on companion userbot {self.session_id}: idling in VC {raw_chat_id}")
+                                        await self.idle_in_vc(raw_chat_id)
+                                        return
+
+                                    # 2. Debounce check: Ignore premature StreamEnded caused by stream switch from idle/silence
+                                    song_started = getattr(self, "_song_started_at", 0.0)
+                                    song_dur = getattr(self, "_song_duration", 0.0) or 30.0
+                                    elapsed = time.time() - song_started
+                                    if (elapsed < 12.0) and (song_dur > 15.0):
+                                        logger.warning(
+                                            f"Ignoring premature StreamEnded on chat {raw_chat_id} on {self.session_id} "
+                                            f"(elapsed {elapsed:.1f}s < 12s, duration {song_dur}s)"
+                                        )
+                                        return
+
                                     has_active_song = bool(active or getattr(self, "current_song", None))
 
                                     queue = []
@@ -1909,6 +1929,24 @@ class UserBot:
                                     if cid in _active_chat_players:
                                         active = _active_chat_players[cid]
                                         break
+
+                                # 1. Companion userbot check
+                                active_bot = active.get("bot") if isinstance(active, dict) else None
+                                if active_bot and active_bot != self:
+                                    logger.info(f"on_stream_end on companion userbot {self.session_id}: idling in VC {raw_chat_id}")
+                                    await self.idle_in_vc(raw_chat_id)
+                                    return
+
+                                # 2. Debounce check
+                                song_started = getattr(self, "_song_started_at", 0.0)
+                                song_dur = getattr(self, "_song_duration", 0.0) or 30.0
+                                elapsed = time.time() - song_started
+                                if (elapsed < 12.0) and (song_dur > 15.0):
+                                    logger.warning(
+                                        f"Ignoring premature on_stream_end on chat {raw_chat_id} on {self.session_id} "
+                                        f"(elapsed {elapsed:.1f}s < 12s, duration {song_dur}s)"
+                                    )
+                                    return
 
                                 has_active_song = bool(active or getattr(self, "current_song", None))
 
@@ -2266,6 +2304,11 @@ class UserBot:
                 await self._safe_play(pytg, actual_chat, stream_obj)
                 self.joined_vcs.add(actual_chat)
                 self.current_vc_chat_id = actual_chat
+                self._song_started_at = time.time()
+                try:
+                    self._song_duration = float(duration) if duration else 0.0
+                except Exception:
+                    self._song_duration = 0.0
                 logger.info(f"Playback succeeded for {actual_chat}")
             except Exception as play_err:
                 logger.warning(f"Initial playback failed ({play_err}), attempting fallback...")
@@ -2281,6 +2324,11 @@ class UserBot:
                     await self._safe_play(pytg, actual_chat, stream_obj)
                     self.joined_vcs.add(actual_chat)
                     self.current_vc_chat_id = actual_chat
+                    self._song_started_at = time.time()
+                    try:
+                        self._song_duration = float(duration) if duration else 0.0
+                    except Exception:
+                        self._song_duration = 0.0
                 except Exception as final_err:
                     return False, f"Could not stream media: {final_err}", None
                     
@@ -3112,7 +3160,7 @@ class UserBot:
                                     try:
                                         await c_bot.play_song(
                                             query="",
-                                            play_type="audio",
+                                            play_type=play_type,
                                             chat_id=chat_id,
                                             local_file=local_fp,
                                             title=song_info.get("title"),
@@ -3123,7 +3171,10 @@ class UserBot:
                                     except Exception as c_err:
                                         logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
 
-                                asyncio.create_task(asyncio.gather(*[_stream_companion_play(cb) for cb in companion_bots], return_exceptions=True))
+                                async def _broadcast_to_companions():
+                                    await asyncio.gather(*[_stream_companion_play(cb) for cb in companion_bots], return_exceptions=True)
+
+                                asyncio.create_task(_broadcast_to_companions())
 
                             title = song_info.get("title", "Unknown Track")
                             duration = song_info.get("duration", 0)

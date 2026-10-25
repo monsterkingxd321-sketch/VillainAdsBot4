@@ -42,15 +42,12 @@ async def gen_thumb(videoid: str):
         except Exception:
             res_data = {}
         result_items = res_data.get("result", []) if isinstance(res_data, dict) else []
-        if result_items:
-            result = result_items[0]
-            duration = result.get("duration", "3:20")
-            title = result.get("title", BOT_NAME)
-            thumburl = result.get("thumbnails", [{}])[0].get("url", f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg").split("?")[0]
-        else:
-            duration = "3:20"
-            title = BOT_NAME
-            thumburl = f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg"
+        result = result_items[0] if (result_items and isinstance(result_items[0], dict)) else {}
+        duration = result.get("duration", "3:20") if result else "3:20"
+        title = result.get("title", BOT_NAME) if result else BOT_NAME
+        thumbs = result.get("thumbnails", [{}]) if result else [{}]
+        thumburl = thumbs[0].get("url", f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg").split("?")[0] if (thumbs and isinstance(thumbs[0], dict) and thumbs[0].get("url")) else f"https://img.youtube.com/vi/{videoid}/hqdefault.jpg"
+        channel_name = result.get("channel", {}).get("name", "YOUTUBE") if (result and isinstance(result.get("channel"), dict)) else "YOUTUBE"
 
         thumb_path = CACHE_DIR / f"{videoid}.jpg"
         async with aiohttp.ClientSession() as session:
@@ -179,7 +176,7 @@ async def gen_thumb(videoid: str):
             title_y = 465
             draw.text((title_x, title_y), clean_title, font=title_font, fill="white")
             
-            channel = result.get("channel", {}).get("name", "YOUTUBE")
+            channel = channel_name
             subtitle_text = f"{channel.upper()} • HD AUDIO"
             if font_is_default:
                 subtitle_text = sanitize_text(subtitle_text)
