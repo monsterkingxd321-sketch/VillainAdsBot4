@@ -1927,9 +1927,8 @@ def register_handlers(client):
         lang = user.get("language", "en") if user else "en"
         
         sessions = get_effective_sessions(event.sender_id)
-        running_phones = [s["phone"] for s in sessions if userbot_manager.is_bot_running(s["phone"])]
-        if not running_phones:
-            await event.answer("⚠️ Please start at least one userbot first!", alert=True)
+        if not sessions:
+            await event.answer("⚠️ No userbot slots found. Please login a bot first!", alert=True)
             return
             
         _bot_action_states[user_id] = {
@@ -3534,21 +3533,35 @@ def register_handlers(client):
                 return
                 
             sessions = get_effective_sessions(user_id)
+            if not sessions:
+                await event.reply("<blockquote><b>❌ No Userbot Sessions Found.</b></blockquote>", parse_mode="html")
+                return
+
+            # Auto-start stopped bots if needed
+            for s in sessions:
+                if not userbot_manager.is_bot_running(s["phone"]):
+                    try:
+                        await userbot_manager.start_userbot(s["phone"], user_id)
+                    except Exception as start_err:
+                        logger.warning(f"Could not auto-start {s['phone']}: {start_err}")
+
             running_phones = [s["phone"] for s in sessions if userbot_manager.is_bot_running(s["phone"])]
             if not running_phones:
-                await event.reply("<blockquote><b>❌ No Userbots Are Currently Running. Please Start Your Userbots First.</b></blockquote>", parse_mode="html")
+                await event.reply("<blockquote><b>❌ None Of The Userbots Could Be Started.</b></blockquote>", parse_mode="html")
                 return
                 
-            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Joining Voice Chat On {len(running_phones)} Running Userbots...</b></blockquote>", parse_mode="html")
+            progress_msg = await event.reply(f"<blockquote><b>» ⏳ Joining Voice Chat On {len(running_phones)} Userbots...</b></blockquote>", parse_mode="html")
             
-            async def _join_vc_concurrent(phone_num):
+            async def _join_vc_concurrent(idx, phone_num):
+                if idx > 0:
+                    await asyncio.sleep(idx * 0.3)
                 bot_obj = userbot_manager.find_running_bot(phone_num)
                 if not bot_obj:
                     return phone_num, False, "Userbot is not running."
                 success, msg = await bot_obj.join_voice_chat(link)
                 return phone_num, success, msg
                 
-            results = await asyncio.gather(*[_join_vc_concurrent(p) for p in running_phones], return_exceptions=True)
+            results = await asyncio.gather(*[_join_vc_concurrent(i, p) for i, p in enumerate(running_phones)], return_exceptions=True)
             try:
                 await progress_msg.delete()
             except Exception:
@@ -4189,7 +4202,12 @@ def register_handlers(client):
                 return
                 
             if not userbot_manager.is_bot_running(phone):
-                await event.reply("<blockquote><b>» ❌ Userbot Is Not Running. Please Start It First.</b></blockquote>", parse_mode="html")
+                try:
+                    await userbot_manager.start_userbot(phone, user_id)
+                except Exception:
+                    pass
+            if not userbot_manager.is_bot_running(phone):
+                await event.reply("<blockquote><b>» ❌ Userbot Could Not Be Started. Please Check Your Session.</b></blockquote>", parse_mode="html")
                 return
                 
             progress_msg = await event.reply("⏳ <b>Joining Voice Chat, Please Wait...</b>", parse_mode="html")
@@ -4214,7 +4232,12 @@ def register_handlers(client):
                 return
                 
             if not userbot_manager.is_bot_running(phone):
-                await event.reply("<blockquote><b>» ❌ Userbot Is Not Running.</b></blockquote>", parse_mode="html")
+                try:
+                    await userbot_manager.start_userbot(phone, user_id)
+                except Exception:
+                    pass
+            if not userbot_manager.is_bot_running(phone):
+                await event.reply("<blockquote><b>» ❌ Userbot Could Not Be Started.</b></blockquote>", parse_mode="html")
                 return
                 
             strip_chars = "\'\"`()[]{}<> \t\n\r"

@@ -143,6 +143,7 @@ from villain_ads_bot.services.youtube import (
     DOWNLOAD_DIR,
     API_URL,
     API_KEY,
+    _get_cookie_file,
 )
 
 
@@ -196,6 +197,7 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
         # Fallback search with yt_dlp if py_yt didn't find video id
         if not vidid:
             def _search_sync():
+                cookie_file = _get_cookie_file()
                 ydl_opts = {
                     'quiet': True,
                     'no_warnings': True,
@@ -203,8 +205,10 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                     'skip_download': True,
                     'geo_bypass': True,
                     'nocheckcertificate': True,
-                    'extractor_args': {'youtube': {'player_client': ['mweb', 'tv_embedded', 'android']}},
+                    'extractor_args': {'youtube': {'player_client': ['android', 'tv_embedded', 'android_creator']}},
                 }
+                if cookie_file:
+                    ydl_opts['cookiefile'] = cookie_file
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     search_query = query_str if query_str.startswith("http") else f"ytsearch1:{query_str}"
                     try:
@@ -309,29 +313,32 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
         if need_fallback:
             logger.info(f"Yuki API stream missed or missing video track, falling back to yt-dlp engine for: {title} ({vidid})...")
             def _dl_sync():
-                # Strategy 1: mweb + tv_embedded + android
+                cookie_file = _get_cookie_file()
+                # Strategy 1: android + tv_embedded + android_creator
                 try:
                     if download_type == "audio":
                         ydl_opts = {
-                            'format': 'bestaudio/best',
+                            'format': 'bestaudio/ba/b',
                             'outtmpl': os.path.join(DOWNLOAD_DIR, f"{vidid}_audio.%(ext)s"),
                             'quiet': True,
                             'no_warnings': True,
                             'nocheckcertificate': True,
                             'geo_bypass': True,
-                            'extractor_args': {'youtube': {'player_client': ['mweb', 'tv_embedded', 'android']}},
+                            'extractor_args': {'youtube': {'player_client': ['android', 'tv_embedded', 'android_creator']}},
                         }
                     else:
                         ydl_opts = {
-                            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+                            'format': 'best[height<=720]/bestvideo[height<=720]+bestaudio/best',
                             'outtmpl': os.path.join(DOWNLOAD_DIR, f"{vidid}_video.%(ext)s"),
                             'merge_output_format': 'mp4',
                             'quiet': True,
                             'no_warnings': True,
                             'nocheckcertificate': True,
                             'geo_bypass': True,
-                            'extractor_args': {'youtube': {'player_client': ['mweb', 'tv_embedded', 'android']}},
+                            'extractor_args': {'youtube': {'player_client': ['android', 'tv_embedded', 'android_creator']}},
                         }
+                    if cookie_file:
+                        ydl_opts['cookiefile'] = cookie_file
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([youtube_url])
                             
@@ -343,7 +350,7 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                 except Exception as dl_ex:
                     logger.error(f"yt-dlp strategy 1 exception: {dl_ex}")
                 
-                # Strategy 2: android_creator + mweb + android fallback format ba/b
+                # Strategy 2: fallback format ba/b / b[height<=720]
                 try:
                     fb_opts = {
                         'format': 'ba/b' if download_type == "audio" else 'b[height<=720]/b',
@@ -352,8 +359,10 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                         'no_warnings': True,
                         'nocheckcertificate': True,
                         'geo_bypass': True,
-                        'extractor_args': {'youtube': {'player_client': ['android_creator', 'mweb', 'android']}},
+                        'extractor_args': {'youtube': {'player_client': ['android_creator', 'android', 'tv_embedded']}},
                     }
+                    if cookie_file:
+                        fb_opts['cookiefile'] = cookie_file
                     with yt_dlp.YoutubeDL(fb_opts) as ydl:
                         ydl.download([youtube_url])
                     for fname in os.listdir(DOWNLOAD_DIR):
@@ -367,13 +376,15 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                 # Strategy 3: Standard yt-dlp without player_client restrictions
                 try:
                     std_opts = {
-                        'format': 'bestaudio/best' if download_type == "audio" else 'bestvideo[height<=720]+bestaudio/best',
+                        'format': 'bestaudio/ba/b' if download_type == "audio" else 'best[height<=720]/bestvideo[height<=720]+bestaudio/best',
                         'outtmpl': os.path.join(DOWNLOAD_DIR, f"{vidid}_{prefix}.%(ext)s"),
                         'quiet': True,
                         'no_warnings': True,
                         'nocheckcertificate': True,
                         'geo_bypass': True,
                     }
+                    if cookie_file:
+                        std_opts['cookiefile'] = cookie_file
                     with yt_dlp.YoutubeDL(std_opts) as ydl:
                         ydl.download([youtube_url])
                     for fname in os.listdir(DOWNLOAD_DIR):
@@ -383,7 +394,6 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                                 return full_p
                 except Exception as std_err:
                     logger.error(f"yt-dlp strategy 3 exception: {std_err}")
-
                 return None
 
             loop = asyncio.get_running_loop()
@@ -549,8 +559,8 @@ async def get_peer_from_link(client: TelegramClient, link: str):
             pass
 
     # 3. Extract private invite hash if link is an invite link
-    # Matches t.me/+hash, t.me/joinchat/hash, telegram.me/+hash, etc.
-    hash_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)([a-zA-Z0-9_-]+)', link_clean, re.IGNORECASE)
+    # Matches t.me/+hash, t.me/joinchat/hash, telegram.me/+hash, tg://join?invite=hash, +hash, etc.
+    hash_match = re.search(r'(?:(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)|tg://join\?invite=|^[+]|^joinchat/)([a-zA-Z0-9_-]+)', link_clean, re.IGNORECASE)
     hash_val = None
     if hash_match:
         hash_val = hash_match.group(1).strip()
@@ -567,7 +577,10 @@ async def get_peer_from_link(client: TelegramClient, link: str):
         try:
             invite_info = await client(CheckChatInviteRequest(hash_val))
             if isinstance(invite_info, ChatInviteAlready):
-                return invite_info.chat
+                try:
+                    return await client.get_entity(invite_info.chat)
+                except Exception:
+                    return invite_info.chat
         except UserAlreadyParticipantError:
             pass
         except Exception as e_chk:
@@ -577,7 +590,10 @@ async def get_peer_from_link(client: TelegramClient, link: str):
         try:
             updates = await client(ImportChatInviteRequest(hash_val))
             if updates and hasattr(updates, 'chats') and updates.chats:
-                return updates.chats[0]
+                try:
+                    return await client.get_entity(updates.chats[0])
+                except Exception:
+                    return updates.chats[0]
         except UserAlreadyParticipantError:
             logger.info(f"User is already a participant of {hash_val}")
         except InviteRequestSentError:
@@ -589,7 +605,10 @@ async def get_peer_from_link(client: TelegramClient, link: str):
         try:
             recheck = await client(CheckChatInviteRequest(hash_val))
             if isinstance(recheck, ChatInviteAlready):
-                return recheck.chat
+                try:
+                    return await client.get_entity(recheck.chat)
+                except Exception:
+                    return recheck.chat
         except Exception:
             pass
 
@@ -604,6 +623,14 @@ async def get_peer_from_link(client: TelegramClient, link: str):
                         return dialog.entity
             except Exception:
                 pass
+
+        # Search top recent dialogs (supergroups/channels) if we just joined
+        try:
+            async for dialog in client.iter_dialogs(limit=25):
+                if dialog.is_channel or dialog.is_group:
+                    return dialog.entity
+        except Exception:
+            pass
 
         return None
 
@@ -822,8 +849,8 @@ async def join_channel_single(client: TelegramClient, ch: str) -> bool:
         return False
         
     try:
-        # Match joinchat or + hash links for t.me, telegram.me, telegram.dog, telegram.org
-        join_hash_match = re.search(r'(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)([a-zA-Z0-9_-]+)', ch_clean, re.IGNORECASE)
+        # Match joinchat or + hash links for t.me, telegram.me, telegram.dog, telegram.org, tg://join, +hash
+        join_hash_match = re.search(r'(?:(?:t\.me|telegram\.(?:me|dog|org))/(?:joinchat/|\+)|tg://join\?invite=|^[+]|^joinchat/)([a-zA-Z0-9_-]+)', ch_clean, re.IGNORECASE)
         
         if join_hash_match:
             hash_val = join_hash_match.group(1).strip()
@@ -1492,10 +1519,17 @@ class UserBot:
 
             # 4. Check whether active voice call exists in group
             try:
-                if isinstance(entity, Channel):
-                    full = await self.client(GetFullChannelRequest(entity))
+                try:
+                    target_ent = await self.client.get_input_entity(entity)
+                except Exception:
+                    try:
+                        target_ent = await self.client.get_entity(entity)
+                    except Exception:
+                        target_ent = entity
+                if isinstance(entity, Channel) or hasattr(entity, "access_hash"):
+                    full = await self.client(GetFullChannelRequest(target_ent))
                 else:
-                    full = await self.client(GetFullChatRequest(entity.id))
+                    full = await self.client(GetFullChatRequest(getattr(entity, "id", full_chat_id)))
                 group_call = full.full_chat.call
             except Exception as e_full:
                 logger.warning(f"Failed to fetch full chat info for {full_chat_id}: {e_full}")
@@ -1513,10 +1547,15 @@ class UserBot:
                         try:
                             bind_client = getattr(pytg._app, '_bind_client', None)
                             if bind_client and hasattr(bind_client, '_cache'):
-                                bind_client._cache.set_cache(
-                                    full_chat_id,
-                                    InputGroupCall(id=group_call.id, access_hash=group_call.access_hash)
-                                )
+                                input_call = InputGroupCall(id=group_call.id, access_hash=group_call.access_hash)
+                                bind_client._cache.set_cache(full_chat_id, input_call)
+                                bind_client._cache.set_cache(getattr(entity, "id", full_chat_id), input_call)
+                                cid_str = str(full_chat_id)
+                                if cid_str.startswith("-100"):
+                                    try:
+                                        bind_client._cache.set_cache(int(cid_str[4:]), input_call)
+                                    except Exception:
+                                        pass
                         except Exception as c_err:
                             logger.debug(f"Pre-caching call in join_voice_chat: {c_err}")
                     silence_file = await generate_silence()
@@ -3586,8 +3625,7 @@ class UserBot:
 
                     is_reply_target = is_mentioned or is_reply_to_us
                 elif event.is_private:
-                    # Auto-reply / Auto-chat is strictly disabled in DMs (Groups/Channels only)
-                    is_reply_target = False
+                    is_reply_target = True
 
                 auto_reply_enabled = bool(current_settings.get("auto_reply") or current_settings.get("tag_reply"))
 
@@ -3603,8 +3641,8 @@ class UserBot:
                         }
 
                     last_global = getattr(self, "_last_reply_ts", 0.0)
-                    global_gap = float(current_settings.get("auto_reply_global_gap", 10.0) or 10.0)
-                    chat_cooldown = 3.0
+                    global_gap = float(current_settings.get("auto_reply_global_gap", 2.0) or 2.0)
+                    chat_cooldown = 1.5
 
                     global_ok = (now - last_global) >= global_gap
 
@@ -3620,12 +3658,14 @@ class UserBot:
                             candidates = DEFAULT_REPLIES
                         ar_mode = current_settings.get("auto_reply_mode", "single")
                         if ar_mode == "multiple":
-                            msgs_to_send = [random.choice(candidates)]
+                            msgs_to_send = candidates
                         else:
                             single_msg = current_settings.get("auto_reply_msg")
                             msgs_to_send = [single_msg] if single_msg else [candidates[0]]
 
-                        for selected_reply in msgs_to_send:
+                        for idx, selected_reply in enumerate(msgs_to_send):
+                            if idx > 0:
+                                await asyncio.sleep(0.4)
                             processed_reply = antispam.vary_message(
                                 selected_reply, group_id=event.chat_id, tag=False)
                             processed_reply = utils.normalize_text(processed_reply)
@@ -3634,7 +3674,8 @@ class UserBot:
                             self._last_reply_ts = now
 
                             try:
-                                await asyncio.sleep(random.uniform(1.0, 2.0))
+                                if idx == 0:
+                                    await asyncio.sleep(0.5)
                                 if not self.is_running:
                                     logger.info(
                                         f"Auto-reply skipped in chat {event.chat_id} - "

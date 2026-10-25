@@ -171,19 +171,19 @@ def _clean_list(values) -> list:
 def parse_multi_messages(raw_text: str) -> list:
     """
     Parses user input into a list of messages.
-    Supports pipe (|), comma (,), and newline (\\n) separators.
+    Supports pipe (|), newline (\\n), and comma (,) separators.
     """
     if not raw_text:
         return []
     raw = str(raw_text).strip()
     if "|" in raw:
         items = raw.split("|")
-    elif "\n" in raw and "," not in raw:
+    elif "\n" in raw:
         items = raw.split("\n")
     elif "," in raw:
         items = raw.split(",")
     else:
-        items = raw.split("\n")
+        items = [raw]
     cleaned = []
     for m in items:
         s = m.strip().strip(",\r\n\t ").strip()

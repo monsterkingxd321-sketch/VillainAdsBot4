@@ -140,9 +140,18 @@ async def _delete_card_by_session(session: dict, chat_id: int) -> bool:
 async def get_or_start_userbot_for_chat(user_id: int, chat_id: Optional[int] = None) -> Tuple[Optional[object], str]:
     """
     Finds or automatically starts a suitable UserBot instance for the user/chat.
-    Ensures that only the user who connected the userbot (or system admins) can command it.
+    Ensures that active voice chats can be commanded and users can play songs.
     Returns (userbot_instance, error_message).
     """
+    # 0. If in a group/channel, check if ANY running userbot is ALREADY inside this chat's VC
+    if chat_id:
+        for phone, b in list(userbot_manager._running_bots.items()):
+            if b and b.is_running and b.client and b.client.is_connected():
+                in_vc = (getattr(b, "current_vc_chat_id", None) == chat_id or 
+                         chat_id in getattr(b, "joined_vcs", set()))
+                if in_vc:
+                    return b, ""
+
     # 1. Check user's own connected accounts first
     user_sessions = database.get_sessions(user_id) if user_id else []
     if user_sessions:
@@ -186,6 +195,12 @@ async def get_or_start_userbot_for_chat(user_id: int, chat_id: Optional[int] = N
                     if getattr(bot, "current_vc_chat_id", None) == chat_id or chat_id in getattr(bot, "joined_vcs", set()):
                         return bot, ""
                         
+        for phone, bot in list(userbot_manager._running_bots.items()):
+            if bot.is_running and bot.client and bot.client.is_connected():
+                return bot, ""
+
+    # 3. In group/channel, if any userbot is active, let group members play
+    if chat_id:
         for phone, bot in list(userbot_manager._running_bots.items()):
             if bot.is_running and bot.client and bot.client.is_connected():
                 return bot, ""
