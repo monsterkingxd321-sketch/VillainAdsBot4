@@ -186,7 +186,7 @@ def daily_budget(session_data: dict) -> int:
 
 def hourly_budget(session_data: dict) -> int:
     return int((session_data or {}).get("settings", {}).get(
-        "auto_reply_global_gap", DEFAULT_HOURLY_BUDGET) or DEFAULT_HOURLY_BUDGET)
+        "hourly_budget", DEFAULT_HOURLY_BUDGET) or DEFAULT_HOURLY_BUDGET)
 
 
 def used_today(session_data: dict) -> int:

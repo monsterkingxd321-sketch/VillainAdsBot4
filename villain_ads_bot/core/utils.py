@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 from typing import Optional
@@ -191,17 +192,20 @@ def _clean_list(values) -> list:
 def parse_multi_messages(raw_text: str) -> list:
     """
     Parses user input into a list of messages.
-    Supports pipe (|), newline (\\n), and comma (,) separators.
+    Supports pipe (|), comma (,), double newline (\n\n), and single newline (\n) separators.
+    Preserves multi-line formatting inside messages when separated by | or ,.
     """
     if not raw_text:
         return []
     raw = str(raw_text).strip()
     if "|" in raw:
         items = raw.split("|")
-    elif "\n" in raw:
-        items = raw.split("\n")
     elif "," in raw:
         items = raw.split(",")
+    elif "\n\n" in raw:
+        items = re.split(r"\n\s*\n+", raw)
+    elif "\n" in raw:
+        items = raw.split("\n")
     else:
         items = [raw]
     cleaned = []

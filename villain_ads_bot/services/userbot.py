@@ -3714,31 +3714,45 @@ class UserBot:
                                     w_mode = current_settings.get("welcome_mode", "single")
                                     messages_to_send = utils.get_welcome_messages(current_settings)
                                     if messages_to_send:
-                                        # In multiple mode: send all configured welcome messages sequentially
-                                        welcome_to_send = messages_to_send if w_mode == "multiple" else [messages_to_send[0]]
+                                        # Select exactly ONE welcome message (never flood multiple messages to a single user)
+                                        if w_mode == "multiple" and len(messages_to_send) > 1:
+                                            # Rotate round-robin across candidate messages so each new user gets a distinct welcome message
+                                            if not hasattr(self, "_welcome_counter"):
+                                                self._welcome_counter = 0
+                                            selected_welcome = messages_to_send[self._welcome_counter % len(messages_to_send)]
+                                            self._welcome_counter = (self._welcome_counter + 1) % len(messages_to_send)
+                                        else:
+                                            single_msg = current_settings.get("welcome_msg")
+                                            selected_welcome = single_msg if single_msg else messages_to_send[0]
+
+                                        processed_welcome = antispam.vary_message(
+                                            selected_welcome, group_id=None, tag=False)
+                                        processed_welcome = utils.normalize_text(processed_welcome)
                                         welcome_sent = False
-                                        for idx, welcome_msg in enumerate(welcome_to_send):
-                                            processed_welcome = antispam.vary_message(
-                                                welcome_msg, group_id=None, tag=False)
-                                            processed_welcome = utils.normalize_text(processed_welcome)
+
+                                        try:
+                                            # Realistic human typing action and delay (1.5 - 3.0s) so response is natural
+                                            typing_delay = random.uniform(1.5, 3.0)
                                             try:
-                                                if idx > 0:
-                                                    # Only brief delay between consecutive multiple messages
-                                                    await asyncio.sleep(0.3)
-                                                if not self.is_running:
-                                                    break
+                                                async with self.client.action(event.chat_id, 'typing'):
+                                                    await asyncio.sleep(typing_delay)
+                                            except Exception:
+                                                await asyncio.sleep(typing_delay)
+
+                                            if not self.is_running:
+                                                return
+                                            try:
+                                                await event.reply(processed_welcome, parse_mode='html')
+                                            except Exception:
                                                 try:
-                                                    await event.reply(processed_welcome, parse_mode='html')
+                                                    await event.reply(processed_welcome, parse_mode=None)
                                                 except Exception:
-                                                    try:
-                                                        await event.reply(processed_welcome, parse_mode=None)
-                                                    except Exception:
-                                                        await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
-                                                logger.info(f"Sent welcome message ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
-                                                welcome_sent = True
-                                                just_welcomed = True
-                                            except Exception as e:
-                                                logger.warning(f"Could not send welcome message to {sender_id}: {e}")
+                                                    await self.client.send_message(event.chat_id, processed_welcome, parse_mode='html')
+                                            logger.info(f"Sent welcome message ({w_mode} mode) to {sender_id} from userbot {self.session_id}")
+                                            welcome_sent = True
+                                            just_welcomed = True
+                                        except Exception as e:
+                                            logger.warning(f"Could not send welcome message to {sender_id}: {e}")
 
                                         if welcome_sent:
                                             # Async DB record via thread executor so it never blocks message loop
@@ -3876,13 +3890,13 @@ class UserBot:
                     last_chat_time = self.tag_cooldown.get(event.chat_id, 0)
                     last_global = getattr(self, "_last_reply_ts", 0.0)
 
-                    # Cooldowns:
-                    # 1. Per-user cooldown: The same user cannot spam auto-replies in less than 4 seconds in this chat
-                    # 2. Per-chat cooldown: At least 1.0s gap between auto-replies in the same chat
-                    # 3. Global account cooldown: At least 1.5s gap between auto-replies across all chats
-                    user_cooldown = 4.0
-                    chat_cooldown = 1.0
-                    global_gap = float(current_settings.get("auto_reply_global_gap", 1.5) or 1.5)
+                    # Anti-spam, rate-limit & ban protection cooldowns:
+                    # 1. Per-user cooldown: The same user cannot spam auto-replies more than once per 15s in this chat
+                    # 2. Per-chat cooldown: At least 6.0s gap between auto-replies in the same chat
+                    # 3. Global account cooldown: At least 6.0s gap across all chats so account is never flagged
+                    user_cooldown = 15.0
+                    chat_cooldown = 6.0
+                    global_gap = max(6.0, float(current_settings.get("auto_reply_global_gap", 6.0) or 6.0))
 
                     if (now - last_user_time >= user_cooldown) and (now - last_chat_time >= chat_cooldown) and (now - last_global >= global_gap):
                         # Prune cooldown maps periodically to prevent memory bloat
@@ -3927,8 +3941,14 @@ class UserBot:
                         self._last_reply_ts = now
 
                         try:
-                            # Small human-like typing delay before replying
-                            await asyncio.sleep(0.5)
+                            # Natural human typing simulation (3.0 - 5.0s) to avoid bot detection and flood limits
+                            typing_delay = random.uniform(3.0, 5.0)
+                            try:
+                                async with self.client.action(event.chat_id, 'typing'):
+                                    await asyncio.sleep(typing_delay)
+                            except Exception:
+                                await asyncio.sleep(typing_delay)
+
                             if not self.is_running:
                                 logger.info(
                                     f"Auto-reply skipped in chat {event.chat_id} - "
@@ -3943,6 +3963,19 @@ class UserBot:
                                 except Exception:
                                     await self.client.send_message(event.chat_id, processed_reply, parse_mode='html')
                             logger.info(f"Auto-replied ({ar_mode} mode) to sender {sender_id} in chat {event.chat_id} for userbot {self.session_id}")
+                        except FloodWaitError as fwe:
+                            wait_s = getattr(fwe, "seconds", 30) or 30
+                            logger.warning(
+                                f"Telegram FloodWait of {wait_s}s on auto-reply in chat {event.chat_id} "
+                                f"for userbot {self.session_id}"
+                            )
+                            self._last_reply_ts = time.time() + wait_s + 5.0
+                        except PeerFloodError:
+                            logger.warning(
+                                f"PeerFloodError on auto-reply in chat {event.chat_id} "
+                                f"for userbot {self.session_id}. Backing off for 60s."
+                            )
+                            self._last_reply_ts = time.time() + 60.0
                         except Exception as reply_err:
                             logger.warning(f"Could not send auto-reply in chat {event.chat_id}: {reply_err}")
 
