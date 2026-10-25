@@ -233,7 +233,7 @@ def register_handlers(client):
             except Exception:
                 await event.respond(fail_text, buttons=buttons)
 
-    @client.on(events.NewMessage(pattern=r"^/login$"))
+    @client.on(events.NewMessage(pattern=r"(?i)^/login(?:@\w+)?$"))
     async def login_cmd(event):
         if not event.is_private:
             me = await client.get_me()

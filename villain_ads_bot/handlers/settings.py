@@ -1,5 +1,5 @@
 import logging
-from telethon import events
+from telethon import events, Button
 from villain_ads_bot.data import database
 from villain_ads_bot.data import models
 from villain_ads_bot.core import utils
@@ -121,7 +121,20 @@ async def show_purchase_menu(event, user_id: int):
 
 def register_handlers(client):
     
-    # ------------------ Navigation ------------------
+    # ------------------ Navigation & Commands ------------------
+    @client.on(events.NewMessage(pattern=r"(?i)^/settings(?:@\w+)?$"))
+    async def settings_cmd(event):
+        if not event.is_private:
+            me = await client.get_me()
+            bot_username = getattr(me, "username", None) or "Bot"
+            await event.reply(
+                "<blockquote><b>» ⚙️ Bot Settings</b>\n\nTap below to open settings in private message:</blockquote>",
+                buttons=[[Button.url("⚙️ Open Settings", f"https://t.me/{bot_username}?start=settings")]],
+                parse_mode="html"
+            )
+            return
+        await show_settings_menu(event, event.sender_id)
+
     @client.on(events.CallbackQuery(pattern="^menu_settings$"))
     async def settings_menu_callback(event):
         await show_settings_menu(event, event.sender_id)

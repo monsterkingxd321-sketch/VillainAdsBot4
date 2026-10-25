@@ -1,5 +1,5 @@
 import logging
-from telethon import events
+from telethon import events, Button
 from villain_ads_bot.data import database
 from villain_ads_bot.core import utils
 from villain_ads_bot.core import ui
@@ -48,9 +48,16 @@ async def render_status_dashboard(event, user_id: int):
 
 def register_handlers(client):
     
-    @client.on(events.NewMessage(pattern="/status"))
+    @client.on(events.NewMessage(pattern=r"(?i)^/status(?:@\w+)?$"))
     async def status_command(event):
         if not event.is_private:
+            me = await client.get_me()
+            bot_username = getattr(me, "username", None) or "Bot"
+            await event.reply(
+                "<blockquote><b>» 📡 Bot & UserBots Status</b>\n\nTap below to check system status in private message:</blockquote>",
+                buttons=[[Button.url("📡 Check Status", f"https://t.me/{bot_username}?start=status")]],
+                parse_mode="html"
+            )
             return
         # Verify onboarding
         from villain_ads_bot.handlers.start import check_onboarding

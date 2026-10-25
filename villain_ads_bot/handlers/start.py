@@ -339,6 +339,17 @@ def register_handlers(client):
                     from .add_bot import add_bot_start
                     await add_bot_start(event)
                     return
+                if arg == "settings":
+                    from .settings import show_settings_menu
+                    await show_settings_menu(event, event.sender_id)
+                    return
+                if arg in ("dashboard", "dash"):
+                    await show_main_menu(event, event.sender_id)
+                    return
+                if arg == "status":
+                    from .status import render_status_dashboard
+                    await render_status_dashboard(event, event.sender_id)
+                    return
                 if arg.startswith("bot_"):
                     phone_target = arg.replace("bot_", "").strip()
                     global_settings = database.get_global_settings()
@@ -378,7 +389,7 @@ def register_handlers(client):
             except Exception:
                 pass
 
-    @client.on(events.NewMessage(pattern=r"^/(?:dashboard|dash)$"))
+    @client.on(events.NewMessage(pattern=r"(?i)^/(?:dashboard|dash)(?:@\w+)?$"))
     async def dashboard_cmd(event):
         try:
             if not event.is_private:
