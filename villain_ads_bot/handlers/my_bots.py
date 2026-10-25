@@ -360,10 +360,10 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
             ("btn_stop_bot", f"stop_bot_{phone}")
         ])
         
-        # Row 1: Restart Bot & VC / Group Menu
+        # Row 1: Restart Bot & VC / Groups / Music Menu
         rows.append([
             ("btn_restart_bot", f"restart_bot_{phone}"),
-            ("🎙️ Voice Chat & Groups", f"vc_menu_{phone}", None, "success")
+            ("🎙️ VC, Groups & Music", f"vc_menu_{phone}", None, "success")
         ])
             
         # Row 2: Set Broadcast & Auto Broadcast Toggle
@@ -391,35 +391,20 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         ])
         
         # Row 6: Profile & Timing Settings
-        if sess and ("original_first_name" in sess or sess.get("is_cloned") or "cloned_name" in sess):
-            rows.append([
-                ("btn_clone_profile", f"clone_profile_{phone}"),
-                ("🔄 Return To Original Profile", f"restore_profile_{phone}", None, "success")
-            ])
-            rows.append([
-                ("btn_change_name", f"change_name_{phone}"),
-                ("btn_refresh_stats", f"refresh_stats_{phone}"),
-                ("btn_how_to_use", f"how_to_use_{phone}")
-            ])
-            rows.append([
-                ("btn_set_interval", f"set_interval_{phone}"),
-                ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
-            ])
-        else:
-            rows.append([
-                ("btn_clone_profile", f"clone_profile_{phone}"),
-                ("btn_set_interval", f"set_interval_{phone}")
-            ])
-            rows.append([
-                ("btn_change_name", f"change_name_{phone}"),
-                ("btn_refresh_stats", f"refresh_stats_{phone}"),
-                ("btn_how_to_use", f"how_to_use_{phone}")
-            ])
-            rows.append([
-                ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
-            ])
+        rows.append([
+            ("btn_clone_profile", f"clone_profile_{phone}"),
+            ("btn_set_interval", f"set_interval_{phone}")
+        ])
+        rows.append([
+            ("btn_change_name", f"change_name_{phone}"),
+            ("btn_refresh_stats", f"refresh_stats_{phone}"),
+            ("btn_how_to_use", f"how_to_use_{phone}")
+        ])
+        rows.append([
+            ("btn_delete_bot", f"delete_bot_{phone}", None, "danger")
+        ])
         
-        # Row 7: Back to Bots
+        # Row 7: Back to Userbots
         sender_id = getattr(event, "sender_id", user_id)
         is_other_bot = sess and str(sess.get("user_id")) != str(sender_id)
         if is_other_bot:
@@ -455,7 +440,7 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
                     style = row_style
                     
                 if key == "btn_vc_menu":
-                    label = "🎙️ Vc + Grp Joining"
+                    label = "🎙️ VC, Groups & Music"
                 elif key == "btn_music_guide":
                     label = "🎵 Music Commands"
                 elif key.startswith("btn_"):
@@ -553,7 +538,7 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
         # Row 1: Restart All & VC Menu
         [
             utils.styled_button("🔄 Restart All", "all_slots_restart", style="primary"),
-            utils.styled_button("🎙️ Voice Chat & Groups (All)", "all_slots_vc_menu", style="success")
+            utils.styled_button("🎙️ VC, Groups & Music (All)", "all_slots_vc_menu", style="success")
         ],
         # Row 2: Set Broadcast & Auto Broadcast Toggle
         [
@@ -575,23 +560,22 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
             utils.styled_button("⏱️ Set Run Timer", "all_slots_set_run_timer", style="primary"),
             utils.styled_button(f"👥 Contact: {add_contact_state_display}", "all_slots_toggle_add_contact", style="primary")
         ],
-        # Row 6: Clone Profile & Return To Original
+        # Row 6: Clone Profile & Timing Delays
         [
             utils.styled_button("👤 Clone Profile", "all_slots_clone_profile", style="primary"),
-            utils.styled_button("🔄 Return Original", "all_slots_restore_profile", style="success")
+            utils.styled_button("⏱️ Delays", "all_slots_set_interval", style="primary")
         ],
-        # Row 7: Change Name, Delays, Refresh Stats (Compact 3 in one row)
+        # Row 7: Change Name, Refresh Stats, How to Use (Compact 3 in one row)
         [
             utils.styled_button("✏️ Change Name", "all_slots_change_name", style="primary"),
-            utils.styled_button("⏱️ Delays", "all_slots_set_interval", style="primary"),
-            utils.styled_button("🔄 Refresh Stats", "all_slots_refresh_stats", style="primary")
+            utils.styled_button("🔄 Refresh Stats", "all_slots_refresh_stats", style="primary"),
+            utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary")
         ],
-        # Row 8: How to Use & Delete All Userbots
+        # Row 8: Delete All Userbots
         [
-            utils.styled_button(utils.get_text("btn_how_to_use", lang), "all_slots_how_to_use", style="primary"),
             utils.styled_button("🗑️ Delete All Userbots", "all_slots_delete", style="danger")
         ],
-        # Row 10: Back to Bots / Exit
+        # Row 9: Back to Userbots / Exit
         [
             utils.styled_button("🚪 Exit Admin Access", "admin_exit_impersonation", style="danger") if event.sender_id in _admin_impersonation else utils.styled_button(utils.get_text("btn_back_to_bots", lang), "menu_my_bots", style="danger")
         ]
@@ -847,8 +831,8 @@ def register_handlers(client):
                 utils.styled_button("\u23f1\ufe0f Timing", f"set_interval_{phone}", style="primary"),
             ],
             [
-                utils.styled_button("\U0001f399\ufe0f VC & Music", f"vc_menu_{phone}", style="primary"),
-                utils.styled_button("\U0001f519 Back To Dashboard", f"select_bot_{phone}", style="primary")
+                utils.styled_button("🎙️ VC, Groups & Music", f"vc_menu_{phone}", style="primary"),
+                utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="primary")
             ],
         ]
         try:
@@ -890,7 +874,7 @@ def register_handlers(client):
             "• Leave Group — leave a group / channel"
         )
         text = (
-            f"{ui.card(utils.get_text('vc_menu_title', lang), 'Voice chat & group management', 'Every action of your userbot in one place', '🎙️')}\n\n"
+            f"{ui.card(utils.get_text('vc_menu_title', lang), 'Voice chat, groups & music management', 'Every action of your userbot in one place', '🎙️')}\n\n"
             f"{ui.kv('VC status', vc_status, '📌')}\n\n"
             f"{ui.section('🎙️ ' + utils.get_text('vc_section_join', lang), sec_vc_join)}\n\n"
             f"{ui.section('🎵 ' + utils.get_text('vc_section_playing', lang), sec_vc_playing)}\n\n"
@@ -1038,7 +1022,7 @@ def register_handlers(client):
             if getattr(userbot_manager._running_bots.get(p), "current_vc_chat_id", None)
         )
         
-        header_vc = "VC + Group Control (All System Bots)" if is_system_all_mode(event.sender_id) else "VC + Group Control (All Slots)"
+        header_vc = "VC, Groups & Music (All System Bots)" if is_system_all_mode(event.sender_id) else "VC, Groups & Music (All Slots)"
         all_vc_join = (
             "• Join Vc / Leave Vc — connect or disconnect every userbot\n"
             "• Join All Active Vcs / Leave All — sweep every group VC"
@@ -1049,7 +1033,7 @@ def register_handlers(client):
             "• Leave Group — every userbot leaves"
         )
         text = (
-            f"{ui.card(header_vc, 'Bulk voice chat & group management', 'Control every userbot at once', '🎙️')}\n\n"
+            f"{ui.card(header_vc, 'Bulk voice chat, groups & music management', 'Control every userbot at once', '🎙️')}\n\n"
             f"{ui.kv('VC connected bots', f'{vc_connected_count} / {len(sessions)}', '📌')}\n\n"
             f"{ui.section('🎙️ VC Join', all_vc_join)}\n\n"
             f"{ui.section('🎵 VC Playing', all_vc_playing)}\n\n"
@@ -2654,10 +2638,8 @@ def register_handlers(client):
             ]
         ]
         
-        if sess and "original_first_name" in sess:
-            buttons.append([utils.styled_button("🔄 Return To Original Profile", f"restore_profile_{phone}", style="success")])
-            
-        buttons.append([utils.styled_button("🔙 Back", f"select_bot_{phone}", style="danger")])
+        buttons.append([utils.styled_button("🔄 Return To Original Profile", f"restore_profile_{phone}", style="success")])
+        buttons.append([utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="danger")])
         
         try:
             await event.edit(text, buttons=buttons)

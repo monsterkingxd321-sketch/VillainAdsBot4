@@ -134,9 +134,9 @@ PREMIUM_TRANSLATIONS = {
         "zh": "支付已成功提交", "ar": "تم إرسال الدفع بنجاح",
     },
     "vc_menu_title": {
-        "en": "VC + Group Control", "hi": "VC + ग्रुप कंट्रोल", "ru": "Управление VC и группами",
-        "ja": "VC + グループ操作", "fr": "Contrôle VC et groupes", "de": "VC- und Gruppensteuerung",
-        "zh": "语音与群组控制", "ar": "تحكم في VC والمجموعات",
+        "en": "VC, Groups & Music", "hi": "वीसी, ग्रुप्स और म्यूज़िक", "ru": "VC, группы и музыка",
+        "ja": "VC・グループ・音楽", "fr": "VC, Groupes et Musique", "de": "VC, Gruppen & Musik",
+        "zh": "语音、群组与音乐", "ar": "VC والمجموعات والموسيقى",
     },
     "vc_section_join": {
         "en": "VC Join", "hi": "VC जॉइन", "ru": "Подключение к VC", "ja": "VC 参加",
