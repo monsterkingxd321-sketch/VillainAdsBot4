@@ -521,18 +521,31 @@ def register_handlers(client):
             )
 
             buttons = build_now_playing_markup(target_chat_id, is_paused=False, is_muted=False)
-            thumb_url = song_info.get("thumb")
-            if thumb_url and not str(thumb_url).startswith("http"):
-                thumb_url = None
+            thumb_file = song_info.get("thumb")
+            thumb_enabled = database.get_thumbnail_setting(target_chat_id)
+            builder_res = None
+            if thumb_enabled and thumb_file:
+                tf_str = str(thumb_file)
+                if tf_str.startswith("http") or (os.path.exists(tf_str) and os.path.getsize(tf_str) > 0):
+                    try:
+                        builder_res = await event.builder.photo(
+                            file=thumb_file,
+                            text=card_text,
+                            parse_mode="html",
+                            buttons=buttons
+                        )
+                    except Exception as p_err:
+                        logger.warning(f"Could not build inline photo result: {p_err}")
+                        builder_res = None
 
-            builder_res = event.builder.article(
-                title=f"Now Streaming: {title[:30]}",
-                description=f"Duration: {dur_str} | Mode: {mode_emoji}",
-                text=card_text,
-                parse_mode="html",
-                buttons=buttons,
-                thumb=thumb_url
-            )
+            if not builder_res:
+                builder_res = event.builder.article(
+                    title=f"Now Streaming: {title[:30]}",
+                    description=f"Duration: {dur_str} | Mode: {mode_emoji}",
+                    text=card_text,
+                    parse_mode="html",
+                    buttons=buttons
+                )
             await event.answer([builder_res], cache_time=0)
             return
 
@@ -660,7 +673,7 @@ def register_handlers(client):
                     "local_file": local_file_path,
                     "title": audio_title or query,
                     "duration": audio_duration,
-                    "thumb": None
+                    "thumb": (thumb if 'thumb' in locals() and thumb else None)
                 })
                 pos = len(_chat_queues[chat_id])
                 mins, secs = divmod(audio_duration or 0, 60)

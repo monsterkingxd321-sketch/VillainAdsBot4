@@ -363,7 +363,7 @@ async def show_bot_dashboard(event, phone: str, user_id: int, flash_message: Opt
         # Row 1: Restart Bot & VC / Group Menu
         rows.append([
             ("btn_restart_bot", f"restart_bot_{phone}"),
-            ("🎙️ VC, Music & Groups", f"vc_menu_{phone}", None, "success")
+            ("🎙️ Voice Chat & Groups", f"vc_menu_{phone}", None, "success")
         ])
             
         # Row 2: Set Broadcast & Auto Broadcast Toggle
@@ -553,7 +553,7 @@ async def show_all_slots_dashboard(event, user_id: int, flash_message: Optional[
         # Row 1: Restart All & VC Menu
         [
             utils.styled_button("🔄 Restart All", "all_slots_restart", style="primary"),
-            utils.styled_button("🎙️ VC & Groups (All)", "all_slots_vc_menu", style="success")
+            utils.styled_button("🎙️ Voice Chat & Groups (All)", "all_slots_vc_menu", style="success")
         ],
         # Row 2: Set Broadcast & Auto Broadcast Toggle
         [
@@ -907,12 +907,12 @@ def register_handlers(client):
             # ── SECTION 2 : GROUP JOINING & LEAVING ──
             [
                 utils.styled_button("🔗 Join Groups", f"grp_join_opts_{phone}", style="primary"),
-                utils.styled_button("❌ Leave Group", f"vc_leave_grp_{phone}", style="danger")
+                utils.styled_button("🚪 Leave Group", f"vc_leave_grp_{phone}", style="danger")
             ],
             # ── SECTION 3 : VC PLAYING ──
             [
-                utils.styled_button("🎵 Play Song", f"play_song_{phone}", style="primary"),
-                utils.styled_button("📖 Commands Guide", f"music_guide_{phone}", style="primary")
+                utils.styled_button("🎵 Play Audio / Video", f"play_song_{phone}", style="primary"),
+                utils.styled_button("📜 Music Commands", f"music_guide_{phone}", style="primary")
             ],
             # ── BACK ──
             [
@@ -935,7 +935,7 @@ def register_handlers(client):
         )
         buttons = [
             [
-                utils.styled_button("🎙️ Join By Group Link", f"vc_join_{phone}", style="success"),
+                utils.styled_button("🎙️ Join Single VC", f"vc_join_{phone}", style="success"),
                 utils.styled_button("📡 Join All Active VCs", f"vc_join_all_{phone}", style="success")
             ],
             [
@@ -959,7 +959,7 @@ def register_handlers(client):
         buttons = [
             [
                 utils.styled_button("🔴 Leave Current VC", f"vc_leave_{phone}", style="danger"),
-                utils.styled_button("🔴 Leave All Active VCs", f"vc_leave_all_{phone}", style="danger")
+                utils.styled_button("🛑 Leave All Active VCs", f"vc_leave_all_{phone}", style="danger")
             ],
             [
                 utils.styled_button("🔙 Back To VC Menu", f"vc_menu_{phone}", style="primary")
@@ -981,8 +981,8 @@ def register_handlers(client):
         )
         buttons = [
             [
-                utils.styled_button("🔗 Single Link", f"vc_join_grp_{phone}", style="primary"),
-                utils.styled_button("📚 Multiple Links", f"vc_join_multi_grp_{phone}", style="primary")
+                utils.styled_button("🔗 Join Single Group", f"vc_join_grp_{phone}", style="primary"),
+                utils.styled_button("📚 Join Multiple Groups", f"vc_join_multi_grp_{phone}", style="primary")
             ],
             [
                 utils.styled_button("🔙 Back To VC Menu", f"vc_menu_{phone}", style="primary")
@@ -1017,7 +1017,8 @@ def register_handlers(client):
             f"• <code>.song &lt;song name&gt;</code> — Download MP3 File Directly To Telegram\n\n"
             f"💡 <i>Tip : Run Any Of These Commands Directly In The Group Where Your Userbot Is Added!</i></blockquote>"
         )
-        buttons = [[utils.styled_button("🔙 Back To Dashboard", f"select_bot_{phone}", style="primary")]]
+        back_cb = "all_slots_vc_menu" if phone == "all" else f"vc_menu_{phone}"
+        buttons = [[utils.styled_button("🔙 Back To VC Menu", back_cb, style="primary")]]
         try:
             await event.edit(guide_text, buttons=buttons)
         except Exception:
@@ -1065,15 +1066,16 @@ def register_handlers(client):
             # ── SECTION 2 : GROUP JOINING & LEAVING ──
             [
                 utils.styled_button("🔗 Join Groups (All)", "all_slots_grp_join_opts", style="primary"),
-                utils.styled_button("❌ Leave Group (All)", "all_slots_vc_leave_grp", style="danger")
+                utils.styled_button("🚪 Leave Group (All)", "all_slots_vc_leave_grp", style="danger")
             ],
             # ── SECTION 3 : VC PLAYING ──
             [
-                utils.styled_button("🎵 Play Song (All)", "all_slots_play_song", style="primary")
+                utils.styled_button("🎵 Play Audio / Video (All)", "all_slots_play_song", style="primary"),
+                utils.styled_button("📜 Music Commands", "music_guide_all", style="primary")
             ],
             # ── BACK ──
             [
-                utils.styled_button("🔙 Back", "menu_all_slots", style="primary")
+                utils.styled_button("🔙 Back To All Slots", "menu_all_slots", style="primary")
             ]
         ]
         try:
@@ -1091,7 +1093,7 @@ def register_handlers(client):
         )
         buttons = [
             [
-                utils.styled_button("🎙️ Join By Group Link", "all_slots_vc_join", style="success"),
+                utils.styled_button("🎙️ Join Single VC", "all_slots_vc_join", style="success"),
                 utils.styled_button("📡 Join All Active VCs", "all_slots_vc_join_all", style="success")
             ],
             [
@@ -1114,7 +1116,7 @@ def register_handlers(client):
         buttons = [
             [
                 utils.styled_button("🔴 Leave Current VC", "all_slots_vc_leave", style="danger"),
-                utils.styled_button("🔴 Leave All Active VCs", "all_slots_vc_leave_all", style="danger")
+                utils.styled_button("🛑 Leave All Active VCs", "all_slots_vc_leave_all", style="danger")
             ],
             [
                 utils.styled_button("🔙 Back To VC Menu", "all_slots_vc_menu", style="primary")
@@ -1135,8 +1137,8 @@ def register_handlers(client):
         )
         buttons = [
             [
-                utils.styled_button("🔗 Single Link", "all_slots_vc_join_grp", style="primary"),
-                utils.styled_button("📚 Multiple Links", "all_slots_vc_join_multi_grp", style="primary")
+                utils.styled_button("🔗 Join Single Group", "all_slots_vc_join_grp", style="primary"),
+                utils.styled_button("📚 Join Multiple Groups", "all_slots_vc_join_multi_grp", style="primary")
             ],
             [
                 utils.styled_button("🔙 Back To VC Menu", "all_slots_vc_menu", style="primary")

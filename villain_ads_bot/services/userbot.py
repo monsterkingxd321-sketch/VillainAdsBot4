@@ -259,6 +259,13 @@ async def download_media(query: str, download_type: str = "audio") -> tuple:
                     pass
         
         final_thumb = local_thumb_path if (os.path.exists(local_thumb_path) and os.path.getsize(local_thumb_path) > 1000) else thumb_url
+        try:
+            from villain_ads_bot.thumb_gen import gen_thumb
+            generated_banner = await gen_thumb(vidid)
+            if generated_banner and os.path.exists(generated_banner) and os.path.getsize(generated_banner) > 1000:
+                final_thumb = generated_banner
+        except Exception as gt_err:
+            logger.debug(f"gen_thumb fallback to raw thumbnail: {gt_err}")
 
         def _has_valid_video_stream(fpath: str) -> bool:
             try:
@@ -1281,6 +1288,7 @@ class UserBot:
         self.current_vc_link: Optional[str] = None
         self.pytgcalls_client: Optional[object] = None
         self.is_muted = True
+        self.current_song: Optional[dict] = None
         self.bg_tasks: Set[asyncio.Task] = set()
         
         # Caching attributes to resolve performance bottlenecks
@@ -1765,18 +1773,50 @@ class UserBot:
                     async def handle_stream_update(client, update):
                         if isinstance(update, StreamEnded):
                             try:
-                                chat_id = getattr(update, "chat_id", None)
-                                if chat_id:
+                                raw_chat_id = getattr(update, "chat_id", None)
+                                if raw_chat_id:
                                     from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players
-                                    if chat_id in _chat_queues and _chat_queues[chat_id]:
-                                        from villain_ads_bot.handlers.player import play_next_in_queue
-                                        await play_next_in_queue(chat_id)
+                                    cid_candidates = [raw_chat_id]
+                                    try:
+                                        cid_candidates.append(int(raw_chat_id))
+                                    except Exception:
+                                        pass
+                                    try:
+                                        cid_candidates.append(str(raw_chat_id))
+                                    except Exception:
+                                        pass
+
+                                    active = None
+                                    for cid in cid_candidates:
+                                        if cid in _active_chat_players:
+                                            active = _active_chat_players[cid]
+                                            break
+
+                                    has_active_song = bool(active or getattr(self, "current_song", None))
+
+                                    queue = []
+                                    for cid in cid_candidates:
+                                        if cid in _chat_queues and _chat_queues[cid]:
+                                            queue = _chat_queues[cid]
+                                            break
+
+                                    if has_active_song:
+                                        self.current_song = None
+                                        if queue:
+                                            from villain_ads_bot.handlers.player import play_next_in_queue
+                                            await play_next_in_queue(raw_chat_id)
+                                        else:
+                                            for cid in cid_candidates:
+                                                _active_chat_players.pop(cid, None)
+                                            if active:
+                                                from villain_ads_bot.handlers.player import _delete_card_by_session
+                                                await _delete_card_by_session(active, raw_chat_id)
+                                            await self.stop_song(raw_chat_id, leave_vc=True)
                                     else:
-                                        active = _active_chat_players.pop(chat_id, None)
-                                        if active:
-                                            from villain_ads_bot.handlers.player import _delete_card_by_session
-                                            await _delete_card_by_session(active, chat_id)
-                                        await self.stop_song(chat_id, leave_vc=True)
+                                        # Silence/idle stream finished. Userbot is idling in VC.
+                                        # DO NOT leave voice chat! Keep userbot in VC with idle stream.
+                                        logger.info(f"StreamEnded for idle VC {raw_chat_id} on userbot {self.session_id}: keeping connected.")
+                                        await self.idle_in_vc(raw_chat_id)
                             except Exception as e:
                                 logger.error(f"Error in handle_stream_update: {e}")
                 except Exception as reg_err:
@@ -1786,18 +1826,48 @@ class UserBot:
                     @self.pytgcalls_client.on_stream_end()
                     async def on_stream_end(client, update):
                         try:
-                            chat_id = getattr(update, "chat_id", None)
-                            if chat_id:
+                            raw_chat_id = getattr(update, "chat_id", None)
+                            if raw_chat_id:
                                 from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players
-                                if chat_id in _chat_queues and _chat_queues[chat_id]:
-                                    from villain_ads_bot.handlers.player import play_next_in_queue
-                                    await play_next_in_queue(chat_id)
+                                cid_candidates = [raw_chat_id]
+                                try:
+                                    cid_candidates.append(int(raw_chat_id))
+                                except Exception:
+                                    pass
+                                try:
+                                    cid_candidates.append(str(raw_chat_id))
+                                except Exception:
+                                    pass
+
+                                active = None
+                                for cid in cid_candidates:
+                                    if cid in _active_chat_players:
+                                        active = _active_chat_players[cid]
+                                        break
+
+                                has_active_song = bool(active or getattr(self, "current_song", None))
+
+                                queue = []
+                                for cid in cid_candidates:
+                                    if cid in _chat_queues and _chat_queues[cid]:
+                                        queue = _chat_queues[cid]
+                                        break
+
+                                if has_active_song:
+                                    self.current_song = None
+                                    if queue:
+                                        from villain_ads_bot.handlers.player import play_next_in_queue
+                                        await play_next_in_queue(raw_chat_id)
+                                    else:
+                                        for cid in cid_candidates:
+                                            _active_chat_players.pop(cid, None)
+                                        if active:
+                                            from villain_ads_bot.handlers.player import _delete_card_by_session
+                                            await _delete_card_by_session(active, raw_chat_id)
+                                        await self.stop_song(raw_chat_id, leave_vc=True)
                                 else:
-                                    active = _active_chat_players.pop(chat_id, None)
-                                    if active:
-                                        from villain_ads_bot.handlers.player import _delete_card_by_session
-                                        await _delete_card_by_session(active, chat_id)
-                                    await self.stop_song(chat_id, leave_vc=True)
+                                    logger.info(f"on_stream_end for idle VC {raw_chat_id} on userbot {self.session_id}: keeping connected.")
+                                    await self.idle_in_vc(raw_chat_id)
                         except Exception as e:
                             logger.error(f"Error in on_stream_end: {e}")
                 except Exception as reg_err:
@@ -2017,6 +2087,7 @@ class UserBot:
                 await self.idle_in_vc(target_chat)
 
             self.is_muted = False
+            self.current_song = None
             sess_data = database.get_session(self.session_id)
             if sess_data:
                 sess_data["current_song"] = None
@@ -2196,6 +2267,7 @@ class UserBot:
                 }
                 database.save_session(sess_data)
                 
+            self.current_song = song_info
             return True, f"Now playing {title}", song_info
         except Exception as e:
             logger.error(f"Error playing media: {e}")
@@ -3049,20 +3121,20 @@ class UserBot:
                                 if _main_bot:
                                     try:
                                         if thumb_enabled and _tf_valid:
-                                            sent_msg = await _main_bot.send_message(chat_id, np_text, file=thumb_file, buttons=buttons)
+                                            sent_msg = await _main_bot.send_message(chat_id, np_text, file=thumb_file, buttons=buttons, parse_mode="html")
                                         else:
-                                            sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons)
+                                            sent_msg = await _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html")
                                     except Exception as mb_err:
                                         logger.debug(f"_main_bot send_message failed: {mb_err}")
                                         if thumb_enabled and _tf_valid:
-                                            sent_msg = await event.respond(np_text, file=thumb_file)
+                                            sent_msg = await event.respond(np_text, file=thumb_file, parse_mode="html")
                                         else:
-                                            sent_msg = await event.respond(np_text)
+                                            sent_msg = await event.respond(np_text, parse_mode="html")
                                 else:
                                     if thumb_enabled and _tf_valid:
-                                        sent_msg = await event.respond(np_text, file=thumb_file)
+                                        sent_msg = await event.respond(np_text, file=thumb_file, parse_mode="html")
                                     else:
-                                        sent_msg = await event.respond(np_text)
+                                        sent_msg = await event.respond(np_text, parse_mode="html")
 
                             # Delete temporary search progress message
                             try:
