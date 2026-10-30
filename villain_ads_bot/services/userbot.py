@@ -822,13 +822,36 @@ async def generate_silence() -> str:
 
 def extract_media_info(msg):
     """
-    Extracts file path, title, and duration from a message containing audio/voice/video.
+    Extracts media object, title, and duration from a message containing audio/voice/video/video_note/document.
     """
-    media = getattr(msg, "audio", None) or getattr(msg, "voice", None) or getattr(msg, "video", None) or getattr(msg, "gif", None)
+    if not msg:
+        return None, None, 30
+
+    media = (
+        getattr(msg, "audio", None) or
+        getattr(msg, "voice", None) or
+        getattr(msg, "video", None) or
+        getattr(msg, "video_note", None) or
+        getattr(msg, "gif", None)
+    )
     if not media and getattr(msg, "document", None):
-        mime = getattr(msg.document, "mime_type", "")
-        if mime.startswith("audio/") or mime.startswith("video/"):
-            media = msg.document
+        doc = msg.document
+        mime = (getattr(doc, "mime_type", "") or "").lower()
+        file_name = (getattr(getattr(msg, "file", None), "name", "") or "").lower()
+        ext = os.path.splitext(file_name)[1].lower() if file_name else ""
+        media_exts = {
+            ".mp3", ".ogg", ".opus", ".m4a", ".wav", ".flac", ".aac", ".wma",
+            ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".3gp", ".ts", ".m4v"
+        }
+        if mime.startswith("audio/") or mime.startswith("video/") or ext in media_exts:
+            media = doc
+
+    if not media and getattr(msg, "media", None):
+        med = msg.media
+        if hasattr(med, "document"):
+            media = med.document
+        elif hasattr(med, "video"):
+            media = med.video
             
     if not media:
         return None, None, 30
@@ -837,20 +860,34 @@ def extract_media_info(msg):
     duration = 30
     
     # Extract title
-    if getattr(msg, "audio", None):
-        title = getattr(msg.audio, "title", None) or getattr(msg.audio, "file_name", None) or "Audio File"
-    elif getattr(msg, "voice", None):
-        title = "Voice Note"
+    file_name = getattr(getattr(msg, "file", None), "name", None)
+    if getattr(msg, "voice", None):
+        title = "Voice Message Recording"
+    elif getattr(msg, "video_note", None):
+        title = "Video Note Recording"
+    elif file_name:
+        title = file_name
     elif getattr(msg, "video", None):
-        title = getattr(msg.video, "file_name", None) or "Video File"
+        title = "Video File"
+    elif getattr(msg, "audio", None):
+        title = None
+        for attr in getattr(media, "attributes", []):
+            if hasattr(attr, "title") and attr.title:
+                performer = getattr(attr, "performer", "")
+                title = f"{performer} - {attr.title}" if performer else attr.title
+                break
+        title = title or "Audio File"
     elif getattr(msg, "document", None):
         title = getattr(msg.document, "file_name", None) or "Document Media"
         
     # Extract duration
     for attr in getattr(media, "attributes", []):
-        if hasattr(attr, "duration"):
-            duration = attr.duration
-            break
+        if hasattr(attr, "duration") and attr.duration:
+            try:
+                duration = int(float(attr.duration))
+                break
+            except Exception:
+                pass
             
     return media, title, duration
 
@@ -2112,7 +2149,14 @@ class UserBot:
             await self.sync_call_participant_state(target_chat, muted=True)
             return True, "Mic turned OFF (Muted)."
         except Exception as e:
-            logger.error(f"Failed to mute: {e}")
+            err_msg = str(e)
+            if "not in a call" in err_msg.lower() or "notincall" in type(e).__name__.lower():
+                logger.debug(f"Userbot {self.session_id} not in a call during mute: {e}")
+                self.joined_vcs.discard(target_chat)
+                if self.current_vc_chat_id == target_chat:
+                    self.current_vc_chat_id = None
+                return False, "Bot is not in a call."
+            logger.warning(f"Failed to mute: {e}")
             utils.report_error(f"userbot.mute_mic:{self.session_id}", e)
             return False, "Failed to mute the microphone."
 
@@ -2127,7 +2171,14 @@ class UserBot:
             await self.sync_call_participant_state(target_chat, muted=False)
             return True, "Mic turned ON (Unmuted)."
         except Exception as e:
-            logger.error(f"Failed to unmute: {e}")
+            err_msg = str(e)
+            if "not in a call" in err_msg.lower() or "notincall" in type(e).__name__.lower():
+                logger.debug(f"Userbot {self.session_id} not in a call during unmute: {e}")
+                self.joined_vcs.discard(target_chat)
+                if self.current_vc_chat_id == target_chat:
+                    self.current_vc_chat_id = None
+                return False, "Bot is not in a call."
+            logger.warning(f"Failed to unmute: {e}")
             utils.report_error(f"userbot.unmute_mic:{self.session_id}", e)
             return False, "Failed to unmute the microphone."
 
@@ -2227,6 +2278,14 @@ class UserBot:
             target_chat_id = int(str(target_chat_id).strip())
         except Exception:
             pass
+
+        # Telegram Group/Channel Voice Chats ALWAYS have negative chat IDs (-100... or -...).
+        # A positive chat ID is a 1-on-1 private user peer, where voice chats do not exist.
+        if isinstance(target_chat_id, int) and target_chat_id > 0:
+            if getattr(self, "current_vc_chat_id", None) and isinstance(self.current_vc_chat_id, int) and self.current_vc_chat_id < 0:
+                target_chat_id = self.current_vc_chat_id
+            else:
+                return False, "Voice Chats only exist in Groups and Channels, not private user chats.", None
 
         actual_chat = target_chat_id
         file_path = None
@@ -2360,9 +2419,9 @@ class UserBot:
                 await self.sync_call_participant_state(
                     actual_chat,
                     muted=False,
-                    video_stopped=(False if is_video_streaming else None)
+                    video_stopped=(False if is_video_streaming else True)
                 )
-                logger.info(f"Synced participant state for {actual_chat}: muted=False, video_stopped={False if is_video_streaming else None}")
+                logger.info(f"Synced participant state for {actual_chat}: muted=False, video_stopped={False if is_video_streaming else True}")
             except Exception as vid_status_err:
                 logger.debug(f"Direct video call status update note: {vid_status_err}")
             
@@ -3007,14 +3066,54 @@ class UserBot:
                         if cmd in ("play", "vplay", "cplay", "stream", "vstream", "playforce", "vplayforce", "cplayforce", "forceplay", "vforceplay"):
                             play_type = "video" if ("vplay" in cmd or "vstream" in cmd) else "audio"
                             is_force = any(k in cmd for k in ["force", "cplayforce"])
-                            reply_msg = await event.get_reply_message() if event.is_reply else None
+                            
+                            # Handle private chat ("in bot")
+                            if event.is_private:
+                                target_vc = getattr(self, "current_vc_chat_id", None)
+                                if not target_vc:
+                                    from villain_ads_bot.services import userbot_manager
+                                    running_vcs = [
+                                        getattr(b, "current_vc_chat_id", None)
+                                        for b in userbot_manager.get_running_userbots_for_owner(sender_id or self.session_id)
+                                        if getattr(b, "current_vc_chat_id", None)
+                                    ]
+                                    if running_vcs:
+                                        target_vc = running_vcs[0]
+                                if not target_vc:
+                                    err_box = utils.format_html_message(
+                                        "<blockquote><b>» ❌ No Active Voice Chat Found</b>\n\n"
+                                        "⚠️ <i>You sent this command in private chat, but the userbot is not currently in any Group Voice Chat.</i>\n\n"
+                                        "💡 <b>Tip :</b> Join or start a Voice Chat in your group first!</blockquote>"
+                                    )
+                                    if is_outgoing:
+                                        try: await event.edit(err_box)
+                                        except Exception: await event.reply(err_box)
+                                    else:
+                                        await event.reply(err_box)
+                                    return
+                                chat_id = target_vc
+
+                            reply_msg = None
+                            if event.is_reply:
+                                try:
+                                    reply_msg = await event.get_reply_message()
+                                except Exception:
+                                    pass
+                                if not reply_msg:
+                                    r_id = getattr(getattr(event, "reply_to", None), "reply_to_msg_id", None)
+                                    if r_id:
+                                        try:
+                                            reply_msg = await self.client.get_messages(event.chat_id, ids=r_id)
+                                        except Exception:
+                                            pass
+
                             local_file_path = None
                             audio_title = None
                             audio_duration = 0
                             
                             from villain_ads_bot.handlers.player import _active_chat_players, _chat_queues, _track_timer_tasks, _preparing_chats, get_chat_lock, play_next_in_queue
                             
-                            display_target = query or (audio_title if audio_title else 'replied media')
+                            display_target = query or "Replied Media"
                             inquiry_text = f"<b>» 🎧 Playing :</b> <b>{display_target}</b>"
                             if is_outgoing:
                                 try:
@@ -3025,10 +3124,21 @@ class UserBot:
                             else:
                                 prog = await event.reply(inquiry_text)
                             
-                            if reply_msg and (reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document):
-                                media = reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document
-                                if media:
+                            if reply_msg and (
+                                reply_msg.audio or reply_msg.video or getattr(reply_msg, "video_note", None)
+                                or reply_msg.voice or reply_msg.document or getattr(reply_msg, "file", None)
+                            ):
+                                media_obj, audio_title, audio_duration = extract_media_info(reply_msg)
+                                if media_obj:
                                     os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
+                                    # Auto-adjust play_type for audio/voice vs video
+                                    is_voice_rec = bool(getattr(reply_msg, "voice", None))
+                                    is_vid = bool(getattr(reply_msg, "video", None) or getattr(reply_msg, "video_note", None))
+                                    if not is_vid and is_voice_rec:
+                                        play_type = "audio"
+                                    elif is_vid and ("vplay" in cmd or "vstream" in cmd):
+                                        play_type = "video"
+
                                     try:
                                         local_file_path = await self.client.download_media(reply_msg, file="downloads/")
                                     except Exception as dl_err:
@@ -3039,6 +3149,11 @@ class UserBot:
                                             )
                                         )
                                         return
+                                    if audio_title:
+                                        try:
+                                            await prog.edit(f"<b>» 🎧 Playing :</b> <b>{audio_title}</b>")
+                                        except Exception:
+                                            pass
                             elif not query:
                                 await prog.edit(
                                     utils.format_html_message(
@@ -3048,7 +3163,7 @@ class UserBot:
                                         f"• <code>.playforce &lt;song name&gt;</code> (Force Play Now)\n"
                                         f"• <code>.queue</code> / <code>.skip</code>\n"
                                         f"• <b>Thumbnail Mode :</b> <code>.thumb on</code> Or <code>.thumb off</code>\n"
-                                        f"• Reply To Any Audio/Video File With <code>.{cmd}</code>\n\n"
+                                        f"• Reply To Any Audio/Video/Voice File With <code>.{cmd}</code>\n\n"
                                         f"⚡ <i>Start Group Voice Chat Before Streaming.</i></blockquote>"
                                     )
                                 )
@@ -3160,7 +3275,7 @@ class UserBot:
                                 local_fp = song_info["file_path"]
                                 async def _stream_companion_play(c_bot):
                                     try:
-                                        await c_bot.play_song(
+                                        c_ok, c_msg, _ = await c_bot.play_song(
                                             query="",
                                             play_type=play_type,
                                             chat_id=chat_id,
@@ -3168,8 +3283,11 @@ class UserBot:
                                             title=song_info.get("title"),
                                             duration=song_info.get("duration", 30)
                                         )
-                                        await c_bot.unmute_mic(chat_id)
-                                        logger.info(f"Companion userbot {c_bot.session_id} streaming track in VC {chat_id}")
+                                        if c_ok:
+                                            await c_bot.unmute_mic(chat_id)
+                                            logger.info(f"Companion userbot {c_bot.session_id} streaming track in VC {chat_id}")
+                                        else:
+                                            logger.debug(f"Companion userbot {c_bot.session_id} play skipped: {c_msg}")
                                     except Exception as c_err:
                                         logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
 

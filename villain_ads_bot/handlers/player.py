@@ -381,7 +381,7 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
         local_fp = song_info["file_path"]
         async def _stream_companion_next(c_bot):
             try:
-                await c_bot.play_song(
+                c_ok, c_msg, _ = await c_bot.play_song(
                     query="",
                     play_type=play_type,
                     chat_id=chat_id,
@@ -389,8 +389,11 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
                     title=song_info.get("title"),
                     duration=song_info.get("duration", 30)
                 )
-                await c_bot.unmute_mic(chat_id)
-                logger.info(f"Companion userbot {c_bot.session_id} streaming next track in VC {chat_id}")
+                if c_ok:
+                    await c_bot.unmute_mic(chat_id)
+                    logger.info(f"Companion userbot {c_bot.session_id} streaming next track in VC {chat_id}")
+                else:
+                    logger.debug(f"Companion userbot {c_bot.session_id} next stream skipped: {c_msg}")
             except Exception as c_err:
                 logger.warning(f"Companion userbot {c_bot.session_id} next stream error: {c_err}")
 
@@ -554,12 +557,7 @@ def register_handlers(client):
     async def play_command_handler(event):
         if await utils.guard(event, client):
             return
-            
-        try:
-            await event.delete()
-        except Exception:
-            pass
-            
+
         cmd = event.pattern_match.group(1).lower()
         raw_query = event.pattern_match.group(2)
         query = raw_query.strip() if raw_query else ""
@@ -574,20 +572,86 @@ def register_handlers(client):
             
         sender = await event.get_sender()
         requester_name = getattr(sender, "first_name", None) or "User"
-        
-        reply_msg = await event.get_reply_message() if event.is_reply else None
+
+        # 0. Retrieve replied message BEFORE deleting event!
+        reply_msg = None
+        if event.is_reply:
+            try:
+                reply_msg = await event.get_reply_message()
+            except Exception as e_reply:
+                logger.debug(f"event.get_reply_message() exception: {e_reply}")
+            if not reply_msg:
+                r_id = getattr(getattr(event, "reply_to", None), "reply_to_msg_id", None)
+                if r_id:
+                    try:
+                        reply_msg = await client.get_messages(chat_id, ids=r_id)
+                    except Exception as e_get:
+                        logger.debug(f"client.get_messages fallback exception: {e_get}")
+
+        # Now safe to delete command event to keep chat clean
+        try:
+            await event.delete()
+        except Exception:
+            pass
+
+        # Pre-resolve userbot early so we have it for fallback get_messages, download, and private chat routing
+        bot_obj, err = await get_or_start_userbot_for_chat(user_id, chat_id)
+
+        # Handle private chat ("in bot")
+        if event.is_private:
+            target_chat_id = getattr(bot_obj, "current_vc_chat_id", None) if bot_obj else None
+            if not target_chat_id:
+                running_vcs = [
+                    getattr(b, "current_vc_chat_id", None)
+                    for b in userbot_manager.get_running_userbots_for_owner(user_id)
+                    if getattr(b, "current_vc_chat_id", None)
+                ]
+                if running_vcs:
+                    target_chat_id = running_vcs[0]
+            
+            if not target_chat_id:
+                await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» ❌ No Active Voice Chat Found</b>\n\n"
+                        "⚠️ <i>You sent this command in private chat, but your userbot is not currently connected to any Voice Chat in a group.</i>\n\n"
+                        "💡 <b>Tip :</b> Join or start a Group Voice Chat with your userbot first, or send the command directly in the group!</blockquote>"
+                    )
+                )
+                return
+            chat_id = target_chat_id
+
+        # If main bot couldn't read the replied message (e.g. Bot privacy in group), use userbot client!
+        if event.is_reply and not reply_msg and bot_obj and bot_obj.client:
+            r_id = getattr(getattr(event, "reply_to", None), "reply_to_msg_id", None)
+            if r_id:
+                try:
+                    reply_msg = await bot_obj.client.get_messages(chat_id, ids=r_id)
+                except Exception as ub_get_err:
+                    logger.debug(f"bot_obj get_messages fallback exception: {ub_get_err}")
+
         local_file_path = None
         audio_title = None
         audio_duration = 0
         
-        display_query = audio_title or query or "Replied Media"
+        display_query = query or "Replied Media"
         progress_msg = await event.respond(f"<b>» 🎧 Playing :</b> <b>{display_query}</b>")
         
-        # 1. Handle replied media (Audio, Video, Voice, Document)
-        if reply_msg and (reply_msg.audio or reply_msg.video or reply_msg.voice or reply_msg.document):
+        # 1. Handle replied media (Audio, Video, Voice, Video Note, Document)
+        if reply_msg and (
+            reply_msg.audio or reply_msg.video or getattr(reply_msg, "video_note", None) or
+            reply_msg.voice or reply_msg.document or getattr(reply_msg, "file", None)
+        ):
             media_obj, audio_title, audio_duration = extract_media_info(reply_msg)
             if media_obj:
                 os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
+                # Auto-adjust play_type for audio/voice vs video
+                is_voice_rec = bool(getattr(reply_msg, "voice", None))
+                is_vid = bool(getattr(reply_msg, "video", None) or getattr(reply_msg, "video_note", None))
+                if not is_vid and is_voice_rec:
+                    play_type = "audio"
+                elif is_vid and ("vplay" in cmd or "vstream" in cmd):
+                    play_type = "video"
+
                 try:
                     local_file_path = await client.download_media(
                         reply_msg,
@@ -595,33 +659,83 @@ def register_handlers(client):
                         progress_callback=lambda c, t: download_progress_sync(c, t, progress_msg, "DOWNLOADING MEDIA")
                     )
                 except Exception as dl_err:
-                    logger.error(f"Failed to download replied media: {dl_err}")
-                    await progress_msg.edit(
-                        utils.format_html_message(
-                            f"<blockquote><b>» ❌ Failed To Download Media</b>\n\n"
-                            f"⚠️ <b>Error :</b> <code>{dl_err}</code></blockquote>"
+                    logger.warning(f"Main bot failed to download replied media: {dl_err}, trying userbot fallback...")
+                    if bot_obj and bot_obj.client:
+                        try:
+                            local_file_path = await bot_obj.client.download_media(
+                                reply_msg,
+                                file="downloads/"
+                            )
+                        except Exception as ub_dl_err:
+                            logger.error(f"Userbot download also failed: {ub_dl_err}")
+                    if not local_file_path:
+                        await progress_msg.edit(
+                            utils.format_html_message(
+                                f"<blockquote><b>» ❌ Failed To Download Media</b>\n\n"
+                                f"⚠️ <b>Error :</b> <code>{dl_err}</code></blockquote>"
+                            )
                         )
-                    )
+                        try:
+                            await asyncio.sleep(5)
+                            await progress_msg.delete()
+                        except Exception:
+                            pass
+                        return
+
+                if audio_title:
                     try:
-                        await asyncio.sleep(5)
-                        await progress_msg.delete()
+                        await progress_msg.edit(f"<b>» 🎧 Playing :</b> <b>{audio_title}</b>")
                     except Exception:
                         pass
-                    return
         elif not query:
-            await progress_msg.edit(
-                utils.format_html_message(
-                    f"<blockquote><b>» 💡 Music Player Usage Guide</b>\n\n"
-                    f"• <code>.{cmd} &lt;song name&gt;</code> (E.G. <code>.{cmd} Faded Alan Walker</code>)\n"
-                    f"• <code>/{cmd} &lt;song name&gt;</code>\n"
-                    f"• <code>.playforce &lt;song name&gt;</code> (Force Play Now)\n"
-                    f"• <code>.queue</code> / <code>.skip</code>\n"
-                    f"• <b>Thumbnail Mode :</b> <code>.thumb on</code> Or <code>.thumb off</code>\n"
-                    f"• Reply To Any Audio/Video File With <code>.{cmd}</code>\n\n"
-                    f"⚡ <i>Start Group Voice Chat Before Streaming.</i></blockquote>"
+            # If reply message couldn't be fetched by bot, try via userbot before giving up
+            if event.is_reply and bot_obj and bot_obj.client:
+                r_id = getattr(getattr(event, "reply_to", None), "reply_to_msg_id", None)
+                if r_id:
+                    try:
+                        reply_msg = await bot_obj.client.get_messages(chat_id, ids=r_id)
+                    except Exception:
+                        pass
+            if reply_msg and (
+                reply_msg.audio or reply_msg.video or getattr(reply_msg, "video_note", None) or
+                reply_msg.voice or reply_msg.document or getattr(reply_msg, "file", None)
+            ):
+                media_obj, audio_title, audio_duration = extract_media_info(reply_msg)
+                if media_obj:
+                    os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
+                    is_voice_rec = bool(getattr(reply_msg, "voice", None))
+                    is_vid = bool(getattr(reply_msg, "video", None) or getattr(reply_msg, "video_note", None))
+                    if not is_vid and is_voice_rec:
+                        play_type = "audio"
+                    elif is_vid and ("vplay" in cmd or "vstream" in cmd):
+                        play_type = "video"
+                    try:
+                        local_file_path = await bot_obj.client.download_media(
+                            reply_msg,
+                            file="downloads/"
+                        )
+                    except Exception as ub_dl_err:
+                        logger.error(f"Userbot download failed: {ub_dl_err}")
+                    if audio_title:
+                        try:
+                            await progress_msg.edit(f"<b>» 🎧 Playing :</b> <b>{audio_title}</b>")
+                        except Exception:
+                            pass
+
+            if not local_file_path and not query:
+                await progress_msg.edit(
+                    utils.format_html_message(
+                        f"<blockquote><b>» 💡 Music Player Usage Guide</b>\n\n"
+                        f"• <code>.{cmd} &lt;song name&gt;</code> (E.G. <code>.{cmd} Faded Alan Walker</code>)\n"
+                        f"• <code>/{cmd} &lt;song name&gt;</code>\n"
+                        f"• <code>.playforce &lt;song name&gt;</code> (Force Play Now)\n"
+                        f"• <code>.queue</code> / <code>.skip</code>\n"
+                        f"• <b>Thumbnail Mode :</b> <code>.thumb on</code> Or <code>.thumb off</code>\n"
+                        f"• Reply To Any Audio/Video/Voice File With <code>.{cmd}</code>\n\n"
+                        f"⚡ <i>Start Group Voice Chat Before Streaming.</i></blockquote>"
+                    )
                 )
-            )
-            return
+                return
 
         # Fetch metadata if it's a query and not a local file
         if query and not local_file_path:
@@ -638,9 +752,9 @@ def register_handlers(client):
             except Exception as yt_err:
                 logger.warning(f"Error fetching YouTube details in player: {yt_err}")
 
-        # 2. Pre-validate userbot BEFORE queue check — so accounts with no valid userbot
-        #    get an error immediately instead of being silently queued and failing at playback.
-        bot_obj, err = await get_or_start_userbot_for_chat(user_id, chat_id)
+        # 2. Pre-validate userbot BEFORE queue check
+        if not bot_obj:
+            bot_obj, err = await get_or_start_userbot_for_chat(user_id, chat_id)
         if not bot_obj:
             await progress_msg.edit(err)
             try:
@@ -735,7 +849,8 @@ def register_handlers(client):
             
             if not success or not song_info:
                 ub_handle = f"@{bot_obj.username}" if bot_obj.username else bot_obj.name
-                utils.report_error(f"player.play_failed:{chat_id}", RuntimeError(str(msg)))
+                if "peeruser" not in str(msg).lower() and "private user" not in str(msg).lower():
+                    utils.report_error(f"player.play_failed:{chat_id}", RuntimeError(str(msg)))
                 await progress_msg.edit(
                     utils.format_html_message(
                         "<blockquote><b>» ❌ Playback Failed</b>\n\n"
@@ -772,7 +887,7 @@ def register_handlers(client):
             local_fp = song_info["file_path"]
             async def _stream_companion_play(c_bot):
                 try:
-                    await c_bot.play_song(
+                    c_ok, c_msg, _ = await c_bot.play_song(
                         query="",
                         play_type=play_type,
                         chat_id=chat_id,
@@ -780,8 +895,11 @@ def register_handlers(client):
                         title=song_info.get("title"),
                         duration=song_info.get("duration", 30)
                     )
-                    await c_bot.unmute_mic(chat_id)
-                    logger.info(f"Companion userbot {c_bot.session_id} streaming in VC {chat_id}")
+                    if c_ok:
+                        await c_bot.unmute_mic(chat_id)
+                        logger.info(f"Companion userbot {c_bot.session_id} streaming in VC {chat_id}")
+                    else:
+                        logger.debug(f"Companion userbot {c_bot.session_id} play skipped: {c_msg}")
                 except Exception as c_err:
                     logger.warning(f"Companion userbot {c_bot.session_id} stream error: {c_err}")
 

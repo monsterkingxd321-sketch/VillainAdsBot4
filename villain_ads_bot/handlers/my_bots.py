@@ -24,13 +24,36 @@ _np_autoplay_state = {}
 
 def extract_media_info(msg):
     """
-    Extracts file path, title, and duration from a message containing audio/voice/video.
+    Extracts media object, title, and duration from a message containing audio/voice/video/video_note/document.
     """
-    media = msg.audio or msg.voice or msg.video or getattr(msg, "gif", None)
-    if not media and msg.document:
-        mime = getattr(msg.document, "mime_type", "")
-        if mime.startswith("audio/") or mime.startswith("video/"):
-            media = msg.document
+    if not msg:
+        return None, None, 30
+
+    media = (
+        getattr(msg, "audio", None) or
+        getattr(msg, "voice", None) or
+        getattr(msg, "video", None) or
+        getattr(msg, "video_note", None) or
+        getattr(msg, "gif", None)
+    )
+    if not media and getattr(msg, "document", None):
+        doc = msg.document
+        mime = (getattr(doc, "mime_type", "") or "").lower()
+        file_name = (getattr(getattr(msg, "file", None), "name", "") or "").lower()
+        ext = os.path.splitext(file_name)[1].lower() if file_name else ""
+        media_exts = {
+            ".mp3", ".ogg", ".opus", ".m4a", ".wav", ".flac", ".aac", ".wma",
+            ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".3gp", ".ts", ".m4v"
+        }
+        if mime.startswith("audio/") or mime.startswith("video/") or ext in media_exts:
+            media = doc
+
+    if not media and getattr(msg, "media", None):
+        med = msg.media
+        if hasattr(med, "document"):
+            media = med.document
+        elif hasattr(med, "video"):
+            media = med.video
             
     if not media:
         return None, None, 30
@@ -39,20 +62,34 @@ def extract_media_info(msg):
     duration = 30
     
     # Extract title
-    if msg.audio:
-        title = getattr(msg.audio, "title", None) or getattr(msg.audio, "file_name", None) or "Audio File"
-    elif msg.voice:
-        title = "Voice Note"
-    elif msg.video:
-        title = getattr(msg.video, "file_name", None) or "Video File"
-    elif msg.document:
+    file_name = getattr(getattr(msg, "file", None), "name", None)
+    if getattr(msg, "voice", None):
+        title = "Voice Message Recording"
+    elif getattr(msg, "video_note", None):
+        title = "Video Note Recording"
+    elif file_name:
+        title = file_name
+    elif getattr(msg, "video", None):
+        title = "Video File"
+    elif getattr(msg, "audio", None):
+        title = None
+        for attr in getattr(media, "attributes", []):
+            if hasattr(attr, "title") and attr.title:
+                performer = getattr(attr, "performer", "")
+                title = f"{performer} - {attr.title}" if performer else attr.title
+                break
+        title = title or "Audio File"
+    elif getattr(msg, "document", None):
         title = getattr(msg.document, "file_name", None) or "Document Media"
         
     # Extract duration
     for attr in getattr(media, "attributes", []):
-        if hasattr(attr, "duration"):
-            duration = attr.duration
-            break
+        if hasattr(attr, "duration") and attr.duration:
+            try:
+                duration = int(float(attr.duration))
+                break
+            except Exception:
+                pass
             
     return media, title, duration
 

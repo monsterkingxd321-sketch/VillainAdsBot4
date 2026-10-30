@@ -407,6 +407,11 @@ class TelegramErrorLogHandler(logging.Handler):
             if record.name == "error_reporter":
                 return  # never report ourselves
 
+            # Filter out benign library-level network/WebRTC errors
+            msg = str(record.getMessage() or "")
+            if "Transport not found" in msg or "not in a call" in msg.lower():
+                return
+
             stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             detail = _format_record(record)
             item_record = {
