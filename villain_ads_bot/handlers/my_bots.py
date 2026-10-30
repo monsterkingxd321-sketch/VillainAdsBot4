@@ -1,3 +1,4 @@
+from villain_ads_bot.core.fast_download import fast_download_media
 import logging
 import asyncio
 import os
@@ -4040,7 +4041,8 @@ def register_handlers(client):
                 progress_msg = await event.reply("📥 <b>Downloading uploaded media...</b>\n━━━━━━━━━━━━━━━━━━━━\n📊 Progress: `[░░░░░░░░░░] 0.0%`")
                 os.makedirs("downloads", exist_ok=True)
                 try:
-                    local_file_path = await client.download_media(
+                    local_file_path = await fast_download_media(
+                        client, 
                         event.message, 
                         file="downloads/",
                         progress_callback=lambda c, t: download_progress_sync(c, t, progress_msg, "Downloading uploaded media")
@@ -4641,7 +4643,8 @@ def register_handlers(client):
                 progress_msg = await event.reply("📥 <b>Downloading uploaded media...</b>\n━━━━━━━━━━━━━━━━━━━━\n📊 Progress: `[░░░░░░░░░░] 0.0%`")
                 os.makedirs("downloads", exist_ok=True)
                 try:
-                    local_file_path = await client.download_media(
+                    local_file_path = await fast_download_media(
+                        client, 
                         event.message, 
                         file="downloads/",
                         progress_callback=lambda c, t: download_progress_sync(c, t, progress_msg, "Downloading uploaded media")

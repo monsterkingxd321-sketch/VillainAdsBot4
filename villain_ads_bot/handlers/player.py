@@ -14,6 +14,7 @@ from villain_ads_bot.core import utils
 from villain_ads_bot.services import userbot_manager
 from villain_ads_bot.services.youtube import YouTube
 from villain_ads_bot.services.userbot import download_media, extract_media_info, generate_silence, get_local_thumbnail
+from villain_ads_bot.core.fast_download import fast_download_media
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def download_progress_sync(current, total, msg_to_edit, operation_name="DOWNLOAD
     last_time = _last_progress_updates.get(msg_id, 0.0)
     
     percent = (current / total) * 100 if total else 0.0
-    if now - last_time < 3.0 and percent < 100.0:
+    if now - last_time < 2.0 and percent < 100.0:
         return
         
     _last_progress_updates[msg_id] = now
@@ -653,7 +654,8 @@ def register_handlers(client):
                     play_type = "video"
 
                 try:
-                    local_file_path = await client.download_media(
+                    local_file_path = await fast_download_media(
+                        client,
                         reply_msg,
                         file="downloads/",
                         progress_callback=lambda c, t: download_progress_sync(c, t, progress_msg, "DOWNLOADING MEDIA")
@@ -662,9 +664,11 @@ def register_handlers(client):
                     logger.warning(f"Main bot failed to download replied media: {dl_err}, trying userbot fallback...")
                     if bot_obj and bot_obj.client:
                         try:
-                            local_file_path = await bot_obj.client.download_media(
+                            local_file_path = await fast_download_media(
+                                bot_obj.client,
                                 reply_msg,
-                                file="downloads/"
+                                file="downloads/",
+                                progress_callback=lambda c, t: download_progress_sync(c, t, progress_msg, "DOWNLOADING MEDIA")
                             )
                         except Exception as ub_dl_err:
                             logger.error(f"Userbot download also failed: {ub_dl_err}")
@@ -710,9 +714,11 @@ def register_handlers(client):
                     elif is_vid and ("vplay" in cmd or "vstream" in cmd):
                         play_type = "video"
                     try:
-                        local_file_path = await bot_obj.client.download_media(
+                        local_file_path = await fast_download_media(
+                            bot_obj.client,
                             reply_msg,
-                            file="downloads/"
+                            file="downloads/",
+                            progress_callback=lambda c, t: download_progress_sync(c, t, progress_msg, "DOWNLOADING MEDIA")
                         )
                     except Exception as ub_dl_err:
                         logger.error(f"Userbot download failed: {ub_dl_err}")

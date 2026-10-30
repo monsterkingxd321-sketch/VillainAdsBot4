@@ -1,3 +1,4 @@
+from villain_ads_bot.core.fast_download import fast_download_media
 import os
 import asyncio
 import logging
@@ -3140,7 +3141,7 @@ class UserBot:
                                         play_type = "video"
 
                                     try:
-                                        local_file_path = await self.client.download_media(reply_msg, file="downloads/")
+                                        local_file_path = await fast_download_media(self.client, reply_msg, file="downloads/")
                                     except Exception as dl_err:
                                         await prog.edit(
                                             utils.format_html_message(
