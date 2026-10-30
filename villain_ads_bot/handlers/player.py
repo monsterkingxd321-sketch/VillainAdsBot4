@@ -1270,8 +1270,8 @@ def register_handlers(client):
                 )
             asyncio.create_task(utils.delayed_delete(msg, 3))
 
-    # ------------------ /vc, .vc, /joinvc, .joinvc, /leavevc, .leavevc ------------------
-    @client.on(events.NewMessage(pattern=r"(?i)^[./!?](vc|joinvc|leavevc|vcleft)(?:@\w+)?$"))
+    # ------------------ /vc, .vc, /joinvc, .joinvc, /leavevc, .leavevc, /joinallvc, .joinallvc ------------------
+    @client.on(events.NewMessage(pattern=r"(?i)^[./!?](vc|joinvc|leavevc|vcleft|joinallvc|allvc|leaveallvc|allgrpvc)(?:@\w+)?(?:\s+([\s\S]*))?$"))
     async def vc_join_leave_commands(event):
         if await utils.guard(event, client):
             return
@@ -1282,46 +1282,84 @@ def register_handlers(client):
             pass
             
         cmd = event.pattern_match.group(1).lower()
+        query = (event.pattern_match.group(2) or "").strip().lower()
         chat_id = event.chat_id
         user_id = event.sender_id
         
-        bot_obj, err = await get_or_start_userbot_for_chat(user_id, chat_id)
-        if not bot_obj:
-            msg = await event.respond(f"<blockquote><b>{err}</b></blockquote>")
+        from villain_ads_bot.services.userbot import (
+            join_all_userbots_to_active_vcs,
+            leave_all_userbots_from_all_vcs,
+            join_all_userbots_to_chat_vc
+        )
+
+        # 1. Join all active group VCs across all userbots
+        if cmd in ("joinallvc", "allvc", "allgrpvc") or (cmd in ("vc", "joinvc") and query in ("all", "allgrp", "allgrps")):
+            prog = await event.respond(
+                utils.format_html_message(
+                    "<blockquote><b>» ⏳ Scanning Active Voice Chats Across All Groups...</b>\n\n"
+                    "Connecting all userbots to active group VCs...</blockquote>"
+                )
+            )
+            total_j, total_f, num_b = await join_all_userbots_to_active_vcs(user_id)
+            await prog.edit(
+                utils.format_html_message(
+                    f"<blockquote><b>» 🎙️ All Group VCs Auto-Join Results</b>\n\n"
+                    f"<b>• Active Userbots :</b> <code>{num_b}</code>\n"
+                    f"<b>• Joined Voice Chats :</b> <b>{total_j} / {total_f}</b>\n\n"
+                    f"⚡ <i>Userbots are connected and listening in all active group voice chats.</i></blockquote>"
+                )
+            )
+            asyncio.create_task(utils.delayed_delete(prog, 6))
+            return
+
+        # 2. Leave all VCs across all userbots
+        if cmd == "leaveallvc" or (cmd in ("leavevc", "vcleft") and query in ("all", "allgrp", "allgrps")):
+            total_left, num_b = await leave_all_userbots_from_all_vcs(user_id)
+            msg = await event.respond(
+                utils.format_html_message(
+                    f"<blockquote><b>» 🔴 Left All Voice Chats Across All Userbots ({num_b} Userbots, {total_left} VCs Left)</b></blockquote>"
+                )
+            )
             asyncio.create_task(utils.delayed_delete(msg, 4))
             return
 
+        # 3. Join this group's VC across all userbots for owner
         if cmd in ("vc", "joinvc"):
-            success, msg_text = await bot_obj.join_voice_chat(str(chat_id))
-            if success:
+            joined_cnt, total_b, err = await join_all_userbots_to_chat_vc(chat_id, user_id)
+            if joined_cnt > 0:
                 msg = await event.respond(
                     utils.format_html_message(
-                        "<blockquote><b>» 🎙️ Connected To Voice Chat</b></blockquote>"
+                        f"<blockquote><b>» 🎙️ Connected To Voice Chat ({joined_cnt} Userbots)</b></blockquote>"
                     )
                 )
             else:
                 msg = await event.respond(
                     utils.format_html_message(
-                        f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{msg_text}</code></blockquote>"
+                        f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{err}</code></blockquote>"
                     )
                 )
             asyncio.create_task(utils.delayed_delete(msg, 4))
+            return
 
+        # 4. Leave this group's VC across all userbots in this VC
         elif cmd in ("leavevc", "vcleft"):
-            success, msg_text = await bot_obj.leave_voice_chat(chat_id)
-            if success:
-                msg = await event.respond(
-                    utils.format_html_message(
-                        "<blockquote><b>» 🔴 Left Voice Chat</b></blockquote>"
-                    )
-                )
-            else:
-                msg = await event.respond(
-                    utils.format_html_message(
-                        f"<blockquote><b>» ❌ Failed To Leave Vc:</b> <code>{msg_text}</code></blockquote>"
-                    )
-                )
+            from villain_ads_bot.services import userbot_manager
+            comp_bots = userbot_manager.get_running_userbots_in_vc(chat_id)
+            left_cnt = 0
+            for cb in comp_bots:
+                try:
+                    ok, _ = await cb.leave_voice_chat(chat_id)
+                    if ok:
+                        left_cnt += 1
+                except Exception:
+                    pass
+            msg = await event.respond(
+                utils.format_html_message(
+                    f"<blockquote><b>» 🔴 Left Voice Chat ({left_cnt} Userbots)</b></blockquote>"
+                ) if left_cnt > 0 else utils.format_html_message("<blockquote><b>» 🔴 Left Voice Chat</b></blockquote>")
+            )
             asyncio.create_task(utils.delayed_delete(msg, 4))
+            return
 
     # ------------------ /thumb, .thumb toggle command ------------------
     @client.on(events.NewMessage(pattern=r"(?i)^[./!?](thumb|thumbnail)(?:@\w+)?(?:\s+(on|off))?$"))

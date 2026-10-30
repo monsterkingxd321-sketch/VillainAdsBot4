@@ -1766,6 +1766,67 @@ class UserBot:
             utils.report_error(f"join_voice_chat:{self.session_id}", e)
             return False, "Failed to join the voice chat. The error was reported to the admin team."
 
+    async def find_active_group_vcs(self) -> list:
+        """
+        Scans all group dialogs of this userbot and returns a list of (chat_id, chat_title, entity)
+        for all groups that currently have an active Voice Chat.
+        Uses fast call_active check to avoid excessive API requests.
+        """
+        if not self.is_running or not self.client or not self.client.is_connected():
+            return []
+
+        active_vcs = []
+        try:
+            dialogs = await asyncio.wait_for(self.client.get_dialogs(limit=300), timeout=25.0)
+            group_dialogs = [
+                d for d in dialogs 
+                if d.is_group and not getattr(d.entity, "broadcast", False)
+            ]
+
+            checked_ids = set()
+            # Fast check: call_active or call_not_empty flag directly present on entity
+            for d in group_dialogs:
+                ent = d.entity
+                has_active = bool(
+                    getattr(ent, "call_active", False) or 
+                    getattr(ent, "call_not_empty", False)
+                )
+                if has_active:
+                    active_vcs.append((d.id, d.title or f"Chat {d.id}", ent))
+                    checked_ids.add(d.id)
+
+            # Fallback probe on top 15 recently active group dialogs if not already detected
+            candidates = [d for d in group_dialogs if d.id not in checked_ids][:15]
+            if candidates:
+                from telethon.tl.functions.channels import GetFullChannelRequest
+                from telethon.tl.functions.messages import GetFullChatRequest
+                from telethon.tl.types import Channel, GroupCallDiscarded
+
+                async def _probe(d):
+                    try:
+                        ent = d.entity
+                        target_ent = await self.client.get_input_entity(ent)
+                        if isinstance(ent, Channel) or hasattr(ent, "access_hash"):
+                            full = await self.client(GetFullChannelRequest(target_ent))
+                        else:
+                            full = await self.client(GetFullChatRequest(getattr(ent, "id", d.id)))
+                        g_call = full.full_chat.call
+                        if g_call and not isinstance(g_call, GroupCallDiscarded):
+                            return (d.id, d.title or f"Chat {d.id}", ent)
+                    except Exception:
+                        pass
+                    return None
+
+                results = await asyncio.gather(*[_probe(d) for d in candidates], return_exceptions=True)
+                for r in results:
+                    if r and isinstance(r, tuple):
+                        active_vcs.append(r)
+
+        except Exception as e:
+            logger.warning(f"Error in find_active_group_vcs for {self.session_id}: {e}")
+
+        return active_vcs
+
     async def join_all_active_group_vcs(self) -> tuple:
         """
         Scans all groups of this userbot, finds groups with active voice chats, and joins them.
@@ -1773,22 +1834,108 @@ class UserBot:
         """
         if not self.is_running or not self.client:
             return 0, 0
-            
-        groups = await self.get_groups(force_refresh=True)
-        joined = 0
-        total_vcs = 0
-        
-        for g in groups:
-            chat_id = getattr(g, "id", None) or (g.get("id") if isinstance(g, dict) else g)
+
+        active_vcs = await self.find_active_group_vcs()
+        if not active_vcs:
+            return 0, 0
+
+        joined_count = 0
+        total_found = len(active_vcs)
+
+        for chat_id, title, entity in active_vcs:
             try:
+                if chat_id in getattr(self, "joined_vcs", set()):
+                    joined_count += 1
+                    continue
+
                 success, _ = await self.join_voice_chat(str(chat_id))
                 if success:
-                    joined += 1
-                    total_vcs += 1
-            except Exception:
+                    joined_count += 1
+            except Exception as e:
+                logger.warning(f"Could not join VC in {title} ({chat_id}): {e}")
                 continue
-                
-        return joined, total_vcs
+
+        return joined_count, total_found
+
+async def join_all_userbots_to_active_vcs(owner_id: Optional[int] = None) -> tuple:
+    """
+    Finds all running userbots for the given owner (or all running userbots),
+    scans active group VCs across each bot, and joins them concurrently.
+    Returns (total_joined: int, total_found: int, bot_count: int).
+    """
+    from villain_ads_bot.services import userbot_manager
+    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
+    if not running_bots:
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
+
+    if not running_bots:
+        return 0, 0, 0
+
+    results = await asyncio.gather(
+        *[b.join_all_active_group_vcs() for b in running_bots],
+        return_exceptions=True
+    )
+
+    total_joined = 0
+    total_found = 0
+    for r in results:
+        if isinstance(r, tuple):
+            total_joined += r[0]
+            total_found += r[1]
+
+    return total_joined, total_found, len(running_bots)
+
+
+async def leave_all_userbots_from_all_vcs(owner_id: Optional[int] = None) -> tuple:
+    """
+    Leaves all voice chats across all running userbots.
+    Returns (total_left: int, bot_count: int).
+    """
+    from villain_ads_bot.services import userbot_manager
+    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
+    if not running_bots:
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
+
+    if not running_bots:
+        return 0, 0
+
+    results = await asyncio.gather(
+        *[b.leave_all_voice_chats() for b in running_bots],
+        return_exceptions=True
+    )
+
+    total_left = sum(r[0] for r in results if isinstance(r, tuple))
+    return total_left, len(running_bots)
+
+
+async def join_all_userbots_to_chat_vc(chat_id: Union[int, str], owner_id: Optional[int] = None) -> tuple:
+    """
+    Connects all running userbots for the owner to chat_id's voice chat.
+    Returns (joined_count: int, total_bots: int, err_msg: str).
+    """
+    from villain_ads_bot.services import userbot_manager
+    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
+    if not running_bots:
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
+
+    if not running_bots:
+        return 0, 0, "No active userbots running."
+
+    results = await asyncio.gather(
+        *[b.join_voice_chat(str(chat_id)) for b in running_bots],
+        return_exceptions=True
+    )
+
+    joined_count = sum(1 for r in results if isinstance(r, tuple) and r[0] is True)
+    err = ""
+    for r in results:
+        if isinstance(r, tuple) and not r[0]:
+            err = r[1]
+            break
+
+    return joined_count, len(running_bots), err
+
+
 
     async def leave_voice_chat(self, chat_id: Optional[int] = None) -> tuple:
         """
@@ -3009,7 +3156,7 @@ class UserBot:
             if True:
                 raw_text = (event.raw_text or "").strip()
                 # Check for music/player commands (.play, /play, .vplay, .playforce, .skip, .queue, .song, etc.)
-                match = re.match(r"(?i)^[./!?](play|vplay|cplay|stream|vstream|playforce|vplayforce|cplayforce|forceplay|vforceplay|skip|next|cskip|cnext|queue|q|playlist|cqueue|pause|resume|stop|end|mute|unmute|replay|loop|vc|joinvc|leavevc|vcleft|song|music|thumb|thumbnail)(?:@\w+)?(?:\s+([\s\S]*))?$", raw_text)
+                match = re.match(r"(?i)^[./!?](play|vplay|cplay|stream|vstream|playforce|vplayforce|cplayforce|forceplay|vforceplay|skip|next|cskip|cnext|queue|q|playlist|cqueue|pause|resume|stop|end|mute|unmute|replay|loop|vc|joinvc|leavevc|vcleft|joinallvc|allvc|leaveallvc|allgrpvc)(?:@\w+)?(?:\s+([\s\S]*))?$", raw_text)
                 if match:
                     sender_id = event.sender_id
                     sess = database.get_session(self.session_id)
@@ -3732,48 +3879,79 @@ class UserBot:
                             asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
-                        elif cmd in ("vc", "joinvc", "joinallvc"):
+                        elif cmd in ("vc", "joinvc", "joinallvc", "allvc", "allgrpvc"):
                             try:
                                 await event.delete()
                             except Exception:
                                 pass
-                            success, msg = await self.join_voice_chat(str(chat_id))
-                            from villain_ads_bot.services import userbot_manager
                             owner_uid = getattr(self, "owner_id", None) or event.sender_id
-                            comp_bots = userbot_manager.get_running_userbots_for_owner(owner_uid, exclude_bot=self)
-                            joined_cnt = 1 if success else 0
-                            for cb in comp_bots:
-                                try:
-                                    c_ok, _ = await cb.join_voice_chat(str(chat_id))
-                                    if c_ok:
-                                        joined_cnt += 1
-                                except Exception:
-                                    pass
+                            sub_arg = (query or "").strip().lower()
+
+                            # If command is .joinallvc, .allvc, .allgrpvc OR (.joinvc all, .vc all)
+                            if cmd in ("joinallvc", "allvc", "allgrpvc") or (sub_arg in ("all", "allgrp", "allgrps")):
+                                prog = await event.respond(
+                                    utils.format_html_message(
+                                        "<blockquote><b>» ⏳ Scanning Active Voice Chats Across All Groups...</b>\n\n"
+                                        "Connecting all userbots to active group VCs...</blockquote>"
+                                    )
+                                )
+                                total_j, total_f, num_b = await join_all_userbots_to_active_vcs(owner_uid)
+                                await prog.edit(
+                                    utils.format_html_message(
+                                        f"<blockquote><b>» 🎙️ All Group VCs Auto-Join Results</b>\n\n"
+                                        f"<b>• Active Userbots :</b> <code>{num_b}</code>\n"
+                                        f"<b>• Joined Voice Chats :</b> <b>{total_j} / {total_f}</b>\n\n"
+                                        f"⚡ <i>Userbots are connected and listening in all active group voice chats.</i></blockquote>"
+                                    )
+                                )
+                                asyncio.create_task(utils.delayed_delete(prog, 6))
+                                return
+
+                            # Otherwise: join THIS group's active voice chat (all userbots)
+                            joined_cnt, total_b, err = await join_all_userbots_to_chat_vc(chat_id, owner_uid)
                             prog = await event.respond(
                                 utils.format_html_message(
                                     f"<blockquote><b>» 🎙️ Connected To Voice Chat ({joined_cnt} Userbots)</b></blockquote>"
-                                ) if (success or joined_cnt > 0) else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{msg}</code></blockquote>")
+                                ) if joined_cnt > 0 else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Join Vc:</b> <code>{err}</code></blockquote>")
                             )
                             asyncio.create_task(utils.delayed_delete(prog, 4))
                             return
-                            
+
                         elif cmd in ("leavevc", "vcleft", "leaveallvc"):
                             try:
                                 await event.delete()
                             except Exception:
                                 pass
-                            success, msg = await self.leave_voice_chat(chat_id)
+                            owner_uid = getattr(self, "owner_id", None) or event.sender_id
+                            sub_arg = (query or "").strip().lower()
+
+                            if cmd == "leaveallvc" or sub_arg in ("all", "allgrp", "allgrps"):
+                                total_left, num_b = await leave_all_userbots_from_all_vcs(owner_uid)
+                                prog = await event.respond(
+                                    utils.format_html_message(
+                                        f"<blockquote><b>» 🔴 Left All Voice Chats Across All Userbots ({num_b} Userbots, {total_left} VCs Left)</b></blockquote>"
+                                    )
+                                )
+                                asyncio.create_task(utils.delayed_delete(prog, 4))
+                                return
+
+                            # Otherwise: leave this group's VC across all userbots in this VC
                             from villain_ads_bot.services import userbot_manager
-                            comp_bots = userbot_manager.get_running_userbots_in_vc(chat_id, exclude_bot=self)
+                            comp_bots = userbot_manager.get_running_userbots_in_vc(chat_id)
+                            if self not in comp_bots:
+                                comp_bots.append(self)
+                            left_cnt = 0
                             for cb in comp_bots:
                                 try:
-                                    await cb.leave_voice_chat(chat_id)
+                                    ok, _ = await cb.leave_voice_chat(chat_id)
+                                    if ok:
+                                        left_cnt += 1
                                 except Exception:
                                     pass
                             prog = await event.respond(
                                 utils.format_html_message(
-                                    "<blockquote><b>» 🔴 Left Voice Chat</b></blockquote>"
-                                ) if success else utils.format_html_message(f"<blockquote><b>» ❌ Failed To Leave Vc:</b> <code>{msg}</code></blockquote>")
+                                    f"<blockquote><b>» 🔴 Left Voice Chat ({left_cnt} Userbots)</b></blockquote>"
+                                ) if left_cnt > 0 else utils.format_html_message("<blockquote><b>» 🔴 Left Voice Chat</b></blockquote>")
                             )
                             asyncio.create_task(utils.delayed_delete(prog, 4))
                             return
