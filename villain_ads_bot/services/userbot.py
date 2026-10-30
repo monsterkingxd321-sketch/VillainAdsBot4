@@ -2298,16 +2298,17 @@ class UserBot:
             file_path = local_file
             title = title or "Uploaded Media"
             
-            # Extract accurate duration using ffprobe for local files
-            try:
-                import subprocess
-                cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                stdout, _ = await proc.communicate()
-                if proc.returncode == 0 and stdout:
-                    duration = int(float(stdout.decode().strip()))
-            except Exception:
-                pass
+            # Extract accurate duration using ffprobe for local files only if not already provided
+            if not duration or duration <= 0:
+                try:
+                    import subprocess
+                    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
+                    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    stdout, _ = await proc.communicate()
+                    if proc.returncode == 0 and stdout:
+                        duration = int(float(stdout.decode().strip()))
+                except Exception:
+                    pass
                 
             duration = duration or 30
         else:
@@ -3008,7 +3009,7 @@ class UserBot:
             if True:
                 raw_text = (event.raw_text or "").strip()
                 # Check for music/player commands (.play, /play, .vplay, .playforce, .skip, .queue, .song, etc.)
-                match = re.match(r"(?i)^[./!?](play|vplay|cplay|stream|vstream|playforce|vplayforce|cplayforce|forceplay|vforceplay|skip|next|cskip|cnext|queue|q|playlist|cqueue|pause|resume|stop|end|mute|unmute|vc|joinvc|leavevc|vcleft|song|music|thumb|thumbnail)(?:@\w+)?(?:\s+([\s\S]*))?$", raw_text)
+                match = re.match(r"(?i)^[./!?](play|vplay|cplay|stream|vstream|playforce|vplayforce|cplayforce|forceplay|vforceplay|skip|next|cskip|cnext|queue|q|playlist|cqueue|pause|resume|stop|end|mute|unmute|replay|loop|vc|joinvc|leavevc|vcleft|song|music|thumb|thumbnail)(?:@\w+)?(?:\s+([\s\S]*))?$", raw_text)
                 if match:
                     sender_id = event.sender_id
                     sess = database.get_session(self.session_id)
@@ -3363,16 +3364,11 @@ class UserBot:
                             if not sent_msg:
                                 if _main_bot:
                                     try:
-                                        if thumb_enabled and local_thumb and os.path.exists(local_thumb):
-                                            sent_msg = await asyncio.wait_for(
-                                                _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html"),
-                                                timeout=3.0
-                                            )
-                                        else:
-                                            sent_msg = await asyncio.wait_for(
-                                                _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html"),
-                                                timeout=3.0
-                                            )
+                                        # Main bot sends text card only (no thumbnail from bot)
+                                        sent_msg = await asyncio.wait_for(
+                                            _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html"),
+                                            timeout=3.0
+                                        )
                                     except Exception as mb_err:
                                         logger.debug(f"_main_bot send_message note: {mb_err}")
 
@@ -3404,7 +3400,8 @@ class UserBot:
                                 await event.delete()
                             except Exception:
                                 pass
-                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, play_next_in_queue, delete_now_playing_card
+                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, _chat_replay_mode, play_next_in_queue, delete_now_playing_card
+                            _chat_replay_mode.pop(chat_id, None)
                             
                             await delete_now_playing_card(chat_id, bot_obj=self)
                             old_p = _active_chat_players.get(chat_id)
@@ -3595,12 +3592,79 @@ class UserBot:
                             asyncio.create_task(utils.delayed_delete(prog, 3))
                             return
                             
+                        elif cmd in ("replay", "loop"):
+                            try:
+                                await event.delete()
+                            except Exception:
+                                pass
+                            from villain_ads_bot.handlers.player import _active_chat_players, _chat_replay_mode, _track_timer_tasks, play_next_in_queue
+                            
+                            active_sess = _active_chat_players.get(chat_id)
+                            if not active_sess or not active_sess.get("song_info"):
+                                prog = await event.respond(
+                                    utils.format_html_message(
+                                        "<blockquote><b>» ⚠️ No Active Stream Playing</b>\n\n"
+                                        "Play a song or video first using <code>.play</code> or <code>.vplay</code>.</blockquote>"
+                                    )
+                                )
+                                asyncio.create_task(utils.delayed_delete(prog, 4))
+                                return
+
+                            args = (event.text or "").strip().split()
+                            sub_cmd = args[1].lower() if len(args) > 1 else ""
+
+                            if sub_cmd == "off":
+                                _chat_replay_mode.pop(chat_id, None)
+                                prog = await event.respond(
+                                    utils.format_html_message(
+                                        "<blockquote><b>» 🔁 Replay Mode Disabled</b>\n\n"
+                                        "Track will not loop anymore.</blockquote>"
+                                    )
+                                )
+                                asyncio.create_task(utils.delayed_delete(prog, 4))
+                                return
+
+                            _chat_replay_mode[chat_id] = True
+                            song_info = active_sess.get("song_info")
+                            title = song_info.get("title", "Current Track")
+                            play_type = song_info.get("play_type", "audio")
+                            local_file = song_info.get("file_path") or song_info.get("local_file")
+
+                            prog = await event.respond(
+                                utils.format_html_message(
+                                    f"<blockquote><b>» 🔁 Replay Mode Enabled</b>\n\n"
+                                    f"<b>📌 Looping :</b> <b>{title}</b>\n"
+                                    f"⚡ <i>This {play_type} will play on loop continuously until <code>.end</code></i></blockquote>"
+                                )
+                            )
+                            asyncio.create_task(utils.delayed_delete(prog, 5))
+
+                            if local_file or song_info.get("query"):
+                                await self.play_song(
+                                    query=song_info.get("query", ""),
+                                    play_type=play_type,
+                                    chat_id=chat_id,
+                                    local_file=local_file,
+                                    title=title,
+                                    duration=song_info.get("duration", 30)
+                                )
+                                prev_timer = _track_timer_tasks.pop(chat_id, None)
+                                if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
+                                    prev_timer.cancel()
+                                dur = song_info.get("duration", 30) or 30
+                                async def track_auto_timer():
+                                    await asyncio.sleep(dur + 2)
+                                    await play_next_in_queue(chat_id)
+                                _track_timer_tasks[chat_id] = asyncio.create_task(track_auto_timer())
+                            return
+
                         elif cmd in ("stop", "end"):
                             try:
                                 await event.delete()
                             except Exception:
                                 pass
-                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, delete_now_playing_card
+                            from villain_ads_bot.handlers.player import _chat_queues, _active_chat_players, _track_timer_tasks, _chat_replay_mode, delete_now_playing_card
+                            _chat_replay_mode.pop(chat_id, None)
                             
                             old_p = _active_chat_players.pop(chat_id, None)
                             companion_bots = old_p.get("companion_bots", []) if old_p else []

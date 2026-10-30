@@ -306,3 +306,4 @@ async def fast_download_media(
             file=file,
             progress_callback=progress_callback
         )
+

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Track active playing sessions per chat: { chat_id: { "bot": UserBot, "song_info": dict, "msg_id": int } }
 _active_chat_players = {}
+_chat_replay_mode = {}
 _chat_queues = {}
 _track_timer_tasks = {}
 _main_bot = None
@@ -232,11 +233,16 @@ async def get_or_start_userbot_for_chat(user_id: int, chat_id: Optional[int] = N
 
 def build_now_playing_markup(chat_id: int, is_paused: bool = False, is_muted: bool = False):
     """
-    Generates inline control buttons for Now Playing cards.
+    Generates inline control buttons for Now Playing cards with Replay support.
     """
     pause_btn = utils.styled_button("▶️ Resume", f"player_resume_{chat_id}", style="success") if is_paused else utils.styled_button("⏸️ Pause", f"player_pause_{chat_id}", style="primary")
     mute_btn = utils.styled_button("🔊 Unmute", f"player_unmute_{chat_id}", style="success") if is_muted else utils.styled_button("🔇 Mute", f"player_mute_{chat_id}", style="primary")
     
+    is_replay = bool(_chat_replay_mode.get(chat_id, False))
+    replay_label = "🔁 Replay: ON" if is_replay else "🔁 Replay"
+    replay_style = "success" if is_replay else "primary"
+    replay_btn = utils.styled_button(replay_label, f"player_replay_{chat_id}", style=replay_style)
+
     return [
         [
             pause_btn,
@@ -245,8 +251,8 @@ def build_now_playing_markup(chat_id: int, is_paused: bool = False, is_muted: bo
         ],
         [
             utils.styled_button("⏭️ Skip", f"player_skip_{chat_id}", style="primary"),
-            utils.styled_button("📜 Queue", f"player_queue_{chat_id}", style="primary"),
-            utils.styled_button("🖼️ Thumb", f"player_thumb_toggle_{chat_id}", style="primary")
+            replay_btn,
+            utils.styled_button("📜 Queue", f"player_queue_{chat_id}", style="primary")
         ]
     ]
 
@@ -302,6 +308,54 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
     prev_timer = _track_timer_tasks.pop(chat_id, None)
     if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
         prev_timer.cancel()
+
+    active_sess = _active_chat_players.get(chat_id)
+
+    # 🔁 REPLAY MODE: If replay is active, repeat current song continuously until /end
+    if _chat_replay_mode.get(chat_id) and active_sess and active_sess.get("song_info") and active_sess.get("bot"):
+        current_song = active_sess.get("song_info")
+        bot_obj = active_sess.get("bot")
+        companion_bots = active_sess.get("companion_bots", [])
+        play_type = current_song.get("play_type", "audio")
+        local_fp = current_song.get("file_path") or current_song.get("local_file")
+
+        logger.info(f"🔁 Replay active for chat {chat_id}: replaying '{current_song.get('title')}' ({play_type})")
+
+        success, msg, song_info = await bot_obj.play_song(
+            query=current_song.get("query", ""),
+            play_type=play_type,
+            chat_id=chat_id,
+            local_file=local_fp,
+            title=current_song.get("title"),
+            duration=current_song.get("duration", 30)
+        )
+
+        if success:
+            if companion_bots and (local_fp or (song_info and song_info.get("file_path"))):
+                c_fp = local_fp or song_info.get("file_path")
+                async def _broadcast_rep():
+                    for cb in companion_bots:
+                        try:
+                            c_ok, _, _ = await cb.play_song(
+                                query="",
+                                play_type=play_type,
+                                chat_id=chat_id,
+                                local_file=c_fp,
+                                title=current_song.get("title"),
+                                duration=current_song.get("duration", 30)
+                            )
+                            if c_ok:
+                                await cb.unmute_mic(chat_id)
+                        except Exception:
+                            pass
+                asyncio.create_task(_broadcast_rep())
+
+            dur = current_song.get("duration", 30) or 30
+            async def track_auto_timer():
+                await asyncio.sleep(dur + 2)
+                await play_next_in_queue(chat_id, client)
+            _track_timer_tasks[chat_id] = asyncio.create_task(track_auto_timer())
+            return
         
     queue = _chat_queues.get(chat_id, [])
     if not queue:
@@ -420,16 +474,11 @@ async def _play_next_in_queue_locked(chat_id: int, client=None):
     sent_msg = None
     if _main_bot:
         try:
-            if thumb_enabled and local_thumb and os.path.exists(local_thumb):
-                sent_msg = await asyncio.wait_for(
-                    _main_bot.send_message(chat_id, np_text, file=local_thumb, buttons=buttons, parse_mode="html"),
-                    timeout=3.0
-                )
-            else:
-                sent_msg = await asyncio.wait_for(
-                    _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html"),
-                    timeout=3.0
-                )
+            # Main bot sends text card with buttons immediately (NO thumbnail from bot)
+            sent_msg = await asyncio.wait_for(
+                _main_bot.send_message(chat_id, np_text, buttons=buttons, parse_mode="html"),
+                timeout=3.0
+            )
         except Exception as send_err:
             logger.debug(f"Failed to send queue now playing via main_bot: {send_err}")
             
@@ -930,20 +979,11 @@ def register_handlers(client):
         except Exception:
             pass
 
-        if thumb_enabled and local_thumb and os.path.exists(local_thumb):
-            try:
-                sent_msg = await event.respond(np_text, file=local_thumb, buttons=buttons, parse_mode="html")
-            except Exception as send_err:
-                logger.warning(f"Failed to send with thumb: {send_err}, sending text-only")
-                try:
-                    sent_msg = await event.respond(np_text, buttons=buttons, parse_mode="html")
-                except Exception:
-                    pass
-        else:
-            try:
-                sent_msg = await event.respond(np_text, buttons=buttons, parse_mode="html")
-            except Exception:
-                pass
+        # Main bot sends text-only card with buttons (no thumbnail from bot)
+        try:
+            sent_msg = await event.respond(np_text, buttons=buttons, parse_mode="html")
+        except Exception as send_err:
+            logger.warning(f"Failed to send player card from bot: {send_err}")
                 
         # Store active player session
         _active_chat_players[chat_id] = {
@@ -979,6 +1019,7 @@ def register_handlers(client):
         
         if not utils.check_and_mark_command(chat_id, getattr(event, "raw_text", "")):
             return
+        _chat_replay_mode.pop(chat_id, None)
             
         queue = _chat_queues.get(chat_id, [])
         if not queue:
@@ -1060,7 +1101,7 @@ def register_handlers(client):
         await event.reply(utils.format_html_message(text))
 
     # ------------------ Playback Control Commands (.pause, /pause, .resume, /resume, .stop, /stop, etc.) ------------------
-    @client.on(events.NewMessage(pattern=r"(?i)^[./!?](pause|resume|stop|end|mute|unmute)(?:@\w+)?$"))
+    @client.on(events.NewMessage(pattern=r"(?i)^[./!?](pause|resume|stop|end|mute|unmute|replay|loop)(?:@\w+)?(?:\s+([\s\S]*))?$"))
     async def player_control_commands(event):
         if await utils.guard(event, client):
             return
@@ -1116,6 +1157,7 @@ def register_handlers(client):
 
         elif cmd in ("stop", "end"):
             _chat_queues.pop(chat_id, None)
+            _chat_replay_mode.pop(chat_id, None)
             prev_timer = _track_timer_tasks.pop(chat_id, None)
             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                 prev_timer.cancel()
@@ -1136,6 +1178,65 @@ def register_handlers(client):
                 )
             )
             asyncio.create_task(utils.delayed_delete(msg, 3))
+
+        elif cmd in ("replay", "loop"):
+            active_sess = _active_chat_players.get(chat_id)
+            if not active_sess or not active_sess.get("bot") or not active_sess.get("song_info"):
+                msg = await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» ⚠️ No Active Stream Playing</b>\n\n"
+                        "Play a song or video first using <code>.play</code> or <code>.vplay</code>.</blockquote>"
+                    )
+                )
+                asyncio.create_task(utils.delayed_delete(msg, 4))
+                return
+
+            sub_cmd = (event.pattern_match.group(2) or "").strip().lower()
+            if sub_cmd == "off":
+                _chat_replay_mode.pop(chat_id, None)
+                msg = await event.respond(
+                    utils.format_html_message(
+                        "<blockquote><b>» 🔁 Replay Mode Disabled</b>\n\n"
+                        "Current track will not loop anymore.</blockquote>"
+                    )
+                )
+                asyncio.create_task(utils.delayed_delete(msg, 4))
+                return
+
+            _chat_replay_mode[chat_id] = True
+            song_info = active_sess.get("song_info", {})
+            title = song_info.get("title", "Current Track")
+            play_type = song_info.get("play_type", "audio")
+            bot_obj = active_sess.get("bot")
+            local_fp = song_info.get("file_path") or song_info.get("local_file")
+
+            msg = await event.respond(
+                utils.format_html_message(
+                    f"<blockquote><b>» 🔁 Replay Mode Enabled</b>\n\n"
+                    f"<b>📌 Looping :</b> <b>{title}</b>\n"
+                    f"⚡ <i>This {play_type} will play on loop continuously until <code>/end</code></i></blockquote>"
+                )
+            )
+            asyncio.create_task(utils.delayed_delete(msg, 5))
+
+            # Restart track immediately from start
+            if bot_obj and (local_fp or song_info.get("query")):
+                await bot_obj.play_song(
+                    query=song_info.get("query", ""),
+                    play_type=play_type,
+                    chat_id=chat_id,
+                    local_file=local_fp,
+                    title=title,
+                    duration=song_info.get("duration", 30)
+                )
+                prev_timer = _track_timer_tasks.pop(chat_id, None)
+                if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
+                    prev_timer.cancel()
+                dur = song_info.get("duration", 30) or 30
+                async def track_auto_timer():
+                    await asyncio.sleep(dur + 2)
+                    await play_next_in_queue(chat_id, client)
+                _track_timer_tasks[chat_id] = asyncio.create_task(track_auto_timer())
 
         elif cmd == "mute":
             success, msg_err = await bot_obj.mute_mic(chat_id)
@@ -1252,7 +1353,7 @@ def register_handlers(client):
 
 
     # ------------------ Interactive Player Callback Handlers ------------------
-    @client.on(events.CallbackQuery(pattern=r"^player_(pause|resume|stop|skip|queue|mute|unmute|thumb_toggle)_(.+)$"))
+    @client.on(events.CallbackQuery(pattern=r"^player_(pause|resume|stop|skip|queue|mute|unmute|replay|thumb_toggle)_(.+)$"))
     async def player_callback_handler(event):
         action = event.pattern_match.group(1)
         chat_id_str = event.pattern_match.group(2)
@@ -1305,6 +1406,7 @@ def register_handlers(client):
 
         elif action == "stop":
             _chat_queues.pop(chat_id, None)
+            _chat_replay_mode.pop(chat_id, None)
             prev_timer = _track_timer_tasks.pop(chat_id, None)
             if prev_timer and not prev_timer.done() and prev_timer != asyncio.current_task():
                 prev_timer.cancel()
@@ -1328,6 +1430,7 @@ def register_handlers(client):
                 await event.answer("❌ Could not stop the stream.", alert=True)
 
         elif action == "skip":
+            _chat_replay_mode.pop(chat_id, None)
             await event.answer("⏭️ Skipping to next song...")
             await play_next_in_queue(chat_id, client)
             try:
@@ -1371,6 +1474,30 @@ def register_handlers(client):
                 await event.edit(buttons=buttons)
             except Exception:
                 pass
+
+        elif action == "replay":
+            active_sess = _active_chat_players.get(chat_id)
+            if not active_sess or not active_sess.get("song_info"):
+                await event.answer("⚠️ No track is playing right now.", alert=True)
+                return
+
+            current_mode = _chat_replay_mode.get(chat_id, False)
+            new_mode = not current_mode
+            _chat_replay_mode[chat_id] = new_mode
+
+            is_paused = active_sess.get("is_paused", False)
+            is_muted = active_sess.get("is_muted", False)
+            new_buttons = build_now_playing_markup(chat_id, is_paused=is_paused, is_muted=is_muted)
+            try:
+                await event.edit(buttons=new_buttons)
+            except Exception:
+                pass
+
+            if new_mode:
+                song_title = active_sess.get("song_info", {}).get("title", "Track")
+                await event.answer(f"🔁 Replay Mode Enabled!\n'{song_title}' will loop continuously until /end.", alert=True)
+            else:
+                await event.answer("🔁 Replay Mode Disabled.", alert=True)
 
         elif action == "thumb_toggle":
             curr = database.get_thumbnail_setting(chat_id)
