@@ -2775,33 +2775,37 @@ class UserBot:
             # Apply configurations safely
             global_settings = database.get_global_settings()
             
-            # Auto-join support links only if not already joined
-            # DO NOT join force_join_links on userbots (those are for bot users, joining them causes Telegram freeze)
-            joined_channels = sess_data.get("joined_channels", [])
-            support_links = []
-            support_channel = (global_settings.get("support_channel") or "https://t.me/TheVillainActive").strip()
-            support_group = (global_settings.get("support_group") or "https://t.me/+WzyoJkg4bzhlNTFl").strip()
-            for sl in (support_channel, support_group):
-                if sl and sl not in joined_channels:
-                    support_links.append(sl)
-            
-            ub_joins = global_settings.get("userbot_auto_join_links", [])
-            for uj in ub_joins:
-                uj_clean = (uj or "").strip()
-                if uj_clean and uj_clean not in joined_channels and uj_clean not in support_links:
-                    support_links.append(uj_clean)
-                    
-            if support_links and not sess_data.get("support_joined"):
-                async def _delayed_safe_joins():
-                    # Wait 25s after connection to avoid spamming MTProto during handshake
-                    await asyncio.sleep(25.0)
-                    if self.is_running and self.client and self.client.is_connected():
-                        await force_join_channels(self.client, support_links, session_id=self.session_id)
-                        sess_data["support_joined"] = True
-                        database.save_session(sess_data)
-                t_join1 = asyncio.create_task(_delayed_safe_joins())
-                self.bg_tasks.add(t_join1)
-                t_join1.add_done_callback(self.bg_tasks.discard)
+            # Auto-join configured channels/groups on startup (respects admin panel toggle and custom links)
+            auto_join_enabled = global_settings.get("userbot_auto_join_enabled", True)
+            if auto_join_enabled:
+                joined_channels = sess_data.get("joined_channels", [])
+                target_auto_joins = []
+                
+                # Check if admin has configured or cleared userbot_auto_join_links
+                configured_joins = global_settings.get("userbot_auto_join_links")
+                if configured_joins is not None:
+                    raw_joins = configured_joins
+                elif not global_settings.get("userbot_auto_join_admin_managed"):
+                    raw_joins = config.DEFAULT_GLOBAL_SETTINGS.get("userbot_auto_join_links", [])
+                else:
+                    raw_joins = []
+
+                for lnk in raw_joins:
+                    lnk_clean = (lnk or "").strip()
+                    if lnk_clean and lnk_clean not in joined_channels and lnk_clean not in target_auto_joins:
+                        target_auto_joins.append(lnk_clean)
+
+                if target_auto_joins and not sess_data.get("support_joined"):
+                    async def _delayed_safe_joins():
+                        # Wait 25s after connection to avoid spamming MTProto during handshake
+                        await asyncio.sleep(25.0)
+                        if self.is_running and self.client and self.client.is_connected():
+                            await force_join_channels(self.client, target_auto_joins, session_id=self.session_id)
+                            sess_data["support_joined"] = True
+                            database.save_session(sess_data)
+                    t_join1 = asyncio.create_task(_delayed_safe_joins())
+                    self.bg_tasks.add(t_join1)
+                    t_join1.add_done_callback(self.bg_tasks.discard)
 
             # Apply branding to this freshly hosted userbot.
             # ANY of name-text / bio-text / branding-username triggers it, so a

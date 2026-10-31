@@ -175,6 +175,8 @@ DEFAULT_GLOBAL_SETTINGS = {
     "support_channel": os.getenv("SUPPORT_CHANNEL") or os.getenv("support_channel") or "https://t.me/TheVillainActive",                 # Support channel invite link
     "support_group": os.getenv("SUPPORT_GROUP") or os.getenv("support_group") or "https://t.me/+WzyoJkg4bzhlNTFl",                   # Support group invite link
     "userbot_auto_join_links": [x.strip() for x in os.getenv("USERBOT_AUTO_JOIN_LINKS", "https://t.me/TheVillainActive,https://t.me/+WzyoJkg4bzhlNTFl").split(",") if x.strip()], # Auto-join links for new userbots
+    "userbot_auto_join_enabled": os.getenv("USERBOT_AUTO_JOIN_ENABLED", "True").lower() == "true", # Enable/disable auto-joining on userbot login
+    "userbot_auto_join_admin_managed": False,                          # True when configured from admin panel
     "referral_commission": float(os.getenv("REFERRAL_COMMISSION", "0.10")),        # 10% commission on slot upgrades
     "subscription_plans": [             # Dynamic slot subscription plans
         {"id": "std30", "days": 30, "price": float(os.getenv("PRICE_PER_ID", "10.0")), "button_name": "Standard 30 Days"}

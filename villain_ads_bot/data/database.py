@@ -749,7 +749,10 @@ def get_global_settings() -> Dict[str, Any]:
             ("BRANDING_NAME_ENABLED", "branding_name_enabled"),
             ("BRANDING_BIO_ENABLED", "branding_bio_enabled"),
             ("MAINTENANCE_MODE", "maintenance_mode"),
+            ("USERBOT_AUTO_JOIN_ENABLED", "userbot_auto_join_enabled"),
         ]:
+            if settings_key == "userbot_auto_join_enabled" and settings.get("userbot_auto_join_admin_managed"):
+                continue
             env_val = os.getenv(env_key) or os.getenv(env_key.lower())
             if env_val is not None and env_val.strip():
                 settings[settings_key] = env_val.strip().lower() == "true"
@@ -759,6 +762,8 @@ def get_global_settings() -> Dict[str, Any]:
             ("FORCE_JOIN_LINKS", "force_join_links"),
             ("USERBOT_AUTO_JOIN_LINKS", "userbot_auto_join_links"),
         ]:
+            if settings_key == "userbot_auto_join_links" and settings.get("userbot_auto_join_admin_managed"):
+                continue
             env_val = os.getenv(env_key) or os.getenv(env_key.lower())
             if env_val is not None:
                 settings[settings_key] = [x.strip() for x in env_val.split(",") if x.strip()]

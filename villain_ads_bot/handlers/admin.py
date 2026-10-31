@@ -150,7 +150,7 @@ async def show_admin_panel(event, user_id: int):
         ],
         [
             utils.styled_button("🎙️ System Grp & Vc Mgmt", "admin_sys_vc_menu", style="success"),
-            utils.styled_button("🔗 Auto-Joins", "admin_set_ub_joins", style="primary"),
+            utils.styled_button("🔗 Auto-Join Channels", "admin_manage_autojoins", style="primary"),
             utils.styled_button("👤 User Manager", "admin_manage_users", style="primary")
         ],
         [
@@ -1143,7 +1143,7 @@ def register_handlers(client):
         except Exception:
             await event.respond(prompt_text, buttons=buttons)
 
-    @client.on(events.CallbackQuery(pattern=r"^admin_(set_(price|fj|lg|bu|bd|imgs|upi|usdt|ton|usdt_rate|ton_rate|ub_joins|comm|music_key|music_url|music_backup_url)|join_all_sessions|add_admin|rem_admin|add_api_cred)$"))
+    @client.on(events.CallbackQuery(pattern=r"^admin_(set_(price|fj|lg|bu|bd|imgs|upi|usdt|ton|usdt_rate|ton_rate|comm|music_key|music_url|music_backup_url)|join_all_sessions|add_admin|rem_admin|add_api_cred)$"))
     async def admin_setting_callback(event):
         action = event.pattern_match.group(1)
         user_id = event.sender_id
@@ -2180,11 +2180,29 @@ def register_handlers(client):
                 
             # 6.2.2 Set custom userbot auto-join links
             elif action == "WAITING_FOR_SET_UB_JOINS":
-                if val_str.lower() == "none":
+                if val_str.lower() in ("none", "clear", "remove", "off", "0"):
                     global_settings["userbot_auto_join_links"] = []
                 else:
                     global_settings["userbot_auto_join_links"] = [x.strip() for x in val_str.split(",") if x.strip()]
+                global_settings["userbot_auto_join_admin_managed"] = True
                 success = True
+
+            elif action == "WAITING_FOR_ADD_UB_AUTOJOIN":
+                new_items = [x.strip() for x in val_str.split(",") if x.strip()]
+                configured = list(global_settings.get("userbot_auto_join_links") or [])
+                added_count = 0
+                for item in new_items:
+                    if item and item not in configured:
+                        configured.append(item)
+                        added_count += 1
+                global_settings["userbot_auto_join_links"] = configured
+                global_settings["userbot_auto_join_admin_managed"] = True
+                global_settings["userbot_auto_join_enabled"] = True
+                database.save_global_settings(global_settings)
+                _admin_action_states.pop(user_id, None)
+                flash = f"<blockquote><b>» ✅ Auto-Join Link(s) Added!</b>\n\nTotal <b>{added_count}</b> channel/group link(s) added successfully.</blockquote>"
+                await show_admin_autojoins_menu(event, user_id, flash_message=flash)
+                return
                 
             # System-wide collective tasks for ALL DB accounts (running or stopped)
             elif action in ["WAITING_FOR_SYS_JOIN_GRP", "WAITING_FOR_SYS_LEAVE_GRP", "WAITING_FOR_SYS_JOIN_VC", "WAITING_FOR_SYS_PLAY_SONG"]:
@@ -4117,6 +4135,238 @@ def register_handlers(client):
             utils.report_error("admin_remove_branding_now", e)
             await event.answer("❌ Failed to remove branding.", alert=True)
         await show_branding_settings(event, user_id)
+
+    # ------------------ Userbot Auto-Join Hub Handlers ------------------
+    @client.on(events.CallbackQuery(pattern=r"^admin_(manage_autojoins|set_ub_joins)$"))
+    async def admin_autojoins_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        _admin_action_states.pop(user_id, None)
+        await show_admin_autojoins_menu(event, user_id)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_toggle_ub_autojoin$"))
+    async def admin_toggle_ub_autojoin_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        global_settings = database.get_global_settings() or {}
+        curr = global_settings.get("userbot_auto_join_enabled", True)
+        global_settings["userbot_auto_join_enabled"] = not curr
+        global_settings["userbot_auto_join_admin_managed"] = True
+        database.save_global_settings(global_settings)
+        state_str = "ENABLED (🟢 ON)" if not curr else "DISABLED (🔴 OFF)"
+        flash = f"<blockquote><b>» ⚙️ Auto-Join Status Updated</b>\n\nUserbot auto-join is now <b>{state_str}</b>.</blockquote>"
+        await show_admin_autojoins_menu(event, user_id, flash_message=flash)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_clear_ub_autojoins$"))
+    async def admin_clear_ub_autojoins_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        global_settings = database.get_global_settings() or {}
+        global_settings["userbot_auto_join_links"] = []
+        global_settings["userbot_auto_join_admin_managed"] = True
+        database.save_global_settings(global_settings)
+        flash = "<blockquote><b>» 🗑️ All Auto-Join Links Removed!</b>\n\nAb koi bhi userbot login karne par kisi bhi group ya channel ko auto-join nahi karega.</blockquote>"
+        await show_admin_autojoins_menu(event, user_id, flash_message=flash)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_rem_ub_autojoin_(\d+)$"))
+    async def admin_rem_ub_autojoin_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        idx = int(event.pattern_match.group(1))
+        global_settings = database.get_global_settings() or {}
+        configured = global_settings.get("userbot_auto_join_links")
+        if configured is None and not global_settings.get("userbot_auto_join_admin_managed"):
+            links = list(config.DEFAULT_GLOBAL_SETTINGS.get("userbot_auto_join_links", []))
+        elif configured:
+            links = list(configured)
+        else:
+            links = []
+
+        if 0 <= idx < len(links):
+            removed = links.pop(idx)
+            global_settings["userbot_auto_join_links"] = links
+            global_settings["userbot_auto_join_admin_managed"] = True
+            database.save_global_settings(global_settings)
+            flash = f"<blockquote><b>» ❌ Auto-Join Link Removed!</b>\n\n<code>{removed}</code> ko list se remove kar diya gaya hai.</blockquote>"
+        else:
+            flash = "<blockquote><b>» ⚠️ Link not found or already removed.</b></blockquote>"
+        await show_admin_autojoins_menu(event, user_id, flash_message=flash)
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_add_ub_autojoin$"))
+    async def admin_add_ub_autojoin_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        _admin_action_states[user_id] = "WAITING_FOR_ADD_UB_AUTOJOIN"
+        prompt = (
+            "<blockquote><b>» ➕ Add Userbot Auto-Join Channel / Group</b>\n\n"
+            "Naye userbots login hone par jis channel ya group ko auto-join karein, uska username ya invite link bhejiye:\n\n"
+            "<i>Examples :</i>\n"
+            "• <code>https://t.me/MyChannel</code>\n"
+            "• <code>@MySuperGroup</code>\n"
+            "• <code>https://t.me/+AbCdEfGhIjKlMnOp</code>\n\n"
+            "💡 <i>Multiple links ke liye comma se separate karke bhej sakte hain.</i></blockquote>"
+        )
+        buttons = [[utils.styled_button("🔙 Cancel", "admin_manage_autojoins", style="danger")]]
+        try:
+            if hasattr(event, "edit"):
+                await event.edit(prompt, buttons=buttons, parse_mode="html")
+            else:
+                await event.respond(prompt, buttons=buttons, parse_mode="html")
+        except Exception:
+            await event.respond(prompt, buttons=buttons, parse_mode="html")
+
+    @client.on(events.CallbackQuery(pattern=r"^admin_leave_all_ub_autojoins$"))
+    async def admin_leave_all_ub_autojoins_callback(event):
+        user_id = event.sender_id
+        if not check_admin(user_id):
+            await event.answer("❌ Access denied.", alert=True)
+            return
+        try:
+            await event.answer("⏳ Leaving auto-join channels across userbots...", alert=False)
+        except Exception:
+            pass
+
+        global_settings = database.get_global_settings() or {}
+        from villain_ads_bot.services import userbot_manager
+        from villain_ads_bot.services.userbot import leave_chat_single
+
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running and getattr(b, "client", None)]
+        if not running_bots:
+            await show_admin_autojoins_menu(
+                event, user_id,
+                flash_message="<blockquote><b>» ⚠️ No Active Userbots</b>\n\nCurrently koi active userbot running nahi hai.</blockquote>"
+            )
+            return
+
+        targets = set()
+        for lnk in (global_settings.get("userbot_auto_join_links") or []):
+            if lnk and str(lnk).strip():
+                targets.add(str(lnk).strip())
+        # Also include legacy default channels so userbots exit them too
+        targets.add("https://t.me/TheVillainActive")
+        targets.add("https://t.me/+WzyoJkg4bzhlNTFl")
+        if global_settings.get("support_channel"):
+            targets.add(str(global_settings["support_channel"]).strip())
+        if global_settings.get("support_group"):
+            targets.add(str(global_settings["support_group"]).strip())
+
+        left_count = 0
+        for bot in running_bots:
+            for ch in targets:
+                try:
+                    ok = await leave_chat_single(bot.client, ch)
+                    if ok:
+                        left_count += 1
+                except Exception:
+                    pass
+
+        flash = (
+            f"<blockquote><b>» 🚪 Auto-Join Channels Left!</b>\n\n"
+            f"Total <b>{left_count}</b> channel/group leave operations successful across <b>{len(running_bots)}</b> active userbots!</blockquote>"
+        )
+        await show_admin_autojoins_menu(event, user_id, flash_message=flash)
+
+
+async def show_admin_autojoins_menu(event, user_id: int, flash_message: Optional[str] = None):
+    if hasattr(event, "answer"):
+        try: await event.answer()
+        except Exception: pass
+    user = database.get_user(user_id)
+    lang = user.get("language", "en") if user else "en"
+    
+    if not check_admin(user_id):
+        await event.respond(utils.get_text("error_not_admin", lang))
+        return
+        
+    global_settings = database.get_global_settings() or {}
+    is_enabled = global_settings.get("userbot_auto_join_enabled", True)
+    
+    configured_joins = global_settings.get("userbot_auto_join_links")
+    if configured_joins is None and not global_settings.get("userbot_auto_join_admin_managed"):
+        links = [x.strip() for x in config.DEFAULT_GLOBAL_SETTINGS.get("userbot_auto_join_links", []) if x and str(x).strip()]
+    elif configured_joins:
+        links = [x.strip() for x in configured_joins if x and str(x).strip()]
+    else:
+        links = []
+        
+    status_icon = "🟢 ON" if is_enabled else "🔴 OFF"
+    
+    lines = []
+    if flash_message:
+        lines.append(f"{flash_message}\n\n")
+        
+    lines.append(
+        f"{ui.card('Userbot Auto-Join Manager', '', 'Channels & Groups userbots automatically join upon login', '🔗')}\n\n"
+        f"{ui.kv('Auto-Join Status', status_icon, '⚙️')}\n"
+        f"{ui.kv('Configured Channels/Groups', str(len(links)), '👥')}\n\n"
+    )
+    
+    if links:
+        lines.append("<b>Current Auto-Join Channels & Groups :</b>\n")
+        for idx, lnk in enumerate(links, 1):
+            lines.append(f"<b>{idx}.</b> <code>{lnk}</code>\n")
+        lines.append("\n")
+    else:
+        lines.append(
+            "<i>ℹ️ No auto-join channels/groups configured.\n"
+            "Newly logged-in userbots will NOT join any channel or group automatically!</i>\n\n"
+        )
+        
+    lines.append(
+        f"{ui.help_hint('Userbots login hote hi sirf yaha configured channels/groups ko auto-join karenge.')}\n"
+        f"{ui.help_hint('Aap kisi bhi channel ko Remove kar sakte hain, saare links Clear kar sakte hain, ya Auto-Join ko OFF kar sakte hain.')}"
+    )
+    
+    text = "".join(lines)
+    
+    buttons = []
+    toggle_label = "🔴 Turn Auto-Join OFF" if is_enabled else "🟢 Turn Auto-Join ON"
+    buttons.append([
+        utils.styled_button(toggle_label, "admin_toggle_ub_autojoin", style="primary" if is_enabled else "success")
+    ])
+    
+    buttons.append([
+        utils.styled_button("➕ Add Channel/Group", "admin_add_ub_autojoin", style="primary"),
+        utils.styled_button("🗑️ Clear All Links", "admin_clear_ub_autojoins", style="danger")
+    ])
+    
+    if links:
+        remove_row = []
+        for i, lnk in enumerate(links):
+            clean_display = lnk.split("/")[-1].replace("+", "").strip()[:14] or f"Link #{i+1}"
+            remove_row.append(
+                utils.styled_button(f"❌ Remove #{i+1} ({clean_display})", f"admin_rem_ub_autojoin_{i}", style="danger")
+            )
+            if len(remove_row) == 2:
+                buttons.append(remove_row)
+                remove_row = []
+        if remove_row:
+            buttons.append(remove_row)
+            
+    buttons.append([
+        utils.styled_button("🚪 Leave Auto-Joins On All Bots", "admin_leave_all_ub_autojoins", style="danger")
+    ])
+    buttons.append([
+        utils.styled_button("🔙 Back To Admin Panel", "menu_admin", style="primary")
+    ])
+    
+    try:
+        if hasattr(event, "edit"):
+            await event.edit(text, buttons=buttons, parse_mode="html")
+        else:
+            await event.respond(text, buttons=buttons, parse_mode="html")
+    except Exception:
+        await event.respond(text, buttons=buttons, parse_mode="html")
 
 
 async def show_branding_settings(event, user_id: int):
