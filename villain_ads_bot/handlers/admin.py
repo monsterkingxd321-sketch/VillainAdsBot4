@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import secrets
+from typing import Optional
 from telethon import events
 from telethon.errors import FloodWaitError
 from villain_ads_bot.data import database
