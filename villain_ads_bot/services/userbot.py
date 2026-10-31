@@ -1857,86 +1857,6 @@ class UserBot:
 
         return joined_count, total_found
 
-async def join_all_userbots_to_active_vcs(owner_id: Optional[int] = None) -> tuple:
-    """
-    Finds all running userbots for the given owner (or all running userbots),
-    scans active group VCs across each bot, and joins them concurrently.
-    Returns (total_joined: int, total_found: int, bot_count: int).
-    """
-    from villain_ads_bot.services import userbot_manager
-    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
-    if not running_bots:
-        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
-
-    if not running_bots:
-        return 0, 0, 0
-
-    results = await asyncio.gather(
-        *[b.join_all_active_group_vcs() for b in running_bots],
-        return_exceptions=True
-    )
-
-    total_joined = 0
-    total_found = 0
-    for r in results:
-        if isinstance(r, tuple):
-            total_joined += r[0]
-            total_found += r[1]
-
-    return total_joined, total_found, len(running_bots)
-
-
-async def leave_all_userbots_from_all_vcs(owner_id: Optional[int] = None) -> tuple:
-    """
-    Leaves all voice chats across all running userbots.
-    Returns (total_left: int, bot_count: int).
-    """
-    from villain_ads_bot.services import userbot_manager
-    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
-    if not running_bots:
-        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
-
-    if not running_bots:
-        return 0, 0
-
-    results = await asyncio.gather(
-        *[b.leave_all_voice_chats() for b in running_bots],
-        return_exceptions=True
-    )
-
-    total_left = sum(r[0] for r in results if isinstance(r, tuple))
-    return total_left, len(running_bots)
-
-
-async def join_all_userbots_to_chat_vc(chat_id: Union[int, str], owner_id: Optional[int] = None) -> tuple:
-    """
-    Connects all running userbots for the owner to chat_id's voice chat.
-    Returns (joined_count: int, total_bots: int, err_msg: str).
-    """
-    from villain_ads_bot.services import userbot_manager
-    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
-    if not running_bots:
-        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
-
-    if not running_bots:
-        return 0, 0, "No active userbots running."
-
-    results = await asyncio.gather(
-        *[b.join_voice_chat(str(chat_id)) for b in running_bots],
-        return_exceptions=True
-    )
-
-    joined_count = sum(1 for r in results if isinstance(r, tuple) and r[0] is True)
-    err = ""
-    for r in results:
-        if isinstance(r, tuple) and not r[0]:
-            err = r[1]
-            break
-
-    return joined_count, len(running_bots), err
-
-
-
     async def leave_voice_chat(self, chat_id: Optional[int] = None) -> tuple:
         """
         Leaves any active group call/VC the userbot is in.
@@ -4685,3 +4605,83 @@ async def join_all_userbots_to_chat_vc(chat_id: Union[int, str], owner_id: Optio
             except Exception as loop_e:
                 logger.error(f"Critical error in broadcast loop for {self.session_id}: {loop_e}", exc_info=True)
                 await asyncio.sleep(5)
+
+
+
+async def join_all_userbots_to_active_vcs(owner_id: Optional[int] = None) -> tuple:
+    """
+    Finds all running userbots for the given owner (or all running userbots),
+    scans active group VCs across each bot, and joins them concurrently.
+    Returns (total_joined: int, total_found: int, bot_count: int).
+    """
+    from villain_ads_bot.services import userbot_manager
+    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
+    if not running_bots:
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
+
+    if not running_bots:
+        return 0, 0, 0
+
+    results = await asyncio.gather(
+        *[b.join_all_active_group_vcs() for b in running_bots],
+        return_exceptions=True
+    )
+
+    total_joined = 0
+    total_found = 0
+    for r in results:
+        if isinstance(r, tuple):
+            total_joined += r[0]
+            total_found += r[1]
+
+    return total_joined, total_found, len(running_bots)
+
+
+async def leave_all_userbots_from_all_vcs(owner_id: Optional[int] = None) -> tuple:
+    """
+    Leaves all voice chats across all running userbots.
+    Returns (total_left: int, bot_count: int).
+    """
+    from villain_ads_bot.services import userbot_manager
+    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
+    if not running_bots:
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
+
+    if not running_bots:
+        return 0, 0
+
+    results = await asyncio.gather(
+        *[b.leave_all_voice_chats() for b in running_bots],
+        return_exceptions=True
+    )
+
+    total_left = sum(r[0] for r in results if isinstance(r, tuple))
+    return total_left, len(running_bots)
+
+
+async def join_all_userbots_to_chat_vc(chat_id: Union[int, str], owner_id: Optional[int] = None) -> tuple:
+    """
+    Connects all running userbots for the owner to chat_id's voice chat.
+    Returns (joined_count: int, total_bots: int, err_msg: str).
+    """
+    from villain_ads_bot.services import userbot_manager
+    running_bots = userbot_manager.get_running_userbots_for_owner(owner_id) if owner_id else []
+    if not running_bots:
+        running_bots = [b for b in userbot_manager._running_bots.values() if b and b.is_running]
+
+    if not running_bots:
+        return 0, 0, "No active userbots running."
+
+    results = await asyncio.gather(
+        *[b.join_voice_chat(str(chat_id)) for b in running_bots],
+        return_exceptions=True
+    )
+
+    joined_count = sum(1 for r in results if isinstance(r, tuple) and r[0] is True)
+    err = ""
+    for r in results:
+        if isinstance(r, tuple) and not r[0]:
+            err = r[1]
+            break
+
+    return joined_count, len(running_bots), err

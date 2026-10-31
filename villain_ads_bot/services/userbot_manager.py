@@ -83,7 +83,7 @@ def can_start_more_bots() -> bool:
     # userbots and then ran out of memory.
     return active_count < max_running
 
-async def start_userbot(session_id: str) -> bool:
+async def start_userbot(session_id: str, owner_id: Optional[int] = None) -> bool:
     """
     Starts a UserBot instance if not already running.
     """
@@ -97,6 +97,11 @@ async def start_userbot(session_id: str) -> bool:
         return False
             
     bot = UserBot(session_id)
+    if owner_id is not None:
+        try:
+            bot.owner_id = int(owner_id)
+        except Exception:
+            bot.owner_id = owner_id
     success = await bot.start()
     if success:
         _running_bots[session_id] = bot
