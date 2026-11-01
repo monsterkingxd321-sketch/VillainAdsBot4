@@ -48,17 +48,20 @@ def get_admin_api_pairs() -> list:
     return pairs
 
 
-def get_all_api_pairs():
+def get_all_api_pairs(include_env: bool = False):
     """
     Returns every usable (API_ID, API_HASH) pair.
 
     Order:
-      1. API pairs configured from the admin panel (MongoDB)
-      2. API_ID / API_HASH from the environment
-      3. API_ID1 / API_HASH1 ... API_ID99 / API_HASH99 from the environment
+      1. If API pairs are configured from the admin panel (MongoDB), use them as primary.
+      2. If none in admin panel or include_env=True, fall back to environment API_ID / API_HASH.
     """
-    pairs = []
-    seen = set()
+    admin_pairs = get_admin_api_pairs()
+    if admin_pairs and not include_env:
+        return admin_pairs
+
+    pairs = list(admin_pairs) if admin_pairs else []
+    seen = set(pairs)
 
     def _add(aid, ahash):
         key = (int(aid), str(ahash))
@@ -66,9 +69,6 @@ def get_all_api_pairs():
             return
         seen.add(key)
         pairs.append(key)
-
-    for aid, ahash in get_admin_api_pairs():
-        _add(aid, ahash)
 
     if API_ID and API_HASH:
         _add(API_ID, API_HASH)

@@ -7,9 +7,20 @@ import time
 import uuid
 import sqlite3
 from telethon import events, TelegramClient
+from telethon.tl import types, functions
 from telethon.sessions import StringSession, SQLiteSession
 from telethon.sessions.sqlite import CURRENT_VERSION
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import (
+    SessionPasswordNeededError,
+    PhoneCodeInvalidError,
+    PhoneCodeExpiredError,
+    FloodWaitError,
+    PhoneNumberBannedError,
+    PhoneNumberInvalidError,
+    ApiIdInvalidError,
+    ApiIdPublishedFloodError,
+    SendCodeUnavailableError
+)
 from villain_ads_bot.data import database
 from villain_ads_bot.data import models
 from villain_ads_bot import config
@@ -170,6 +181,62 @@ async def clean_login_state(user_id: int):
             except Exception as e:
                 logger.warning(f"Error disconnecting temporary login client: {e}")
 
+def format_otp_sent_message(phone: str, sent_code, lang: str = "en") -> str:
+    """Formats a crystal-clear, transparent message telling the user exactly where the OTP went."""
+    code_type = getattr(sent_code, "type", None)
+    
+    if isinstance(code_type, types.auth.SentCodeTypeApp):
+        if lang == "hi":
+            return (
+                f"<blockquote><b>» 📩 सत्यापन कोड (OTP) भेजा गया!</b>\n\n"
+                f"📱 <b>गंतव्य :</b> <b>Official Telegram App (In-App Chat)</b>\n"
+                f"💬 कोड <code>{phone}</code> के <b>Telegram App</b> के अंदर नीले टिक वाली <b>'Telegram'</b> आधिकारिक चैट में भेजा गया है।\n\n"
+                f"⚠️ <b>जरूरी :</b> यह SIM पर साधारण SMS के रूप में <b>नहीं</b> आएगा! अपना Telegram App खोलें और 'Telegram' चैट से 5-अंकों का कोड देखें।\n\n"
+                f"✍️ <b>5-अंकों का कोड यहाँ भेजें (उदा. <code>1 2 3 4 5</code>) :</b></blockquote>"
+            )
+        else:
+            return (
+                f"<blockquote><b>» 📩 Verification Code (OTP) Sent!</b>\n\n"
+                f"📱 <b>Destination :</b> <b>Official Telegram App (In-App Chat)</b>\n"
+                f"💬 The code was sent to the official <b>'Telegram'</b> service chat (with blue verification badge) on your active Telegram app for <code>{phone}</code>.\n\n"
+                f"⚠️ <b>Important :</b> Telegram delivers this code <b>inside the Telegram App</b>, NOT via phone SMS! Please open your Telegram app to see the code.\n\n"
+                f"✍️ <b>Enter The 5-Digit Code Below (e.g. <code>1 2 3 4 5</code>) :</b></blockquote>"
+            )
+    elif isinstance(code_type, types.auth.SentCodeTypeSms):
+        if lang == "hi":
+            return (
+                f"<blockquote><b>» 📩 SMS कोड भेजा गया!</b>\n\n"
+                f"📱 5-अंकों का सत्यापन कोड <code>{phone}</code> पर SMS द्वारा भेजा गया है।\n\n"
+                f"✍️ <b>5-अंकों का कोड यहाँ भेजें (उदा. <code>1 2 3 4 5</code>) :</b></blockquote>"
+            )
+        else:
+            return (
+                f"<blockquote><b>» 📩 SMS Code Sent!</b>\n\n"
+                f"📱 A 5-digit verification code has been sent via SMS to <code>{phone}</code>.\n\n"
+                f"✍️ <b>Enter The 5-Digit Code Below (e.g. <code>1 2 3 4 5</code>) :</b></blockquote>"
+            )
+    elif isinstance(code_type, (types.auth.SentCodeTypeCall, types.auth.SentCodeTypeFlashCall, types.auth.SentCodeTypeMissedCall)):
+        return (
+            f"<blockquote><b>» 📞 Verification Phone Call!</b>\n\n"
+            f"Telegram is calling <code>{phone}</code> to dictate your login code.\n\n"
+            f"✍️ <b>Enter The 5-Digit Code Below (e.g. <code>1 2 3 4 5</code>) :</b></blockquote>"
+        )
+    elif isinstance(code_type, types.auth.SentCodeTypeEmailCode):
+        pattern = getattr(code_type, "email_pattern", "your email")
+        return (
+            f"<blockquote><b>» 📧 Email Verification Code!</b>\n\n"
+            f"Telegram sent the verification code to your linked email (<code>{pattern}</code>).\n\n"
+            f"✍️ <b>Enter The Code Below :</b></blockquote>"
+        )
+    else:
+        return (
+            f"<blockquote><b>» 📩 Verification Code Sent!</b>\n\n"
+            f"A verification code has been sent for <code>{phone}</code>.\n"
+            f"⚠️ <i>Please check both your <b>Telegram App</b> (Official 'Telegram' notification chat) and SMS.</i>\n\n"
+            f"✍️ <b>Enter The 5-Digit Code Below (e.g. <code>1 2 3 4 5</code>) :</b></blockquote>"
+        )
+
+
 def register_handlers(client):
     
     @client.on(events.CallbackQuery(pattern="^cancel_login$"))
@@ -195,19 +262,58 @@ def register_handlers(client):
         temp_client = state["client"]
         phone = state["phone"]
         
+        # 1. Cooldown check: prevent premature calls that guarantee SendCodeUnavailableError
+        sent_at = state.get("code_sent_at", 0)
+        timeout = state.get("timeout", 60) or 60
+        elapsed = time.time() - sent_at
+        remaining = int(timeout - elapsed)
+        if remaining > 0 and elapsed > 0:
+            wait_alert = (
+                f"⏳ कृपया {remaining} सेकंड प्रतीक्षा करें।"
+                if lang == "hi"
+                else f"⏳ Please wait {remaining}s before requesting a new code."
+            )
+            await event.answer(wait_alert, alert=True)
+            return
+
+        # 2. Resend code safely without breaking the user's prompt screen
         try:
             if not temp_client.is_connected():
                 await temp_client.connect()
-            sent_code = await temp_client.send_code_request(phone)
+                
+            sent_code = None
+            try:
+                # First try standard resend (switches to SMS / next type if Telegram supports it)
+                sent_code = await temp_client.send_code_request(phone)
+            except (SendCodeUnavailableError, PhoneCodeExpiredError):
+                # Telegram disallows SMS resend or the hash expired.
+                # Request a FRESH in-app code by clearing Telethon's internal cached phone hash!
+                if hasattr(temp_client, "_phone_code_hash"):
+                    temp_client._phone_code_hash.pop(phone, None)
+                sent_code = await temp_client.send_code_request(phone)
+
             state["phone_code_hash"] = sent_code.phone_code_hash
+            state["code_sent_at"] = time.time()
+            state["timeout"] = getattr(sent_code, "timeout", 60) or 60
             state["step"] = "WAITING_FOR_OTP"
             
-            await event.answer("📩 New OTP code sent to your Telegram!", alert=True)
-            prompt_text = (
-                f"<blockquote><b>» 📩 New Otp Sent!</b>\n\n"
-                f"A New 5-Digit Verification Code Has Been Sent To <code>{phone}</code> On Telegram.\n\n"
-                f"✍️ <b>Enter The 5-Digit Code Below (E.G. 1 2 3 4 5)</b></blockquote>"
+            code_type = getattr(sent_code, "type", None)
+            if isinstance(code_type, types.auth.SentCodeTypeApp):
+                dest = "Telegram App ('Telegram' चैट)" if lang == "hi" else "Telegram App ('Telegram' chat)"
+            elif isinstance(code_type, types.auth.SentCodeTypeSms):
+                dest = "SMS"
+            else:
+                dest = "Telegram"
+                
+            ans_text = (
+                f"📩 नया कोड भेजा गया! कृपया अपना {dest} चेक करें।"
+                if lang == "hi"
+                else f"📩 New code sent! Please check your {dest}."
             )
+            await event.answer(ans_text, alert=True)
+            
+            # Update prompt text with delivery info without changing buttons
+            prompt_text = format_otp_sent_message(phone, sent_code, lang)
             buttons = [
                 [
                     utils.styled_button("🔄 Resend Otp", "resend_otp_action", style="primary"),
@@ -215,23 +321,26 @@ def register_handlers(client):
                 ]
             ]
             try:
-                await event.edit(prompt_text, buttons=buttons)
+                await event.edit(prompt_text, buttons=buttons, parse_mode="html")
             except Exception:
-                await event.respond(prompt_text, buttons=buttons)
+                pass
+                
+        except FloodWaitError as fwe:
+            wait_msg = (
+                f"⚠️ Telegram Flood Wait: कृपया {fwe.seconds}s प्रतीक्षा करें।"
+                if lang == "hi"
+                else f"⚠️ Telegram Flood Wait: Please wait {fwe.seconds}s before resending."
+            )
+            await event.answer(wait_msg, alert=True)
         except Exception as e:
             logger.error(f"Failed to resend code to {phone}: {e}")
             utils.report_error(f"add_bot.resend_otp:{phone}", e)
-            buttons = [
-                [
-                    utils.styled_button("🔄 Try Again", "menu_add_bot", style="primary"),
-                    utils.styled_button("❌ Cancel", "cancel_login", style="danger")
-                ]
-            ]
-            fail_text = "<blockquote><b>» ❌ Failed To Resend Otp</b>\n\n⚠️ <i>Could not send the OTP right now. The error was reported to the admin team — please try again in a moment.</i></blockquote>"
-            try:
-                await event.edit(fail_text, buttons=buttons)
-            except Exception:
-                await event.respond(fail_text, buttons=buttons)
+            err_msg = (
+                "⚠️ कोड दोबारा नहीं भेजा जा सका। कृपया अपना Telegram App चेक करें या कुछ देर बाद प्रयास करें।"
+                if lang == "hi"
+                else "⚠️ Could not resend code right now. Please check your Telegram app for the active code."
+            )
+            await event.answer(err_msg, alert=True)
 
     @client.on(events.NewMessage(pattern=r"(?i)^/login(?:@\w+)?$"))
     async def login_cmd(event):
@@ -699,6 +808,8 @@ def register_handlers(client):
                 await temp_client.connect()
                 sent_code = await temp_client.send_code_request(phone)
                 state["phone_code_hash"] = sent_code.phone_code_hash
+                state["code_sent_at"] = time.time()
+                state["timeout"] = getattr(sent_code, "timeout", 60) or 60
                 state["step"] = "WAITING_FOR_OTP"
                 
                 buttons = [
@@ -707,7 +818,59 @@ def register_handlers(client):
                         utils.styled_button("🔙 Cancel", "cancel_login", style="danger")
                     ]
                 ]
-                await event.reply(utils.get_text("login_otp_prompt", lang), buttons=buttons)
+                prompt_msg = format_otp_sent_message(phone, sent_code, lang)
+                await event.reply(prompt_msg, buttons=buttons, parse_mode="html")
+            except FloodWaitError as fwe:
+                buttons = [
+                    [
+                        utils.styled_button("🔄 Try Again", "menu_add_bot", style="primary"),
+                        utils.styled_button("🔙 Cancel", "cancel_login", style="danger")
+                    ]
+                ]
+                fl_msg = (
+                    f"<blockquote><b>» ⏳ Telegram Cooldown (Flood Wait)</b>\n\n"
+                    f"Telegram ने इस नंबर पर अस्थायी रोक लगाई है।\n"
+                    f"⏱ कृपया <b>{fwe.seconds} सेकंड</b> ({round(fwe.seconds / 60, 1)} मिनट) प्रतीक्षा करें।</blockquote>"
+                    if lang == "hi"
+                    else
+                    f"<blockquote><b>» ⏳ Telegram Cooldown (Flood Wait)</b>\n\n"
+                    f"Telegram has temporarily rate-limited login requests for this phone number.\n"
+                    f"⏱ Please wait <b>{fwe.seconds} seconds</b> ({round(fwe.seconds / 60, 1)} minutes) before trying again.</blockquote>"
+                )
+                await event.reply(fl_msg, buttons=buttons, parse_mode="html")
+                await clean_login_state(user_id)
+            except PhoneNumberBannedError:
+                buttons = [[utils.styled_button("🔙 Cancel", "cancel_login", style="danger")]]
+                banned_msg = (
+                    f"<blockquote><b>» 🚫 Telegram Account Banned</b>\n\n"
+                    f"यह फोन नंबर <code>{phone}</code> Telegram द्वारा प्रतिबंधित (banned) कर दिया गया है।</blockquote>"
+                    if lang == "hi"
+                    else
+                    f"<blockquote><b>» 🚫 Telegram Account Banned</b>\n\n"
+                    f"This phone number (<code>{phone}</code>) is banned from Telegram.</blockquote>"
+                )
+                await event.reply(banned_msg, buttons=buttons, parse_mode="html")
+                await clean_login_state(user_id)
+            except PhoneNumberInvalidError:
+                buttons = [[utils.styled_button("🔙 Cancel", "cancel_login", style="danger")]]
+                inv_num_msg = (
+                    f"<blockquote><b>» ❌ अमान्य फोन नंबर</b>\n\n"
+                    f"फोन नंबर <code>{phone}</code> अमान्य है। कृपया देश कोड के साथ सही नंबर डालें (उदा. +91XXXXXXXXXX)।</blockquote>"
+                    if lang == "hi"
+                    else
+                    f"<blockquote><b>» ❌ Invalid Phone Number</b>\n\n"
+                    f"The phone number <code>{phone}</code> is invalid on Telegram. Please include the country code.</blockquote>"
+                )
+                await event.reply(inv_num_msg, buttons=buttons, parse_mode="html")
+                await clean_login_state(user_id)
+            except (ApiIdInvalidError, ApiIdPublishedFloodError):
+                buttons = [[utils.styled_button("🔙 Cancel", "cancel_login", style="danger")]]
+                await event.reply(
+                    "<blockquote><b>» ❌ Invalid API Credentials</b>\n\nThe Telegram API ID or API Hash is invalid or published/banned. Please update credentials in Admin Panel.</blockquote>",
+                    buttons=buttons,
+                    parse_mode="html"
+                )
+                await clean_login_state(user_id)
             except Exception as e:
                 logger.error(f"Failed to send code request to {phone}: {e}")
                 utils.report_error(f"add_bot.send_code:{phone}", e)
@@ -722,7 +885,12 @@ def register_handlers(client):
                 
         # ------------------ STEP 2: OTP input ------------------
         elif step == "WAITING_FOR_OTP":
-            otp_input = event.text.strip().replace(" ", "")
+            digits = "".join(c for c in event.text if c.isdigit())
+            if len(digits) == 5:
+                otp_input = digits
+            else:
+                otp_input = event.text.strip().replace(" ", "")
+                
             if not otp_input.isdigit() or len(otp_input) != 5:
                 buttons = [
                     [
@@ -751,7 +919,51 @@ def register_handlers(client):
                 state["step"] = "WAITING_FOR_2FA"
                 buttons = [[utils.styled_button("🔙 Cancel", "cancel_login", style="danger")]]
                 await event.reply(utils.get_text("login_2fa_prompt", lang), buttons=buttons)
-
+            except PhoneCodeInvalidError:
+                buttons = [
+                    [
+                        utils.styled_button("🔄 Resend Otp", "resend_otp_action", style="primary"),
+                        utils.styled_button("🔙 Cancel", "cancel_login", style="danger")
+                    ]
+                ]
+                inv_text = (
+                    "<blockquote><b>» ❌ गलत सत्यापन कोड (Invalid OTP)</b>\n\n"
+                    "⚠️ आपके द्वारा दर्ज किया गया 5-अंकों का कोड गलत है।\n"
+                    "कृपया अपने <b>Telegram App</b> में भेजा गया कोड दोबारा जांचें और सही कोड दर्ज करें।</blockquote>"
+                    if lang == "hi"
+                    else
+                    "<blockquote><b>» ❌ Invalid Verification Code</b>\n\n"
+                    "⚠️ The 5-digit code you entered is incorrect.\n"
+                    "Please check the official <b>'Telegram'</b> chat in your Telegram app and try again.</blockquote>"
+                )
+                await event.reply(inv_text, buttons=buttons, parse_mode="html")
+            except PhoneCodeExpiredError:
+                buttons = [
+                    [
+                        utils.styled_button("🔄 Resend Otp", "resend_otp_action", style="primary"),
+                        utils.styled_button("🔙 Cancel", "cancel_login", style="danger")
+                    ]
+                ]
+                exp_text = (
+                    "<blockquote><b>» ⚠️ कोड समाप्त हो गया (Code Expired)</b>\n\n"
+                    "यह सत्यापन कोड समाप्त हो चुका है। नया कोड प्राप्त करने के लिए नीचे <b>🔄 Resend Otp</b> पर टैप करें।</blockquote>"
+                    if lang == "hi"
+                    else
+                    "<blockquote><b>» ⚠️ Verification Code Expired</b>\n\n"
+                    "This code has expired. Please tap <b>🔄 Resend Otp</b> below to receive a fresh code.</blockquote>"
+                )
+                await event.reply(exp_text, buttons=buttons, parse_mode="html")
+            except FloodWaitError as fwe:
+                buttons = [[utils.styled_button("🔙 Cancel", "cancel_login", style="danger")]]
+                fl_text = (
+                    f"<blockquote><b>» ⏳ Telegram Flood Wait</b>\n\n"
+                    f"Telegram ने इस नंबर पर अस्थायी रोक लगाई है। कृपया <b>{fwe.seconds} सेकंड</b> बाद पुनः प्रयास करें।</blockquote>"
+                    if lang == "hi"
+                    else
+                    f"<blockquote><b>» ⏳ Telegram Flood Wait</b>\n\n"
+                    f"Telegram has temporarily rate-limited this account. Please wait <b>{fwe.seconds}s</b> before trying again.</blockquote>"
+                )
+                await event.reply(fl_text, buttons=buttons, parse_mode="html")
             except Exception as e:
                 logger.error(f"Sign in failed for {phone}: {e}")
                 utils.report_error(f"add_bot.sign_in:{phone}", e)
@@ -763,7 +975,8 @@ def register_handlers(client):
                 ]
                 await event.reply(
                     "<blockquote><b>» ❌ Login Failed</b>\n\n⚠️ <i>The login could not be completed. The error was reported to the admin team.</i>\n\n💡 <i>You Can Re-Enter Your Code, Tap Resend Otp Or Cancel.</i></blockquote>",
-                    buttons=buttons
+                    buttons=buttons,
+                    parse_mode="html"
                 )
                 
         # ------------------ STEP 3: 2FA Password input ------------------
